@@ -1,25 +1,29 @@
 {
   "expo": {
-    "name": "savecents-rn",
-    "slug": "savecents-rn",
+    "name": "SaveCents",
+    "slug": "savecents",
+    "scheme": "savecents",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
-    "userInterfaceStyle": "light",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#040906",
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": false,
+      "bundleIdentifier": "com.rxsfin.savecents",
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "SaveCents uses the microphone for voice expense logging.",
+        "NSCameraUsageDescription": "SaveCents uses the camera to scan receipts and price tags."
+      }
     },
     "android": {
+      "package": "com.rxsfin.savecents",
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/android-icon-foreground.png",
-        "backgroundImage": "./assets/android-icon-background.png",
-        "monochromeImage": "./assets/android-icon-monochrome.png"
-      },
-      "predictiveBackGestureEnabled": false
+        "backgroundColor": "#040906",
+        "foregroundImage": "./assets/android-icon-foreground.png"
+      }
     },
-    "web": {
-      "favicon": "./assets/favicon.png"
-    }
+    "plugins": ["expo-router"],
+    "web": { "favicon": "./assets/favicon.png" }
   }
 }
