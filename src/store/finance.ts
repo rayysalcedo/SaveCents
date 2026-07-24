@@ -1,6 +1,8 @@
 // Port of FinanceViewModel.kt — same mock data, same action semantics.
 // M2 will swap processChatInput's local stub for the Gemini backend call.
 import { create } from 'zustand';
+import { persist, createJSONStorage } from 'zustand/middleware';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   Account, ActionType, Category, ChatMessage, Goal, Transaction, UserProfile, uid, peso, setCurrencySymbol,
 } from '../models/types';
@@ -14,6 +16,8 @@ interface FinanceState {
   transactions: Transaction[];
   chat: ChatMessage[];
   isThinking: boolean;
+  hasHydrated: boolean;
+  setHasHydrated: (v: boolean) => void;
   profile: UserProfile;
   selectedGoalId: string | null;
   themeMode: 'light' | 'dark' | 'system';
@@ -45,7 +49,11 @@ interface FinanceState {
 const now = Date.now();
 const day = 86_400_000;
 
-export const useFinance = create<FinanceState>((set, get) => ({
+export const useFinance = create<FinanceState>()(
+  persist(
+    (set, get) => ({
+      hasHydrated: false,
+      setHasHydrated: (v) => set({ hasHydrated: v }),
   accounts: [
     { id: uid(), name: 'GCash', balance: 5000 },
     { id: uid(), name: 'BPI', balance: 15000 },
@@ -303,7 +311,34 @@ export const useFinance = create<FinanceState>((set, get) => ({
       }));
     }, 1000);
   },
-}));
+    }),
+    {
+      name: 'savecents-store',
+      storage: createJSONStorage(() => AsyncStorage),
+      version: 1,
+      partialize: (s) => ({
+        accounts: s.accounts,
+        categories: s.categories,
+        goals: s.goals,
+        transactions: s.transactions,
+        chat: s.chat.slice(-30), // keep only the last 30 messages
+        profile: s.profile,
+        selectedGoalId: s.selectedGoalId,
+        themeMode: s.themeMode,
+        country: s.country,
+        currency: s.currency,
+        biometricsEnabled: s.biometricsEnabled,
+      }),
+      migrate: (persisted, _version) => persisted as FinanceState, // no-op at v1
+      onRehydrateStorage: () => (state) => {
+        if (state) {
+          setCurrencySymbol(state.currency); // resync module-level symbol
+          state.setHasHydrated(true);
+        }
+      },
+    },
+  ),
+);
 
 type Setter = (fn: (s: FinanceState) => Partial<FinanceState>) => void;
 

@@ -2,9 +2,8 @@
 // The Taglish intent-extraction prompt is ported from the original Kotlin
 // FinanceViewModel and extended with goal awareness + a conversational reply.
 
-import { initializeApp, FirebaseApp } from 'firebase/app';
 import { GoogleAIBackend, Schema, getAI, getGenerativeModel } from 'firebase/ai';
-import { firebaseConfig, isFirebaseConfigured } from './firebaseConfig';
+import { getFirebaseApp, isFirebaseConfigured } from './firebaseApp';
 import { Account, Category, Goal } from '../models/types';
 
 export type CentsIntent =
@@ -31,8 +30,6 @@ interface CentsContext {
   accounts: Account[];
   currency: string;
 }
-
-let app: FirebaseApp | null = null;
 
 // Model fallback chain — Google retires Gemini models on ~yearly cycles and
 // retired names return 404. We try newest-stable first and remember the winner.
@@ -64,10 +61,9 @@ const responseSchema = Schema.object({
 
 function getModel(name: string) {
   if (!isFirebaseConfigured()) throw new Error('firebase-not-configured');
-  if (!app) app = initializeApp(firebaseConfig);
   let m = modelCache.get(name);
   if (!m) {
-    const ai = getAI(app, { backend: new GoogleAIBackend() });
+    const ai = getAI(getFirebaseApp(), { backend: new GoogleAIBackend() });
     m = getGenerativeModel(ai, {
       model: name,
       generationConfig: {
