@@ -9,7 +9,7 @@ import {
 import { COUNTRIES } from '../data/countries';
 import { localParseIntent, parseCentsIntent, CentsResult } from '../services/cents';
 
-interface FinanceState {
+export interface FinanceState {
   accounts: Account[];
   categories: Category[];
   goals: Goal[];
@@ -39,6 +39,8 @@ interface FinanceState {
   removeGoal: (id: string) => void;
   login: (name: string, email: string) => void;
   logout: () => void;
+  replaceAll: (snap: CloudSnapshot) => void;
+  resetToDefaults: () => void;
   addGoal: (name: string, target: number, date: string) => void;
   sendChat: (input: string) => Promise<void>;
   confirmAction: (messageId: string, confirm: boolean) => void;
@@ -49,11 +51,22 @@ interface FinanceState {
 const now = Date.now();
 const day = 86_400_000;
 
-export const useFinance = create<FinanceState>()(
-  persist(
-    (set, get) => ({
-      hasHydrated: false,
-      setHasHydrated: (v) => set({ hasHydrated: v }),
+// The exact shape synced to Firestore (users/{uid}) and persisted locally.
+export interface CloudSnapshot {
+  accounts: Account[];
+  categories: Category[];
+  goals: Goal[];
+  transactions: Transaction[];
+  chat: ChatMessage[];
+  profile: UserProfile;
+  selectedGoalId: string | null;
+  themeMode: 'light' | 'dark' | 'system';
+  country: string;
+  currency: string;
+  biometricsEnabled: boolean;
+}
+
+const makeDefaults = (): CloudSnapshot & { isThinking: boolean } => ({
   accounts: [
     { id: uid(), name: 'GCash', balance: 5000 },
     { id: uid(), name: 'BPI', balance: 15000 },
@@ -81,9 +94,34 @@ export const useFinance = create<FinanceState>()(
   isThinking: false,
   profile: { name: 'Rayy', email: 'rayysalcedo@gmail.com', isLoggedIn: false },
   selectedGoalId: null,
-  themeMode: 'dark',
+  themeMode: 'dark' as const,
   country: 'PH',
   currency: '\u20B1',
+  biometricsEnabled: true,
+});
+
+// Single source of truth for "what gets saved" — used by both the local
+// persist middleware and the Firestore sync layer.
+export const buildSnapshot = (s: FinanceState): CloudSnapshot => ({
+  accounts: s.accounts,
+  categories: s.categories,
+  goals: s.goals,
+  transactions: s.transactions,
+  chat: s.chat.slice(-30),
+  profile: s.profile,
+  selectedGoalId: s.selectedGoalId,
+  themeMode: s.themeMode,
+  country: s.country,
+  currency: s.currency,
+  biometricsEnabled: s.biometricsEnabled,
+});
+
+export const useFinance = create<FinanceState>()(
+  persist(
+    (set, get) => ({
+      hasHydrated: false,
+      setHasHydrated: (v) => set({ hasHydrated: v }),
+  ...makeDefaults(),
 
   selectGoal: (id) => set({ selectedGoalId: id }),
   setThemeMode: (m) => set({ themeMode: m }),
@@ -101,7 +139,6 @@ export const useFinance = create<FinanceState>()(
     set({ accounts: [...s.accounts, { id: uid(), name, balance: 0, color, initial }] });
   },
   updateProfile: (name, email) => set((s) => ({ profile: { ...s.profile, name, email } })),
-  biometricsEnabled: true,
   setBiometricsEnabled: (v) => set({ biometricsEnabled: v }),
   removeAccount: (id) => set((s) => ({ accounts: s.accounts.filter((a) => a.id !== id) })),
   setAccountBalance: (id, balance) =>
@@ -125,6 +162,18 @@ export const useFinance = create<FinanceState>()(
 
   login: (name, email) => set((s) => ({ profile: { ...s.profile, name, email, isLoggedIn: true } })),
   logout: () => set((s) => ({ profile: { ...s.profile, isLoggedIn: false } })),
+
+  // Load a cloud snapshot into the store (fresh install / account switch).
+  replaceAll: (snap) => {
+    setCurrencySymbol(snap.currency);
+    set({ ...snap, isThinking: false });
+  },
+  // Wipe to factory state (different user logs in, or account deletion).
+  resetToDefaults: () => {
+    const d = makeDefaults();
+    setCurrencySymbol(d.currency);
+    set(d);
+  },
 
   addGoal: (name, target, date) =>
     set((s) => ({ goals: [...s.goals, { id: uid(), name, target, current: 0, date }] })),
@@ -316,19 +365,7 @@ export const useFinance = create<FinanceState>()(
       name: 'savecents-store',
       storage: createJSONStorage(() => AsyncStorage),
       version: 1,
-      partialize: (s) => ({
-        accounts: s.accounts,
-        categories: s.categories,
-        goals: s.goals,
-        transactions: s.transactions,
-        chat: s.chat.slice(-30), // keep only the last 30 messages
-        profile: s.profile,
-        selectedGoalId: s.selectedGoalId,
-        themeMode: s.themeMode,
-        country: s.country,
-        currency: s.currency,
-        biometricsEnabled: s.biometricsEnabled,
-      }),
+      partialize: (s) => buildSnapshot(s),
       migrate: (persisted, _version) => persisted as FinanceState, // no-op at v1
       onRehydrateStorage: () => (state) => {
         if (state) {

@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Animated, Keyboard, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View,
+  Alert, Animated, Keyboard, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -12,6 +12,9 @@ import { Palette, radius, type, useTheme } from '../../src/theme/colors';
 import { useFinance } from '../../src/store/finance';
 import { peso } from '../../src/models/types';
 import { COUNTRIES, institutionFor } from '../../src/data/countries';
+import { authAvailable, authErrorMessage, deleteAccount, signOutFirebase } from '../../src/services/auth';
+import { getFirebaseAuth } from '../../src/services/auth';
+import { clearLastUid, deleteCloudData, stopAutoSync } from '../../src/services/sync';
 
 const THEME_OPTS = ['light', 'dark', 'system'] as const;
 
@@ -21,7 +24,7 @@ export default function ProfileScreen() {
   const {
     profile, accounts, logout, themeMode, setThemeMode,
     country, setCountry, addAccount, removeAccount, setAccountBalance,
-    updateProfile, biometricsEnabled, setBiometricsEnabled,
+    updateProfile, biometricsEnabled, setBiometricsEnabled, resetToDefaults,
   } = useFinance();
   const router = useRouter();
   const goals = useFinance((st) => st.goals);
@@ -46,9 +49,40 @@ export default function ProfileScreen() {
     Animated.spring(segAnim, { toValue: segIndex, friction: 7, tension: 160, useNativeDriver: true }).start();
   }, [segIndex, segAnim]);
 
-  const doLogout = () => {
+  const doLogout = async () => {
+    stopAutoSync();
+    try { await signOutFirebase(); } catch { /* offline logout is fine */ }
     logout();
     router.replace('/auth');
+  };
+
+  // Apple guideline 5.1.1(v): in-app account deletion. Wipes cloud data,
+  // deletes the Firebase user, resets local state.
+  const confirmDeleteAccount = () => {
+    Alert.alert(
+      'Delete account?',
+      'This permanently deletes your account and all synced data (budgets, transactions, goals). This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Delete forever', style: 'destructive', onPress: doDeleteAccount },
+      ],
+    );
+  };
+
+  const doDeleteAccount = async () => {
+    try {
+      stopAutoSync();
+      if (authAvailable()) {
+        const u = getFirebaseAuth().currentUser;
+        if (u) await deleteCloudData(u.uid);
+        await deleteAccount();
+      }
+      await clearLastUid();
+      resetToDefaults();
+      router.replace('/auth');
+    } catch (e) {
+      Alert.alert('Could not delete account', authErrorMessage(e));
+    }
   };
 
   const saveBalance = () => {
@@ -224,6 +258,7 @@ export default function ProfileScreen() {
           <SettingRow icon="diamond" label="Subscription" value="Trial" divider />
           <SettingRow icon="shield-checkmark" label="Privacy & data" divider />
           <SettingRow icon="help-circle" label="Help & support" divider />
+          <SettingRow icon="trash" label="Delete account" onPress={confirmDeleteAccount} />
         </GlassCard>
 
         <Pressable style={styles.logout} onPress={doLogout}>
@@ -231,7 +266,7 @@ export default function ProfileScreen() {
           <Text style={styles.logoutText}>Log out</Text>
         </Pressable>
 
-        <Text style={styles.version}>SaveCents v1.0 (M1 build)</Text>
+        <Text style={styles.version}>SaveCents v1.0 (M3 build)</Text>
         <View style={{ height: 132 }} />
       </ScrollView>
 
