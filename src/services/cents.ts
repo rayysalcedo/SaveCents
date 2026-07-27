@@ -86,7 +86,8 @@ function buildSystemPrompt(ctx: CentsContext): string {
     .join('; ');
   const liquid = ctx.accounts.reduce((a, x) => a + x.balance, 0);
 
-  return `You are Cents, a friendly AI financial coach inside the SaveCents app.
+  return `You are Cents, the AI money coach inside SaveCents.
+Personality: casual, warm, encouraging — like a sharp kaibigan who's great with money. Keep replies short and punchy. Hype small wins. Never lecture.
 The user might speak English or Taglish (e.g. 'Kakabili ko lang ng dog food 800', 'Kakasiya ba 'to if bumili ako ng 1500 game?').
 Currency: ${ctx.currency}. Liquid balance: ${liquid}.
 Current budget categories: ${cats || 'none'}.
@@ -105,7 +106,11 @@ Valid intents: "LogTransaction", "PrePurchaseCheck", "AddCategory", "RemoveCateg
 Always fill every field; use 0 or "" when not applicable.`;
 }
 
-export async function parseCentsIntent(message: string, ctx: CentsContext): Promise<CentsResult> {
+type ContentPart = { text: string } | { inlineData: { mimeType: string; data: string } };
+
+// Shared model call with the fallback chain + JSON parsing. Used by both the
+// text brain (parseCentsIntent) and the vision brain (analyzeImage).
+async function generateStructured(parts: ContentPart[], system: string): Promise<CentsResult> {
   let lastErr: unknown = null;
   let result: Awaited<ReturnType<ReturnType<typeof getGenerativeModel>['generateContent']>> | null = null;
 
@@ -113,8 +118,8 @@ export async function parseCentsIntent(message: string, ctx: CentsContext): Prom
     try {
       const m = getModel(MODEL_CANDIDATES[i]);
       result = await m.generateContent({
-        contents: [{ role: 'user', parts: [{ text: message }] }],
-        systemInstruction: { role: 'system', parts: [{ text: buildSystemPrompt(ctx) }] },
+        contents: [{ role: 'user', parts }],
+        systemInstruction: { role: 'system', parts: [{ text: system }] },
       });
       workingModelIndex = i; // remember the model that works
       break;
@@ -138,6 +143,49 @@ export async function parseCentsIntent(message: string, ctx: CentsContext): Prom
     reply: parsed.reply ?? '',
     lang: parsed.lang === 'fil' ? 'fil' : 'en',
   };
+}
+
+export async function parseCentsIntent(message: string, ctx: CentsContext): Promise<CentsResult> {
+  return generateStructured([{ text: message }], buildSystemPrompt(ctx));
+}
+
+// ── M4: Vision ──────────────────────────────────────────────────────────────
+export type VisionMode = 'receipt' | 'price';
+
+function buildVisionPrompt(mode: VisionMode, ctx: CentsContext): string {
+  const cats = ctx.categories.map((c) => c.name).join('; ');
+  const common = `You are Cents, the casual, encouraging AI money coach inside SaveCents — like a sharp kaibigan who's great with money.
+Currency: ${ctx.currency}. The user's existing budget categories: ${cats || 'none'}.
+Read the attached photo carefully. Fill EVERY schema field; use 0 or "" when not applicable.
+Category matching: pick the existing category whose MEANING best fits WHAT WAS BOUGHT — e.g. a motorcycle cover or fuel → a motorcycle/vehicle/gas category; dog food → a pets category; Jollibee → dining. Think about what the items are FOR. Never invent category names; if nothing fits naturally, use "Others".
+Set lang to "fil" if the receipt or its context is Filipino, else "en". Write reply in that language: casual coach tone, ONE short sentence, no lecture.`;
+  if (mode === 'receipt') {
+    return `${common}
+The image is a PURCHASE RECEIPT or an ONLINE ORDER page (Shopee, Lazada, Grab, bank app, etc.).
+- intent MUST be "LogTransaction".
+- amount = the FINAL TOTAL PAID — the order total after discounts, vouchers and shipping, NOT the item's list price. If no total is readable, set amount to 0 and say so in reply.
+- Receipts are often HANDWRITTEN (common on Filipino service receipts: laundry, sari-sari, carinderia, vulcanizing). Read handwritten digits character by character and cross-check against any per-item prices and quantities (e.g. 2 items × 150 = 300). If the handwriting is ambiguous, give your best reading BUT say you're not sure in the reply so the user double-checks — e.g. "Mukhang ₱300 ang total pero medyo malabo ang sulat — check mo muna bago natin i-log.".
+- item = the main product bought, short and human (e.g. "Motorcycle cover", "Dog food 10kg"). Only fall back to the store name if the items aren't identifiable.
+- reply = one friendly sentence naming the item, the store, and the total — e.g. "Nice — motorcycle cover from Autop.ph, ₱278 all-in. Log it?"`;
+  }
+  return `${common}
+The image shows a PRODUCT or its PRICE TAG in a store or online listing.
+- intent MUST be "PrePurchaseCheck".
+- amount = the product's current price as shown (use the discounted price if one is displayed). If no price is visible, set amount to 0 and say so in reply.
+- item = the product name, short and human (e.g. "Nike Air Force 1", "Stand mixer").
+- reply = one friendly sentence naming the product and price you read — e.g. "Okay, eyeing that stand mixer at ₱4,500 — let me check your numbers."`;
+}
+
+export async function analyzeImage(
+  base64: string, mimeType: string, mode: VisionMode, ctx: CentsContext,
+): Promise<CentsResult> {
+  return generateStructured(
+    [
+      { inlineData: { mimeType, data: base64 } },
+      { text: mode === 'receipt' ? 'Read this receipt.' : 'Check this product/price tag.' },
+    ],
+    buildVisionPrompt(mode, ctx),
+  );
 }
 
 // ── Offline fallback ─────────────────────────────────────────────────────────

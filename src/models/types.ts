@@ -51,7 +51,7 @@ interface ChatBase {
 }
 
 export type ChatMessage =
-  | (ChatBase & { type: 'text'; text: string })
+  | (ChatBase & { type: 'text'; text: string; imageUri?: string })
   | (ChatBase & { type: 'confirmation'; prompt: string; action: ActionType; confirmed: boolean; handled: boolean; lang?: 'en' | 'fil' })
   | (ChatBase & { type: 'negotiation'; prompt: string; action: ActionType; confirmed: boolean; handled: boolean; lang?: 'en' | 'fil' })
   | (ChatBase & { type: 'receiptScan'; amount: number; store: string; confirmed: boolean; handled: boolean })

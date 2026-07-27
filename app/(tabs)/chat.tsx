@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Keyboard } from 'react-native';
+import {
+  Alert, Image, Keyboard } from 'react-native';
 import {
   Animated, Easing, FlatList, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View,
 } from 'react-native';
@@ -8,6 +9,7 @@ import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { Palette, radius, useTheme } from '../../src/theme/colors';
+import * as ImagePicker from 'expo-image-picker';
 import { useFinance } from '../../src/store/finance';
 import { ChatMessage, peso } from '../../src/models/types';
 
@@ -29,7 +31,7 @@ export default function ChatScreen() {
     const s4 = Keyboard.addListener('keyboardDidHide', () => setKbVisible(false));
     return () => { s1.remove(); s2.remove(); s3.remove(); s4.remove(); };
   }, []);
-  const { chat, isThinking, sendChat, confirmAction, simulateReceiptScan, simulateConsultItem } = useFinance();
+  const { chat, isThinking, sendChat, sendImage, confirmAction } = useFinance();
   const [input, setInput] = useState('');
   const [cameraSheet, setCameraSheet] = useState(false);
   const listRef = useRef<FlatList>(null);
@@ -125,6 +127,7 @@ export default function ChatScreen() {
       <View style={[styles.bubbleRow, isUser && { justifyContent: 'flex-end' }]}>
         {!isUser && <CentsMini />}
         <View style={[styles.bubble, isUser ? styles.userBubble : styles.centsBubble]}>
+          {msg.imageUri ? <Image source={{ uri: msg.imageUri }} style={styles.bubbleImage} resizeMode="cover" /> : null}
           <Text style={styles.bubbleText}>{msg.text}</Text>
         </View>
       </View>
@@ -235,6 +238,63 @@ export default function ChatScreen() {
   );
 };
 
+  // M4: real camera capture.
+  // iOS refuses to present the camera while ANY other presentation (the sheet
+  // modal, an alert, the permission dialog) is on screen or mid-dismissal — the
+  // launch just hangs silently. So sheet taps QUEUE the action and we run it
+  // from the Modal's onDismiss, which iOS fires only when the sheet is fully
+  // gone. Never launch the camera directly from a sheet button.
+  const pendingCameraAction = useRef<null | (() => void)>(null);
+
+  const queueFromSheet = (fn: () => void) => {
+    if (Platform.OS === 'ios') {
+      pendingCameraAction.current = fn; // runs in Modal onDismiss
+      setCameraSheet(false);
+    } else {
+      setCameraSheet(false); // Android has no such conflict (and no onDismiss)
+      setTimeout(fn, 250);
+    }
+  };
+
+  const runPendingCameraAction = () => {
+    const fn = pendingCameraAction.current;
+    pendingCameraAction.current = null;
+    if (fn) fn();
+  };
+
+  const captureAndSend = async (mode: 'receipt' | 'price') => {
+    try {
+      const perm = await ImagePicker.requestCameraPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert('Camera access needed', 'Allow camera access in iPhone Settings → Expo Go → Camera.');
+        return;
+      }
+      // Handwritten receipts need detail — 0.7 for receipts, 0.4 is enough for printed price tags.
+      const res = await ImagePicker.launchCameraAsync({ quality: mode === 'receipt' ? 0.7 : 0.4, base64: true });
+      const a = res.canceled ? null : res.assets?.[0];
+      if (!a?.base64) return;
+      sendImage(a.base64, 'image/jpeg', mode, a.uri);
+    } catch (e) {
+      Alert.alert('Camera error', String((e as Error)?.message ?? e));
+    }
+  };
+
+  const pickFromLibrary = async (mode: 'receipt' | 'price') => {
+    try {
+      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert('Photos access needed', 'Allow photo access to upload a receipt.');
+        return;
+      }
+      const res = await ImagePicker.launchImageLibraryAsync({ quality: mode === 'receipt' ? 0.7 : 0.4, base64: true });
+      const a = res.canceled ? null : res.assets?.[0];
+      if (!a?.base64) return;
+      sendImage(a.base64, 'image/jpeg', mode, a.uri);
+    } catch (e) {
+      Alert.alert('Photos error', String((e as Error)?.message ?? e));
+    }
+  };
+
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
       <KeyboardAvoidingView
@@ -322,19 +382,23 @@ export default function ChatScreen() {
           </BlurView>
         </View>
 
-        {/* Camera sheet — receipt / consult (simulated until M4) */}
-        <Modal visible={cameraSheet} transparent animationType="slide" onRequestClose={() => setCameraSheet(false)}>
+        {/* Camera sheet — real vision via Gemini (M4) */}
+        <Modal visible={cameraSheet} transparent animationType="slide" onRequestClose={() => setCameraSheet(false)} onDismiss={runPendingCameraAction}>
           <Pressable style={styles.sheetScrim} onPress={() => setCameraSheet(false)}>
             <Pressable style={styles.sheet} onPress={() => {}}>
               <View style={styles.sheetHandle} />
               <Text style={styles.sheetTitle}>Use camera</Text>
               <SheetItem
-                icon="receipt" title="Scan receipt" sub="Log an expense automatically"
-                onPress={() => { setCameraSheet(false); simulateReceiptScan(); }}
+                icon="receipt" title="Scan receipt" sub="Photograph a receipt to log it"
+                onPress={() => queueFromSheet(() => captureAndSend('receipt'))}
               />
               <SheetItem
-                icon="bag-handle" title="Consult item" sub="Ask Cents if you can afford this"
-                onPress={() => { setCameraSheet(false); simulateConsultItem(); }}
+                icon="bag-handle" title="Consult item" sub="Snap a price tag — can you afford it?"
+                onPress={() => queueFromSheet(() => captureAndSend('price'))}
+              />
+              <SheetItem
+                icon="images" title="Upload from Photos" sub="Use a receipt photo you already took"
+                onPress={() => queueFromSheet(() => pickFromLibrary('receipt'))}
               />
             </Pressable>
           </Pressable>
@@ -391,6 +455,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     maxWidth: '86%', borderRadius: 22, paddingHorizontal: 16, paddingVertical: 12, borderWidth: 1,
   },
   userBubble: { backgroundColor: t.emeraldTint, borderColor: t.emeraldBorder },
+  bubbleImage: { width: 200, height: 200, borderRadius: 14, marginBottom: 8 },
   centsBubble: {
     backgroundColor: t.mode === 'light' ? t.surfaceStrong : 'rgba(255,255,255,0.055)',
     borderColor: t.mode === 'light' ? 'rgba(255,255,255,0.9)' : t.borderSoft,

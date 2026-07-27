@@ -7,7 +7,7 @@ import {
   Account, ActionType, Category, ChatMessage, Goal, Transaction, UserProfile, uid, peso, setCurrencySymbol,
 } from '../models/types';
 import { COUNTRIES } from '../data/countries';
-import { localParseIntent, parseCentsIntent, CentsResult } from '../services/cents';
+import { analyzeImage, localParseIntent, parseCentsIntent, CentsResult } from '../services/cents';
 
 export interface FinanceState {
   accounts: Account[];
@@ -43,9 +43,8 @@ export interface FinanceState {
   resetToDefaults: () => void;
   addGoal: (name: string, target: number, date: string) => void;
   sendChat: (input: string) => Promise<void>;
+  sendImage: (base64: string, mimeType: string, mode: 'receipt' | 'price', imageUri?: string) => Promise<void>;
   confirmAction: (messageId: string, confirm: boolean) => void;
-  simulateReceiptScan: () => void;
-  simulateConsultItem: () => void;
 }
 
 const now = Date.now();
@@ -206,10 +205,98 @@ export const useFinance = create<FinanceState>()(
       }
     }
 
+    const reply = buildReplyFromResult(result, get());
+    set((st) => ({ chat: [...st.chat, reply], isThinking: false }));
+  },
+
+  confirmAction: (messageId, confirm) => {
+    const s = get();
+    const msg = s.chat.find((m) => m.id === messageId);
+    if (!msg || !('handled' in msg) || msg.handled) return;
+
+    if (confirm) {
+      if (msg.type === 'confirmation' || msg.type === 'negotiation') {
+        executeAction(msg.action, set);
+      } else if (msg.type === 'receiptScan') {
+        executeAction({ kind: 'LogTransaction', amount: msg.amount, categoryName: 'Pets' }, set);
+        pushCents(set, `Logged ${peso(msg.amount)} under Pets.`);
+      } else if (msg.type === 'consultItem') {
+        pushCents(set, `Okay — logged the ${msg.item} for ${peso(msg.amount)}. I'll adjust your ${msg.goalName} trajectory.`);
+      } else if (msg.type === 'mismatch') {
+        executeAction({ kind: 'CreateAndLog', item: msg.item, amount: msg.amount }, set);
+      }
+    } else if (msg.type === 'receiptScan') {
+      pushCents(set, 'Receipt scan cancelled.');
+    }
+
+    set((st) => ({
+      chat: st.chat.map((m) =>
+        m.id === messageId && 'handled' in m ? { ...m, confirmed: confirm, handled: true } : m,
+      ),
+    }));
+  },
+
+  // M4: vision — a photo is just another way to produce a CentsResult, so it
+  // flows into the exact same confirmation/negotiation cards as typed chat.
+  sendImage: async (base64, mimeType, mode, imageUri) => {
+    set((st) => ({
+      chat: [...st.chat, {
+        id: uid(), sender: 'USER', type: 'text',
+        text: mode === 'receipt' ? 'Scanned a receipt' : 'Can I afford this?',
+        imageUri,
+      }],
+      isThinking: true,
+    }));
+
+    const s = get();
+    const ctx = { categories: s.categories, goals: s.goals, accounts: s.accounts, currency: s.currency };
+
+    let reply: ChatMessage;
+    try {
+      const result = await analyzeImage(base64, mimeType, mode, ctx);
+      if (!result.amount) {
+        reply = {
+          id: uid(), sender: 'CENTS', type: 'text',
+          text: result.reply || "I couldn't read an amount off that photo \u2014 try a clearer shot, or just type it (e.g. 'spent 250 on gas').",
+        };
+      } else {
+        reply = buildReplyFromResult(result, get());
+        // Coach lead-in: say what Cents saw, then show the action card.
+        if (result.reply) {
+          const lead: ChatMessage = { id: uid(), sender: 'CENTS', type: 'text', text: result.reply };
+          set((st) => ({ chat: [...st.chat, lead] }));
+        }
+      }
+    } catch (e) {
+      console.warn('[Cents vision error]', (e as Error)?.message);
+      reply = {
+        id: uid(), sender: 'CENTS', type: 'text',
+        text: "I couldn't analyze that photo right now \u2014 check your connection and try again, or type the expense instead.",
+      };
+    }
+    set((st) => ({ chat: [...st.chat, reply], isThinking: false }));
+  },
+    }),
+    {
+      name: 'savecents-store',
+      storage: createJSONStorage(() => AsyncStorage),
+      version: 1,
+      partialize: (s) => buildSnapshot(s),
+      migrate: (persisted, _version) => persisted as FinanceState, // no-op at v1
+      onRehydrateStorage: () => (state) => {
+        if (state) {
+          setCurrencySymbol(state.currency); // resync module-level symbol
+          state.setHasHydrated(true);
+        }
+      },
+    },
+  ),
+);
+
+function buildReplyFromResult(result: CentsResult, st2: FinanceState): ChatMessage {
     const { intent, amount, categoryName, lang } = result;
     const fil = lang === 'fil';
     const item = result.item || categoryName;
-    const st2 = get();
     const category = st2.categories.find((c) => c.name.toLowerCase() === categoryName.toLowerCase());
 
     let reply: ChatMessage;
@@ -307,75 +394,8 @@ export const useFinance = create<FinanceState>()(
           text: result.reply || "I'm not sure what you meant — try 'spent 250 on gas'.",
         };
     }
-
-    set((st) => ({ chat: [...st.chat, reply], isThinking: false }));
-  },
-
-  confirmAction: (messageId, confirm) => {
-    const s = get();
-    const msg = s.chat.find((m) => m.id === messageId);
-    if (!msg || !('handled' in msg) || msg.handled) return;
-
-    if (confirm) {
-      if (msg.type === 'confirmation' || msg.type === 'negotiation') {
-        executeAction(msg.action, set);
-      } else if (msg.type === 'receiptScan') {
-        executeAction({ kind: 'LogTransaction', amount: msg.amount, categoryName: 'Pets' }, set);
-        pushCents(set, `Logged ${peso(msg.amount)} under Pets.`);
-      } else if (msg.type === 'consultItem') {
-        pushCents(set, `Okay — logged the ${msg.item} for ${peso(msg.amount)}. I'll adjust your ${msg.goalName} trajectory.`);
-      } else if (msg.type === 'mismatch') {
-        executeAction({ kind: 'CreateAndLog', item: msg.item, amount: msg.amount }, set);
-      }
-    } else if (msg.type === 'receiptScan') {
-      pushCents(set, 'Receipt scan cancelled.');
-    }
-
-    set((st) => ({
-      chat: st.chat.map((m) =>
-        m.id === messageId && 'handled' in m ? { ...m, confirmed: confirm, handled: true } : m,
-      ),
-    }));
-  },
-
-  simulateReceiptScan: () => {
-    set((s) => ({ chat: [...s.chat, { id: uid(), sender: 'USER', type: 'text', text: '📷 Scanned Receipt' }] }));
-    setTimeout(() => {
-      set((s) => ({
-        chat: [...s.chat, { id: uid(), sender: 'CENTS', type: 'receiptScan', amount: 800, store: 'Pet Store', confirmed: false, handled: false }],
-      }));
-    }, 1000);
-  },
-
-  simulateConsultItem: () => {
-    set((s) => ({ chat: [...s.chat, { id: uid(), sender: 'USER', type: 'text', text: '📷 Consult Item' }] }));
-    setTimeout(() => {
-      const goal = get().goals[0];
-      set((s) => ({
-        chat: [...s.chat, {
-          id: uid(), sender: 'CENTS', type: 'consultItem',
-          item: 'Shoes', amount: 3500, delayWeeks: 2, goalName: goal?.name ?? 'Savings Goal',
-          confirmed: false, handled: false,
-        }],
-      }));
-    }, 1000);
-  },
-    }),
-    {
-      name: 'savecents-store',
-      storage: createJSONStorage(() => AsyncStorage),
-      version: 1,
-      partialize: (s) => buildSnapshot(s),
-      migrate: (persisted, _version) => persisted as FinanceState, // no-op at v1
-      onRehydrateStorage: () => (state) => {
-        if (state) {
-          setCurrencySymbol(state.currency); // resync module-level symbol
-          state.setHasHydrated(true);
-        }
-      },
-    },
-  ),
-);
+    return reply;
+}
 
 type Setter = (fn: (s: FinanceState) => Partial<FinanceState>) => void;
 
