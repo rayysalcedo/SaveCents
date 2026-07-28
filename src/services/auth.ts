@@ -9,6 +9,7 @@ import {
   sendPasswordResetEmail,
   signInWithEmailAndPassword,
   signOut as fbSignOut,
+  updatePassword,
   updateProfile,
   type Auth,
   type User,
@@ -53,6 +54,27 @@ export async function resetPassword(email: string): Promise<void> {
   await sendPasswordResetEmail(getFirebaseAuth(), email.trim());
 }
 
+// Change the signed-in user's password (called only after email OTP passes).
+// Firebase may demand a recent login; on that error we fall back to a real
+// password-reset email so the user is never stuck.
+export type PasswordChangeOutcome = 'changed' | 'reset-email-sent' | 'local-only';
+
+export async function changePassword(newPassword: string): Promise<PasswordChangeOutcome> {
+  if (!authAvailable()) return 'local-only';
+  const u = getFirebaseAuth().currentUser;
+  if (!u) return 'local-only';
+  try {
+    await updatePassword(u, newPassword);
+    return 'changed';
+  } catch (e) {
+    if ((e as { code?: string })?.code === 'auth/requires-recent-login' && u.email) {
+      await sendPasswordResetEmail(getFirebaseAuth(), u.email);
+      return 'reset-email-sent';
+    }
+    throw e;
+  }
+}
+
 export async function signOutFirebase(): Promise<void> {
   if (!authAvailable()) return;
   await fbSignOut(getFirebaseAuth());
@@ -82,8 +104,8 @@ export function authErrorMessage(e: unknown): string {
     case 'auth/invalid-credential':
     case 'auth/wrong-password':
     case 'auth/user-not-found': return 'Email or password is incorrect.';
-    case 'auth/too-many-requests': return 'Too many attempts \u2014 wait a minute and try again.';
-    case 'auth/network-request-failed': return 'No connection \u2014 check your internet and try again.';
+    case 'auth/too-many-requests': return 'Too many attempts. Wait a minute and try again.';
+    case 'auth/network-request-failed': return 'No connection. Check your internet and try again.';
     case 'auth/requires-recent-login': return 'For security, please log in again first.';
     default: return 'Something went wrong. Please try again.';
   }

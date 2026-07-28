@@ -3,6 +3,7 @@ import {
   Animated, Dimensions, Easing, Keyboard, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useLocalSearchParams } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
@@ -27,6 +28,14 @@ export default function GoalsScreen() {
   const segAnim = useRef(new Animated.Value(0)).current;
   const fade = useRef(new Animated.Value(1)).current;
 
+  // Deep link support: Home's Manage button opens the Budgets tab directly.
+  const { tab: tabParam } = useLocalSearchParams<{ tab?: string }>();
+  useEffect(() => {
+    if (tabParam === 'budgets' && tab !== 1) switchTab(1);
+    if (tabParam === 'goals' && tab !== 0) switchTab(0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tabParam]);
+
   const switchTab = (next: 0 | 1) => {
     if (next === tab) return;
     Animated.timing(segAnim, { toValue: next, duration: 280, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
@@ -44,23 +53,39 @@ export default function GoalsScreen() {
   const [gDate, setGDate] = useState<Date>(new Date(Date.now() + 180 * 86400000));
   const [showPicker, setShowPicker] = useState(false);
 
-  // Budget sheet state: category picker + limit. editingId set => edit mode.
+  // Budget sheet state: category + custom name + limit + optional due date.
   const [budgetSheet, setBudgetSheet] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [pickedCat, setPickedCat] = useState<string | null>(null);
+  const [bName, setBName] = useState('');
   const [bLimit, setBLimit] = useState('');
+  const [bHasDue, setBHasDue] = useState(false);
+  const [bDate, setBDate] = useState<Date>(new Date(Date.now() + 14 * 86400000));
+  const [showBPicker, setShowBPicker] = useState(false);
 
   const openNewBudget = () => {
-    setEditingId(null); setPickedCat(null); setBLimit('');
+    setEditingId(null); setPickedCat(null); setBName(''); setBLimit('');
+    setBHasDue(false); setBDate(new Date(Date.now() + 14 * 86400000)); setShowBPicker(false);
     setBudgetSheet(true);
   };
   const openEditBudget = (id: string) => {
     const c = categories.find((x) => x.id === id);
     if (!c) return;
     setEditingId(id);
-    setPickedCat(BUDGET_CATEGORIES.some((b) => b.name === c.name) ? c.name : 'Others');
+    const base = c.category ?? (BUDGET_CATEGORIES.some((b) => b.name === c.name) ? c.name : 'Others');
+    setPickedCat(base);
+    setBName(c.name);
     setBLimit(String(c.limit));
+    setBHasDue(!!c.dueDate);
+    setBDate(c.dueDate ? new Date(c.dueDate) : new Date(Date.now() + 14 * 86400000));
+    setShowBPicker(false);
     setBudgetSheet(true);
+  };
+
+  // Picking a category fills the name unless the user already typed their own.
+  const pickCategory = (name: string) => {
+    setBName((prev) => (!prev.trim() || prev === pickedCat ? name : prev));
+    setPickedCat(name);
   };
 
   const submitGoal = () => {
@@ -76,12 +101,14 @@ export default function GoalsScreen() {
     const v = parseFloat(bLimit);
     const cat = BUDGET_CATEGORIES.find((c) => c.name === pickedCat);
     if (!cat || !v || v <= 0) return;
-    if (editingId) updateBudget(editingId, cat.name, v, cat.icon);
-    else addBudget(cat.name, v, cat.icon);
+    const name = bName.trim() || cat.name;
+    const due = bHasDue ? bDate.getTime() : undefined;
+    if (editingId) updateBudget(editingId, name, v, cat.icon, cat.name, due);
+    else addBudget(name, v, cat.icon, cat.name, due);
     setBudgetSheet(false);
   };
 
-  const taken = new Set(categories.map((c) => c.name));
+  const taken = new Set(categories.map((c) => c.category ?? c.name));
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
@@ -183,7 +210,10 @@ export default function GoalsScreen() {
                         </View>
                         <View style={{ flex: 1 }}>
                           <Text style={styles.budgetName}>{c.name}</Text>
-                          <Text style={styles.budgetSub}>{peso(c.spent)} of {peso(c.limit)} monthly · tap to edit</Text>
+                          <Text style={styles.budgetSub}>
+                            {peso(c.spent)} of {peso(c.limit)} monthly
+                            {c.dueDate ? ` · due ${new Date(c.dueDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}` : ''}
+                          </Text>
                         </View>
                         <Text style={[styles.budgetLeft, maxed && { color: t.red }]}>
                           {maxed ? 'Maxed' : `${peso(c.limit - c.spent)} left`}
@@ -262,17 +292,17 @@ export default function GoalsScreen() {
               <View style={styles.handle} />
               <Text style={styles.sheetTitle}>{editingId ? 'Edit budget' : 'New budget'}</Text>
               <Text style={styles.sheetSub}>
-                Pick a category — Cents files scanned and spoken expenses into these automatically.
+                Pick a category, then name it and set a monthly limit. Cents files expenses into these automatically.
               </Text>
               <View style={styles.catGrid}>
                 {BUDGET_CATEGORIES.map((c) => {
                   const selected = pickedCat === c.name;
-                  const disabled = !selected && taken.has(c.name) && (!editingId || categories.find((x) => x.id === editingId)?.name !== c.name);
+                  const disabled = !selected && taken.has(c.name) && (!editingId || (categories.find((x) => x.id === editingId)?.category ?? categories.find((x) => x.id === editingId)?.name) !== c.name);
                   return (
                     <Pressable
                       key={c.name}
                       disabled={disabled}
-                      onPress={() => setPickedCat(c.name)}
+                      onPress={() => pickCategory(c.name)}
                       style={[styles.catChip, selected && styles.catChipSel, disabled && { opacity: 0.35 }]}
                     >
                       <Ionicons name={c.icon as any} size={14} color={selected ? t.onEmerald : t.emerald} />
@@ -281,7 +311,47 @@ export default function GoalsScreen() {
                   );
                 })}
               </View>
+              <TextInput
+                style={styles.input}
+                placeholder={pickedCat ? `Budget name (${pickedCat})` : 'Budget name'}
+                placeholderTextColor={t.textMuted}
+                value={bName}
+                onChangeText={setBName}
+                returnKeyType="done"
+              />
               <MoneyInput value={bLimit} onChangeText={setBLimit} placeholder="Monthly limit" />
+              <View style={styles.dueToggleRow}>
+                <Pressable
+                  style={[styles.dueToggle, bHasDue && styles.dueToggleOn]}
+                  onPress={() => { setBHasDue((v) => !v); setShowBPicker(false); }}
+                >
+                  <Ionicons name={bHasDue ? 'checkmark-circle' : 'ellipse-outline'} size={16} color={bHasDue ? t.onEmerald : t.textMuted} />
+                  <Text style={[styles.dueToggleText, bHasDue && { color: t.onEmerald }]}>Has a due date</Text>
+                </Pressable>
+                {bHasDue && (
+                  <Pressable style={styles.dueDateBtn} onPress={() => { Keyboard.dismiss(); setShowBPicker((v) => !v); }}>
+                    <Ionicons name="calendar" size={14} color={t.emerald} />
+                    <Text style={styles.dueDateText}>
+                      {bDate.toLocaleDateString('en-US', { day: 'numeric', month: 'short' })}
+                    </Text>
+                  </Pressable>
+                )}
+              </View>
+              {bHasDue && showBPicker && (
+                <View style={styles.pickerWrap}>
+                  <DateTimePicker
+                    value={bDate}
+                    mode="date"
+                    display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                    minimumDate={new Date()}
+                    themeVariant={t.mode}
+                    onChange={(_, d) => {
+                      if (Platform.OS !== 'ios') setShowBPicker(false);
+                      if (d) setBDate(d);
+                    }}
+                  />
+                </View>
+              )}
               <Pressable onPress={submitBudget}>
                 <LinearGradient colors={[t.emerald, t.teal]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.submit}>
                   <Text style={styles.submitText}>{editingId ? 'Save changes' : 'Create budget'}</Text>
@@ -298,6 +368,20 @@ export default function GoalsScreen() {
 const makeStyles = (t: Palette) => StyleSheet.create({
   safe: { flex: 1 },
   scroll: { padding: 24 },
+  dueToggleRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 12 },
+  dueToggle: {
+    flexDirection: 'row', alignItems: 'center', gap: 7,
+    borderRadius: 999, paddingHorizontal: 13, paddingVertical: 9,
+    backgroundColor: t.inputFill, borderWidth: 1, borderColor: t.borderSoft,
+  },
+  dueToggleOn: { backgroundColor: t.emerald, borderColor: t.emerald },
+  dueToggleText: { color: t.textMuted, fontSize: 13, fontWeight: '700' },
+  dueDateBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    borderRadius: 999, paddingHorizontal: 13, paddingVertical: 9,
+    backgroundColor: t.emeraldTint, borderWidth: 1, borderColor: t.emeraldBorder,
+  },
+  dueDateText: { color: t.emerald, fontSize: 13, fontWeight: '800' },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18 },
   title: { color: t.textPrimary, fontSize: 26, fontWeight: '800' },
   addBtn: {

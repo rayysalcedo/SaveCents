@@ -29,12 +29,15 @@ export interface FinanceState {
   setCountry: (code: string) => void;
   addAccount: (name: string, color?: string, initial?: string) => void;
   updateProfile: (name: string, email: string) => void;
+  updatePersona: (nickname: string, avatarId: string | null) => void;
   biometricsEnabled: boolean;
   setBiometricsEnabled: (v: boolean) => void;
+  notificationsEnabled: boolean;
+  setNotificationsEnabled: (v: boolean) => void;
   removeAccount: (id: string) => void;
   setAccountBalance: (id: string, balance: number) => void;
-  addBudget: (name: string, limit: number, icon?: string) => void;
-  updateBudget: (id: string, name: string, limit: number, icon: string) => void;
+  addBudget: (name: string, limit: number, icon?: string, category?: string, dueDate?: number) => void;
+  updateBudget: (id: string, name: string, limit: number, icon: string, category?: string, dueDate?: number) => void;
   removeBudget: (id: string) => void;
   removeGoal: (id: string) => void;
   login: (name: string, email: string) => void;
@@ -42,6 +45,9 @@ export interface FinanceState {
   replaceAll: (snap: CloudSnapshot) => void;
   resetToDefaults: () => void;
   addGoal: (name: string, target: number, date: string) => void;
+  // M5 quick actions from the Cents hub — direct logging, no chat round-trip.
+  addExpense: (amount: number, categoryName: string, accountId?: string, note?: string) => void;
+  addIncome: (amount: number, accountId: string, note?: string) => void;
   sendChat: (input: string) => Promise<void>;
   sendImage: (base64: string, mimeType: string, mode: 'receipt' | 'price', imageUri?: string) => Promise<void>;
   confirmAction: (messageId: string, confirm: boolean) => void;
@@ -63,6 +69,7 @@ export interface CloudSnapshot {
   country: string;
   currency: string;
   biometricsEnabled: boolean;
+  notificationsEnabled: boolean;
 }
 
 const makeDefaults = (): CloudSnapshot & { isThinking: boolean } => ({
@@ -93,10 +100,11 @@ const makeDefaults = (): CloudSnapshot & { isThinking: boolean } => ({
   isThinking: false,
   profile: { name: 'Rayy', email: 'rayysalcedo@gmail.com', isLoggedIn: false },
   selectedGoalId: null,
-  themeMode: 'dark' as const,
+  themeMode: 'light' as const, // M5: friendly light/sage is the new default
   country: 'PH',
   currency: '\u20B1',
   biometricsEnabled: true,
+  notificationsEnabled: true,
 });
 
 // Single source of truth for "what gets saved" — used by both the local
@@ -113,6 +121,7 @@ export const buildSnapshot = (s: FinanceState): CloudSnapshot => ({
   country: s.country,
   currency: s.currency,
   biometricsEnabled: s.biometricsEnabled,
+  notificationsEnabled: s.notificationsEnabled ?? true,
 });
 
 export const useFinance = create<FinanceState>()(
@@ -138,19 +147,22 @@ export const useFinance = create<FinanceState>()(
     set({ accounts: [...s.accounts, { id: uid(), name, balance: 0, color, initial }] });
   },
   updateProfile: (name, email) => set((s) => ({ profile: { ...s.profile, name, email } })),
+  updatePersona: (nickname, avatarId) =>
+    set((s) => ({ profile: { ...s.profile, nickname: nickname.trim() || undefined, avatarId: avatarId ?? undefined } })),
   setBiometricsEnabled: (v) => set({ biometricsEnabled: v }),
+  setNotificationsEnabled: (v) => set({ notificationsEnabled: v }),
   removeAccount: (id) => set((s) => ({ accounts: s.accounts.filter((a) => a.id !== id) })),
   setAccountBalance: (id, balance) =>
     set((s) => ({ accounts: s.accounts.map((a) => (a.id === id ? { ...a, balance } : a)) })),
 
-  addBudget: (name, limit, icon = 'pricetag') => {
+  addBudget: (name, limit, icon = 'pricetag', category, dueDate) => {
     const s = get();
     if (s.categories.some((c) => c.name.toLowerCase() === name.toLowerCase())) return;
-    set({ categories: [...s.categories, { id: uid(), name, limit, spent: 0, icon }] });
+    set({ categories: [...s.categories, { id: uid(), name, limit, spent: 0, icon, category, dueDate }] });
   },
-  updateBudget: (id, name, limit, icon) =>
+  updateBudget: (id, name, limit, icon, category, dueDate) =>
     set((s) => ({
-      categories: s.categories.map((c) => (c.id === id ? { ...c, name, limit, icon } : c)),
+      categories: s.categories.map((c) => (c.id === id ? { ...c, name, limit, icon, category, dueDate } : c)),
     })),
   removeBudget: (id) => set((s) => ({ categories: s.categories.filter((c) => c.id !== id) })),
   removeGoal: (id) =>
@@ -176,6 +188,47 @@ export const useFinance = create<FinanceState>()(
 
   addGoal: (name, target, date) =>
     set((s) => ({ goals: [...s.goals, { id: uid(), name, target, current: 0, date }] })),
+
+  // M5 hub quick actions. Expense bumps the matching budget's spent and can
+  // debit a source; income credits the chosen card/e-wallet. Both mirror into
+  // chat so Cents stays the single timeline of what happened.
+  addExpense: (amount, categoryName, accountId, note) => {
+    set((s) => {
+      const exists = s.categories.some((c) => c.name.toLowerCase() === categoryName.toLowerCase());
+      const categories = exists
+        ? s.categories.map((c) =>
+            c.name.toLowerCase() === categoryName.toLowerCase() ? { ...c, spent: c.spent + amount } : c,
+          )
+        : [
+            ...s.categories,
+            { id: uid(), name: categoryName, icon: 'pricetag', spent: amount, limit: Math.ceil((amount * 1.5) / 100) * 100 },
+          ];
+      return {
+        categories,
+        accounts: accountId
+          ? s.accounts.map((a) => (a.id === accountId ? { ...a, balance: Math.max(a.balance - amount, 0) } : a))
+          : s.accounts,
+        transactions: [
+          { id: uid(), amount, description: note?.trim() || categoryName, categoryId: categoryName, timestamp: Date.now(), isIncome: false, accountId },
+          ...s.transactions,
+        ],
+      };
+    });
+    const acct = accountId ? get().accounts.find((a) => a.id === accountId) : undefined;
+    pushCents(set, `Logged ${peso(amount)} under ${categoryName}${acct ? ` from ${acct.name}` : ''}.`);
+  },
+
+  addIncome: (amount, accountId, note) => {
+    set((s) => ({
+      accounts: s.accounts.map((a) => (a.id === accountId ? { ...a, balance: a.balance + amount } : a)),
+      transactions: [
+        { id: uid(), amount, description: note?.trim() || 'Income', categoryId: 'Income', timestamp: Date.now(), isIncome: true, accountId },
+        ...s.transactions,
+      ],
+    }));
+    const acct = get().accounts.find((a) => a.id === accountId);
+    pushCents(set, `Added ${peso(amount)} to ${acct?.name ?? 'your account'}.`);
+  },
 
   // M2: real Gemini intent parsing via Firebase AI Logic, with the local
   // heuristic as an offline/unconfigured fallback.
@@ -221,7 +274,7 @@ export const useFinance = create<FinanceState>()(
         executeAction({ kind: 'LogTransaction', amount: msg.amount, categoryName: 'Pets' }, set);
         pushCents(set, `Logged ${peso(msg.amount)} under Pets.`);
       } else if (msg.type === 'consultItem') {
-        pushCents(set, `Okay — logged the ${msg.item} for ${peso(msg.amount)}. I'll adjust your ${msg.goalName} trajectory.`);
+        pushCents(set, `Okay, logged the ${msg.item} for ${peso(msg.amount)}. I'll adjust your ${msg.goalName} trajectory.`);
       } else if (msg.type === 'mismatch') {
         executeAction({ kind: 'CreateAndLog', item: msg.item, amount: msg.amount }, set);
       }
@@ -280,9 +333,15 @@ export const useFinance = create<FinanceState>()(
     {
       name: 'savecents-store',
       storage: createJSONStorage(() => AsyncStorage),
-      version: 1,
+      version: 2,
       partialize: (s) => buildSnapshot(s),
-      migrate: (persisted, _version) => persisted as FinanceState, // no-op at v1
+      // v2 = the M5 redesign ships light-first: existing installs are switched
+      // to the light theme ONCE (users can still pick dark in Profile after).
+      migrate: (persisted, version) => {
+        const p = persisted as FinanceState;
+        if (version < 2) return { ...p, themeMode: 'light' as const };
+        return p;
+      },
       onRehydrateStorage: () => (state) => {
         if (state) {
           setCurrencySymbol(state.currency); // resync module-level symbol
@@ -316,8 +375,8 @@ function buildReplyFromResult(result: CentsResult, st2: FinanceState): ChatMessa
           reply = {
             id: uid(), sender: 'CENTS', type: 'confirmation',
             prompt: fil
-              ? `Walang budget na bagay sa "${item}" (${peso(amount)}) — i-log sa Others?`
-              : `"${item}" (${peso(amount)}) doesn't fit your current budgets — log it under Others?`,
+              ? `Walang budget na bagay sa "${item}" (${peso(amount)}). I-log sa Others?`
+              : `"${item}" (${peso(amount)}) doesn't fit your current budgets. Log it under Others?`,
             action: { kind: 'LogToOthers', item, amount },
             confirmed: false, handled: false, lang,
           };
@@ -356,7 +415,7 @@ function buildReplyFromResult(result: CentsResult, st2: FinanceState): ChatMessa
         } else {
           reply = {
             id: uid(), sender: 'CENTS', type: 'text',
-            text: `You have no budgets yet — add one in Plan and I can weigh this ${peso(amount)} purchase for you.`,
+            text: `You have no budgets yet. Add one in Goals and I can weigh this ${peso(amount)} purchase for you.`,
           };
         }
         break;
@@ -391,7 +450,7 @@ function buildReplyFromResult(result: CentsResult, st2: FinanceState): ChatMessa
       default:
         reply = {
           id: uid(), sender: 'CENTS', type: 'text',
-          text: result.reply || "I'm not sure what you meant — try 'spent 250 on gas'.",
+          text: result.reply || "I'm not sure what you meant. Try 'spent 250 on gas'.",
         };
     }
     return reply;
@@ -429,7 +488,7 @@ function executeAction(action: ActionType, set: Setter) {
           ...s.transactions,
         ],
       }));
-      pushCents(set, `Done — ${peso(action.amount)} logged to ${action.categoryName}. Keep an eye on that goal!`);
+      pushCents(set, `Done. ${peso(action.amount)} logged to ${action.categoryName}. Keep an eye on that goal!`);
       break;
     case 'AddCategory':
       set((s) => ({

@@ -4,14 +4,15 @@ import {
 import {
   Animated, Easing, FlatList, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import { Palette, radius, useTheme } from '../../src/theme/colors';
+import { Palette, radius, useTheme } from '../../theme/colors';
 import * as ImagePicker from 'expo-image-picker';
-import { useFinance } from '../../src/store/finance';
-import { ChatMessage, peso } from '../../src/models/types';
+import { useFinance } from '../../store/finance';
+import { useUI } from '../../store/ui';
+import { ChatMessage, peso } from '../../models/types';
 
 const QUICK_PROMPTS = [
   'Can I afford a 1500 game?',
@@ -20,9 +21,16 @@ const QUICK_PROMPTS = [
   'Add a Groceries budget for 3000',
 ];
 
-export default function ChatScreen() {
+// M5: Cents chat is now an in-context OVERLAY, not a tab. The screen behind
+// stays visible through a darkened blur; the panel slides up over it. It is
+// deliberately NOT an RN Modal so the camera sheet + ImagePicker keep their
+// existing (fragile, documented) iOS presentation behavior.
+export function CentsChatModal() {
   const t = useTheme();
   const styles = useMemo(() => makeStyles(t), [t]);
+  const insets = useSafeAreaInsets();
+  const { chatOpen, closeChat, openVoice, consumeCameraFlag } = useUI();
+  const slide = useRef(new Animated.Value(0)).current;
   const [kbVisible, setKbVisible] = useState(false);
   useEffect(() => {
     const s1 = Keyboard.addListener('keyboardWillShow', () => setKbVisible(true));
@@ -35,6 +43,23 @@ export default function ChatScreen() {
   const [input, setInput] = useState('');
   const [cameraSheet, setCameraSheet] = useState(false);
   const listRef = useRef<FlatList>(null);
+
+  // Entrance + "Scan" quick-action handoff from the hub
+  useEffect(() => {
+    if (chatOpen) {
+      Animated.timing(slide, { toValue: 1, duration: 300, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
+      if (consumeCameraFlag()) setTimeout(() => setCameraSheet(true), 380);
+    } else {
+      slide.setValue(0);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatOpen]);
+
+  const dismiss = () => {
+    Keyboard.dismiss();
+    Animated.timing(slide, { toValue: 0, duration: 220, easing: Easing.in(Easing.cubic), useNativeDriver: true })
+      .start(() => closeChat());
+  };
 
   useEffect(() => {
     const t = setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 80);
@@ -295,8 +320,30 @@ export default function ChatScreen() {
     }
   };
 
+  if (!chatOpen) return null;
+
   return (
-    <SafeAreaView style={styles.safe} edges={['top']}>
+    <View style={StyleSheet.absoluteFill}>
+      {/* Darkened blurred backdrop — user stays in context; tap above the panel to close */}
+      <Animated.View style={[StyleSheet.absoluteFill, { opacity: slide }]}>
+        <Pressable style={StyleSheet.absoluteFill} onPress={dismiss}>
+          <BlurView intensity={30} tint={t.mode === 'dark' ? 'dark' : 'default'} style={StyleSheet.absoluteFill} />
+          <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(3,13,8,0.45)' }]} />
+        </Pressable>
+      </Animated.View>
+
+      <Animated.View
+        style={[
+          styles.panel,
+          {
+            top: insets.top + 46,
+            opacity: slide,
+            transform: [{ translateY: slide.interpolate({ inputRange: [0, 1], outputRange: [80, 0] }) }],
+          },
+        ]}
+      >
+        <BlurView intensity={50} tint={t.blurTint} style={StyleSheet.absoluteFill} />
+        <View style={[StyleSheet.absoluteFill, { backgroundColor: t.mode === 'dark' ? 'rgba(6,16,11,0.88)' : 'rgba(248,252,250,0.92)' }]} />
       <KeyboardAvoidingView
         style={{ flex: 1 }}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
@@ -317,8 +364,11 @@ export default function ChatScreen() {
           </View>
           <View style={styles.headerBadge}>
             <Ionicons name="shield-checkmark" size={12} color={t.emerald} />
-            <Text style={styles.headerBadgeText}>Guarding 1 goal</Text>
+            <Text style={styles.headerBadgeText}>On guard</Text>
           </View>
+          <Pressable style={styles.closeBtn} onPress={dismiss}>
+            <Ionicons name="close" size={19} color={t.textMuted} />
+          </Pressable>
         </View>
 
         <FlatList
@@ -357,7 +407,7 @@ export default function ChatScreen() {
         </ScrollView>
 
         {/* Composer */}
-        <View style={[styles.composerWrap, { paddingBottom: kbVisible ? 10 : 120 }]}>
+        <View style={[styles.composerWrap, { paddingBottom: kbVisible ? 10 : insets.bottom + 14 }]}>
           <BlurView intensity={30} tint={t.blurTint} style={styles.composer}>
             <Pressable style={styles.iconBtn} onPress={() => setCameraSheet(true)}>
               <Ionicons name="camera" size={20} color={t.emerald} />
@@ -371,7 +421,7 @@ export default function ChatScreen() {
               onSubmitEditing={send}
               returnKeyType="send"
             />
-            <Pressable style={styles.iconBtn} onPress={() => sendChat('🎤 (voice input arrives in M4)')}>
+            <Pressable style={styles.iconBtn} onPress={openVoice}>
               <Ionicons name="mic" size={20} color={t.emerald} />
             </Pressable>
             <Pressable onPress={send} style={({ pressed }) => pressed && { transform: [{ scale: 0.88 }] }}>
@@ -393,7 +443,7 @@ export default function ChatScreen() {
                 onPress={() => queueFromSheet(() => captureAndSend('receipt'))}
               />
               <SheetItem
-                icon="bag-handle" title="Consult item" sub="Snap a price tag — can you afford it?"
+                icon="bag-handle" title="Consult item" sub="Snap a price tag. Can you afford it?"
                 onPress={() => queueFromSheet(() => captureAndSend('price'))}
               />
               <SheetItem
@@ -404,7 +454,8 @@ export default function ChatScreen() {
           </Pressable>
         </Modal>
       </KeyboardAvoidingView>
-    </SafeAreaView>
+      </Animated.View>
+    </View>
   );
 }
 
@@ -420,7 +471,18 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     alignItems: 'center', justifyContent: 'center',
     backgroundColor: t.emeraldTint, borderWidth: 1, borderColor: t.emeraldBorder,
   },
-  safe: { flex: 1 },
+  panel: {
+    position: 'absolute', left: 0, right: 0, bottom: 0,
+    borderTopLeftRadius: 30, borderTopRightRadius: 30, overflow: 'hidden',
+    borderWidth: 1.2, borderColor: t.mode === 'dark' ? 'rgba(255,255,255,0.16)' : 'rgba(255,255,255,0.95)',
+    borderBottomWidth: 0,
+    shadowColor: '#02170D', shadowOpacity: 0.4, shadowRadius: 30, shadowOffset: { width: 0, height: -8 },
+    elevation: 24,
+  },
+  closeBtn: {
+    width: 36, height: 36, borderRadius: 13, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: t.inputFill, borderWidth: 1, borderColor: t.borderSoft,
+  },
   header: {
     flexDirection: 'row', alignItems: 'center', gap: 12,
     paddingHorizontal: 24, paddingVertical: 14,

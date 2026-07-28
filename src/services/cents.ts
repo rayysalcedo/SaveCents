@@ -221,7 +221,7 @@ export function localParseIntent(message: string, ctx: CentsContext): CentsResul
   return {
     intent: 'Unknown', amount: 0, categoryName: '', item: '', lang: 'en',
     reply: isFirebaseConfigured()
-      ? "I didn't catch that — try 'spent 250 on gas' or 'can I afford a 1500 game?'."
-      : "I'm running on my offline parser. Try 'spent 250 on gas' — and connect Firebase (see src/services/firebaseConfig.ts) to unlock my full brain.",
+      ? "I didn't catch that. Try 'spent 250 on gas' or 'can I afford a 1500 game?'."
+      : "I'm running on my offline parser. Try 'spent 250 on gas'. Connect Firebase (see src/services/firebaseConfig.ts) to unlock my full brain.",
   };
 }

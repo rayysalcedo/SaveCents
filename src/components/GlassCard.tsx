@@ -41,6 +41,6 @@ const styles = StyleSheet.create({
     shadowColor: '#022C22', shadowOpacity: 0.06, shadowRadius: 16, shadowOffset: { width: 0, height: 6 },
     elevation: 3,
   },
-  blur: { borderRadius: radius.card, overflow: 'hidden' },
-  inner: { borderRadius: radius.card, borderWidth: 1 },
+  blur: { borderRadius: radius.card, overflow: 'hidden', flexGrow: 1 },
+  inner: { borderRadius: radius.card, borderWidth: 1, flexGrow: 1 },
 });

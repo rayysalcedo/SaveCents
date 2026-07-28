@@ -10,10 +10,12 @@ export interface Account {
 
 export interface Category {
   id: string;
-  name: string;
+  name: string;      // display name of the budget (defaults to the category)
   limit: number;
   spent: number;
   icon: string;
+  category?: string; // base category used for icons and AI filing
+  dueDate?: number;  // optional bill due date (ms since epoch)
 }
 
 export interface Goal {
@@ -31,6 +33,7 @@ export interface Transaction {
   categoryId: string;
   timestamp: number;
   isIncome: boolean;
+  accountId?: string; // M5: which card/e-wallet this routed through
 }
 
 export type Sender = 'USER' | 'CENTS';
@@ -62,6 +65,8 @@ export interface UserProfile {
   name: string;
   email: string;
   isLoggedIn: boolean;
+  nickname?: string; // display name chosen in Profile; falls back to name
+  avatarId?: string; // chosen animal avatar (see src/components/Avatar.tsx)
 }
 
 export const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);

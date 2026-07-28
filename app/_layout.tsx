@@ -42,7 +42,15 @@ export default function RootLayout() {
           contentStyle: { backgroundColor: 'transparent' },
           animation: 'fade',
         }}
-      />
+      >
+        <Stack.Screen name="index" />
+        <Stack.Screen name="auth" />
+        <Stack.Screen name="(tabs)" />
+        <Stack.Screen
+          name="profile"
+          options={{ animation: 'slide_from_right', gestureEnabled: true, gestureDirection: 'horizontal', animationDuration: 260 }}
+        />
+      </Stack>
     </View>
   );
 }

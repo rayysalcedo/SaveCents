@@ -181,7 +181,7 @@ export default function AuthScreen() {
 
   // Real Google Sign-In needs the M4 development build.
   const googleLogin = () =>
-    Alert.alert('Coming soon', 'Google Sign-In arrives in the next build — use email for now.');
+    Alert.alert('Coming soon', 'Google Sign-In arrives in the next build. Use email for now.');
 
   return (
     <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
