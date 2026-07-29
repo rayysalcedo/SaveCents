@@ -25,7 +25,7 @@ export function CentsHub() {
   const t = useTheme();
   const styles = useMemo(() => makeStyles(t), [t]);
   const insets = useSafeAreaInsets();
-  const { hubOpen, closeHub, openChat } = useUI();
+  const { hubOpen, closeHub, openChat, openScan } = useUI();
   const { accounts, categories, country, addExpense, addIncome } = useFinance();
 
   const [mode, setMode] = useState<Mode>('menu');
@@ -166,8 +166,8 @@ export function CentsHub() {
               <LinearGradient
                 colors={
                   t.mode === 'dark'
-                    ? ['rgba(255,255,255,0.14)', 'rgba(255,255,255,0.03)']
-                    : ['rgba(255,255,255,0.96)', 'rgba(255,255,255,0.72)']
+                    ? ['rgba(16,30,22,0.90)', 'rgba(7,16,11,0.95)']
+                    : ['rgba(255,255,255,0.95)', 'rgba(255,255,255,0.85)']
                 }
                 style={StyleSheet.absoluteFill}
               />
@@ -193,17 +193,12 @@ export function CentsHub() {
                     <View style={styles.tileRow}>
                       <QuickTile styles={styles} t={t} icon="remove-circle" tint={t.red} label="Add Expense" onPress={() => backTo('expense')} />
                       <QuickTile styles={styles} t={t} icon="add-circle" tint={t.emerald} label="Add Income" onPress={() => backTo('income')} />
-                      <QuickTile styles={styles} t={t} icon="scan" tint={t.teal} label="Scan" onPress={() => openChat({ camera: true })} />
+                      <QuickTile styles={styles} t={t} icon="scan" tint={t.teal} label="Scan" onPress={() => openScan()} />
                     </View>
 
                     {/* Chat + voice entries */}
                     <Pressable onPress={() => openChat()} style={({ pressed }) => pressed && { transform: [{ scale: 0.985 }] }}>
                       <LinearGradient colors={[t.emerald, t.teal]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.chatBtn}>
-                        <LinearGradient
-                          colors={['rgba(255,255,255,0.35)', 'rgba(255,255,255,0)']}
-                          start={{ x: 0.5, y: 0 }} end={{ x: 0.5, y: 0.9 }}
-                          style={StyleSheet.absoluteFill}
-                        />
                         <View style={styles.chatBtnIcon}>
                           <Ionicons name="chatbubbles" size={19} color={t.onEmerald} />
                         </View>
@@ -324,7 +319,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   },
   sheetClip: {
     borderTopLeftRadius: 32, borderTopRightRadius: 32, overflow: 'hidden',
-    borderWidth: 1.2, borderColor: t.mode === 'dark' ? 'rgba(255,255,255,0.2)' : 'rgba(255,255,255,0.95)',
+    borderWidth: 1, borderColor: t.mode === 'dark' ? 'rgba(255,255,255,0.14)' : 'rgba(255,255,255,0.95)',
     borderBottomWidth: 0,
   },
   sheetInner: { padding: 22, paddingTop: 12 },
@@ -342,13 +337,14 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   headSub: { color: t.textMuted, fontSize: 12.5, marginTop: 2 },
   closeBtn: {
     width: 34, height: 34, borderRadius: 12, alignItems: 'center', justifyContent: 'center',
-    backgroundColor: t.inputFill, borderWidth: 1, borderColor: t.borderSoft,
+    backgroundColor: t.mode === 'dark' ? 'rgba(255,255,255,0.07)' : t.inputFill,
+    borderWidth: 1, borderColor: t.mode === 'dark' ? 'rgba(255,255,255,0.12)' : t.borderSoft,
   },
   tileRow: { flexDirection: 'row', gap: 10, marginBottom: 16 },
   tile: {
     flex: 1, alignItems: 'center', gap: 8, paddingVertical: 16, borderRadius: 20,
-    backgroundColor: t.mode === 'dark' ? 'rgba(255,255,255,0.05)' : 'rgba(255,255,255,0.75)',
-    borderWidth: 1, borderColor: t.border,
+    backgroundColor: t.mode === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.85)',
+    borderWidth: 1, borderColor: t.mode === 'dark' ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.95)',
   },
   tileIcon: { width: 46, height: 46, borderRadius: 16, alignItems: 'center', justifyContent: 'center', borderWidth: 1 },
   tileLabel: { color: t.textPrimary, fontSize: 12, fontWeight: '700' },
@@ -362,7 +358,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.2)',
   },
   chatBtnTitle: { color: t.onEmerald, fontSize: 15.5, fontWeight: '800' },
-  chatBtnSub: { color: t.mode === 'dark' ? 'rgba(4,20,13,0.75)' : 'rgba(255,255,255,0.85)', fontSize: 11.5, marginTop: 1 },
+  chatBtnSub: { color: 'rgba(255,255,255,0.88)', fontSize: 11.5, marginTop: 1 },
   micBtn: {
     width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center',
     backgroundColor: '#FFFFFF',

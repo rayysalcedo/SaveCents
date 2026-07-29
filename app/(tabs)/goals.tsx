@@ -110,11 +110,31 @@ export default function GoalsScreen() {
 
   const taken = new Set(categories.map((c) => c.category ?? c.name));
 
+  // Budgets grouped under their base category, in first-seen order, so a
+  // "Netflix" budget files visually under SUBSCRIPTIONS (and "Meralco" under
+  // UTILITIES) instead of reading like its own top-level category.
+  const budgetGroups = useMemo(() => {
+    const order: string[] = [];
+    const map = new Map<string, typeof categories>();
+    for (const c of categories) {
+      const parent = c.category ?? c.name;
+      if (!map.has(parent)) {
+        map.set(parent, []);
+        order.push(parent);
+      }
+      map.get(parent)!.push(c);
+    }
+    return order.map((parent) => ({ parent, items: map.get(parent)! }));
+  }, [categories]);
+
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
       <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag">
         <View style={styles.header}>
-          <Text style={styles.title}>Plan</Text>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.title}>Goals and Budgets</Text>
+            <Text style={styles.subtitle}>Set your financial targets</Text>
+          </View>
           <Pressable onPress={() => (tab === 0 ? setGoalSheet(true) : openNewBudget())}>
             <LinearGradient colors={[t.emerald, t.teal]} style={styles.addBtn}>
               <Ionicons name="add" size={20} color={t.onEmerald} />
@@ -198,39 +218,58 @@ export default function GoalsScreen() {
                   <Text style={styles.emptySub}>Pick a category and give every peso a job.</Text>
                 </GlassCard>
               )}
-              {categories.map((c) => {
-                const pct = Math.min(c.spent / c.limit, 1);
-                const maxed = pct >= 1;
+              {budgetGroups.map(({ parent, items }) => {
+                // Header only when the group is a real family: multiple
+                // budgets, or one whose name differs from its base category
+                // (e.g. "Netflix" under SUBSCRIPTIONS). A plain "Gaming"
+                // budget stays a single clean card, exactly as before.
+                const showHeader = items.length > 1 || items[0].name !== parent;
+                const groupSpent = items.reduce((a, c) => a + c.spent, 0);
+                const groupLimit = items.reduce((a, c) => a + c.limit, 0);
                 return (
-                  <Pressable key={c.id} onPress={() => openEditBudget(c.id)}>
-                    <GlassCard pad={16}>
-                      <View style={styles.budgetRow}>
-                        <View style={[styles.budgetIcon, maxed && { backgroundColor: t.redTint, borderColor: 'rgba(255,77,77,0.35)' }]}>
-                          <Ionicons name={(c.icon as any) || 'pricetag'} size={18} color={maxed ? t.red : t.emerald} />
-                        </View>
-                        <View style={{ flex: 1 }}>
-                          <Text style={styles.budgetName}>{c.name}</Text>
-                          <Text style={styles.budgetSub}>
-                            {peso(c.spent)} of {peso(c.limit)} monthly
-                            {c.dueDate ? ` · due ${new Date(c.dueDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}` : ''}
-                          </Text>
-                        </View>
-                        <Text style={[styles.budgetLeft, maxed && { color: t.red }]}>
-                          {maxed ? 'Maxed' : `${peso(c.limit - c.spent)} left`}
-                        </Text>
-                        <Pressable style={styles.trash} onPress={() => removeBudget(c.id)}>
-                          <Ionicons name="trash-outline" size={15} color={t.red} />
+                  <View key={parent} style={{ gap: 10 }}>
+                    {showHeader && (
+                      <View style={styles.groupHead}>
+                        <Text style={styles.groupName}>{parent.toUpperCase()}</Text>
+                        <Text style={styles.groupTotals}>{peso(groupSpent)} of {peso(groupLimit)}</Text>
+                      </View>
+                    )}
+                    {items.map((c) => {
+                      const pct = Math.min(c.spent / c.limit, 1);
+                      const maxed = pct >= 1;
+                      return (
+                        <Pressable key={c.id} onPress={() => openEditBudget(c.id)}>
+                          <GlassCard pad={16}>
+                            <View style={styles.budgetRow}>
+                              <View style={[styles.budgetIcon, maxed && { backgroundColor: t.redTint, borderColor: 'rgba(255,77,77,0.35)' }]}>
+                                <Ionicons name={(c.icon as any) || 'pricetag'} size={18} color={maxed ? t.red : t.emerald} />
+                              </View>
+                              <View style={{ flex: 1 }}>
+                                <Text style={styles.budgetName}>{c.name}</Text>
+                                <Text style={styles.budgetSub}>
+                                  {peso(c.spent)} of {peso(c.limit)} monthly
+                                  {c.dueDate ? ` · due ${new Date(c.dueDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}` : ''}
+                                </Text>
+                              </View>
+                              <Text style={[styles.budgetLeft, maxed && { color: t.red }]}>
+                                {maxed ? 'Maxed' : `${peso(c.limit - c.spent)} left`}
+                              </Text>
+                              <Pressable style={styles.trash} onPress={() => removeBudget(c.id)}>
+                                <Ionicons name="trash-outline" size={15} color={t.red} />
+                              </Pressable>
+                            </View>
+                            <View style={styles.track}>
+                              <LinearGradient
+                                colors={maxed ? [t.red, '#FF8A8A'] : [t.forest, t.emerald]}
+                                start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
+                                style={[styles.fill, { width: `${Math.max(pct * 100, 2)}%` }]}
+                              />
+                            </View>
+                          </GlassCard>
                         </Pressable>
-                      </View>
-                      <View style={styles.track}>
-                        <LinearGradient
-                          colors={maxed ? [t.red, '#FF8A8A'] : [t.forest, t.emerald]}
-                          start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
-                          style={[styles.fill, { width: `${Math.max(pct * 100, 2)}%` }]}
-                        />
-                      </View>
-                    </GlassCard>
-                  </Pressable>
+                      );
+                    })}
+                  </View>
                 );
               })}
             </View>
@@ -384,6 +423,13 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   dueDateText: { color: t.emerald, fontSize: 13, fontWeight: '800' },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18 },
   title: { color: t.textPrimary, fontSize: 26, fontWeight: '800' },
+  subtitle: { color: t.textMuted, fontSize: 13, marginTop: 3 },
+  groupHead: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 4, marginTop: 6, marginBottom: -2,
+  },
+  groupName: { color: t.textFaint, fontSize: 11, fontWeight: '800', letterSpacing: 1.2 },
+  groupTotals: { color: t.textMuted, fontSize: 11, fontWeight: '700' },
   addBtn: {
     width: 42, height: 42, borderRadius: 14, alignItems: 'center', justifyContent: 'center',
     shadowColor: t.emerald, shadowOpacity: 0.5, shadowRadius: 14, shadowOffset: { width: 0, height: 4 },

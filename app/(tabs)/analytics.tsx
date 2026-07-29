@@ -29,7 +29,7 @@ const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', '
 export default function AnalyticsScreen() {
   const t = useTheme();
   const styles = useMemo(() => makeStyles(t), [t]);
-  const { transactions, categories, currency } = useFinance();
+  const { transactions, categories, currency, profile } = useFinance();
 
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<Filter>('all');
@@ -57,20 +57,48 @@ export default function AnalyticsScreen() {
     return { income, spent, net: income - spent };
   }, [filtered]);
 
-  // Net savings per month over the last 5 months, from real transactions.
-  const monthlySeries = useMemo(() => {
-    const nowD = new Date();
+  // Net savings series, selectable D/W/M/Y like the dashboard's Savings
+  // insight — but computed from REAL transactions (this screen's rule).
+  const [netPeriod, setNetPeriod] = useState<'D' | 'W' | 'M' | 'Y'>('M');
+  const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const netSeries = useMemo(() => {
+    const now = new Date();
+    const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+    const netBetween = (from: number, to: number) =>
+      transactions
+        .filter((x) => x.timestamp >= from && x.timestamp < to)
+        .reduce((a, x) => a + (x.isIncome ? x.amount : -x.amount), 0);
     const out: { label: string; value: number }[] = [];
-    for (let i = 4; i >= 0; i--) {
-      const d = new Date(nowD.getFullYear(), nowD.getMonth() - i, 1);
-      const next = new Date(nowD.getFullYear(), nowD.getMonth() - i + 1, 1);
-      const inMonth = transactions.filter((x) => x.timestamp >= d.getTime() && x.timestamp < next.getTime());
-      const net = inMonth.reduce((a, x) => a + (x.isIncome ? x.amount : -x.amount), 0);
-      out.push({ label: MONTHS[d.getMonth()], value: Math.max(net, 0) });
+    if (netPeriod === 'D') {
+      // Last 7 days, oldest → newest.
+      for (let i = 6; i >= 0; i--) {
+        const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
+        out.push({ label: DAY_NAMES[d.getDay()], value: Math.max(netBetween(startOfDay(d), startOfDay(d) + 86_400_000), 0) });
+      }
+    } else if (netPeriod === 'W') {
+      // Last 5 seven-day windows ending today.
+      const todayEnd = startOfDay(now) + 86_400_000;
+      for (let i = 4; i >= 0; i--) {
+        const to = todayEnd - i * 7 * 86_400_000;
+        out.push({ label: `W${5 - i}`, value: Math.max(netBetween(to - 7 * 86_400_000, to), 0) });
+      }
+    } else if (netPeriod === 'M') {
+      for (let i = 4; i >= 0; i--) {
+        const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+        const next = new Date(now.getFullYear(), now.getMonth() - i + 1, 1);
+        out.push({ label: MONTHS[d.getMonth()], value: Math.max(netBetween(d.getTime(), next.getTime()), 0) });
+      }
+    } else {
+      for (let i = 4; i >= 0; i--) {
+        const y = now.getFullYear() - i;
+        out.push({ label: String(y), value: Math.max(netBetween(new Date(y, 0, 1).getTime(), new Date(y + 1, 0, 1).getTime()), 0) });
+      }
     }
     return out;
-  }, [transactions]);
-  const hasMonthlyData = monthlySeries.some((m) => m.value > 0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [transactions, netPeriod]);
+  const netSub = { D: 'Last 7 days', W: 'Last 5 weeks', M: 'Last 5 months', Y: 'Last 5 years' }[netPeriod];
+  const hasNetData = netSeries.some((m) => m.value > 0);
 
   // Group visible transactions by day for the list.
   const grouped = useMemo(() => {
@@ -85,9 +113,26 @@ export default function AnalyticsScreen() {
   }, [filtered]);
 
   // ---- Export ----
+  // Files are named SAVECENTS-{REPORT|INCOME|EXPENSES}-DD-MM-YYYY.{ext}
+  // (mirrors the active filter; no more random cache-timestamp names).
+  const exportFileName = (ext: 'csv' | 'pdf') => {
+    const d = new Date();
+    const p = (n: number) => String(n).padStart(2, '0');
+    const scope = filter === 'income' ? 'INCOME' : filter === 'expense' ? 'EXPENSES' : 'REPORT';
+    return `SAVECENTS-${scope}-${p(d.getDate())}-${p(d.getMonth() + 1)}-${d.getFullYear()}.${ext}`;
+  };
+  const preparedFor = profile.name || profile.nickname || 'SaveCents user';
+
   const exportCSV = async () => {
     try {
       setExporting('csv');
+      const meta = [
+        'SaveCents Report',
+        `Prepared for,${csvCell(preparedFor)}`,
+        `Generated,${new Date().toLocaleString()}`,
+        `Scope,${filter === 'all' ? 'All transactions' : filter === 'income' ? 'Income only' : 'Expenses only'}${query ? ` (search: ${csvCell(query)})` : ''}`,
+        '',
+      ];
       const header = 'Date,Description,Category,Type,Amount';
       const rows = filtered.map((tx) =>
         [
@@ -98,8 +143,8 @@ export default function AnalyticsScreen() {
           tx.amount.toFixed(2),
         ].join(','),
       );
-      const csv = [header, ...rows].join('\n');
-      const uri = `${FileSystem.cacheDirectory}savecents-transactions-${Date.now()}.csv`;
+      const csv = [...meta, header, ...rows].join('\n');
+      const uri = `${FileSystem.cacheDirectory}${exportFileName('csv')}`;
       await FileSystem.writeAsStringAsync(uri, csv, { encoding: FileSystem.EncodingType.UTF8 });
       if (await Sharing.isAvailableAsync()) {
         await Sharing.shareAsync(uri, { mimeType: 'text/csv', dialogTitle: 'Export transactions (CSV)' });
@@ -116,11 +161,18 @@ export default function AnalyticsScreen() {
   const exportPDF = async () => {
     try {
       setExporting('pdf');
-      const { uri } = await Print.printToFileAsync({ html: buildPdfHtml(filtered, totals, currency) });
+      const { uri } = await Print.printToFileAsync({
+        html: buildPdfHtml(filtered, totals, currency, preparedFor, filter, query),
+      });
+      // expo-print writes to a random UUID path — move it to a proper name
+      // so the shared/saved file reads SAVECENTS-…-DD-MM-YYYY.pdf.
+      const dest = `${FileSystem.cacheDirectory}${exportFileName('pdf')}`;
+      await FileSystem.deleteAsync(dest, { idempotent: true });
+      await FileSystem.moveAsync({ from: uri, to: dest });
       if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(uri, { mimeType: 'application/pdf', UTI: 'com.adobe.pdf', dialogTitle: 'Export transactions (PDF)' });
+        await Sharing.shareAsync(dest, { mimeType: 'application/pdf', UTI: 'com.adobe.pdf', dialogTitle: 'Export transactions (PDF)' });
       } else {
-        Alert.alert('Saved', `PDF written to:\n${uri}`);
+        Alert.alert('Saved', `PDF written to:\n${dest}`);
       }
     } catch (e) {
       Alert.alert('Export failed', (e as Error)?.message ?? 'Could not create the PDF.');
@@ -155,10 +207,24 @@ export default function AnalyticsScreen() {
         </View>
 
         {/* Charts */}
-        {hasMonthlyData && (
+        {hasNetData && (
           <GlassCard style={{ marginBottom: 14 }}>
-            <CardHeader styles={styles} t={t} icon="stats-chart" title="Net saved by month" sub="Computed from your real transactions" />
-            <MoMBars data={monthlySeries} height={100} />
+            <View style={styles.insightHead}>
+              <CardHeader styles={styles} t={t} icon="stats-chart" title="Net saved" sub={netSub} />
+              <View style={styles.periodSeg}>
+                {(['D', 'W', 'M', 'Y'] as const).map((p) => (
+                  <Pressable
+                    key={p}
+                    style={[styles.periodBtn, netPeriod === p && styles.periodBtnActive]}
+                    onPress={() => setNetPeriod(p)}
+                  >
+                    <Text style={[styles.periodText, netPeriod === p && { color: t.onEmerald }]}>{p}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            </View>
+            <MoMBars key={netPeriod} data={netSeries} height={100} />
+            <Text style={styles.chartFootnote}>Computed from your real transactions</Text>
           </GlassCard>
         )}
         {categories.length > 0 && (
@@ -273,9 +339,18 @@ function StatPill({ styles, t, icon, label, value, color }: any) {
   return (
     <View style={styles.statPill}>
       <Ionicons name={icon} size={15} color={color} />
-      <View>
+      {/* flex:1 + minWidth:0 lets the column actually shrink inside the pill;
+          adjustsFontSizeToFit steps the amount down instead of overflowing. */}
+      <View style={{ flex: 1, minWidth: 0 }}>
         <Text style={styles.statLabel}>{label}</Text>
-        <Text style={[styles.statValue, { color }]} numberOfLines={1}>{value}</Text>
+        <Text
+          style={[styles.statValue, { color }]}
+          numberOfLines={1}
+          adjustsFontSizeToFit
+          minimumFontScale={0.7}
+        >
+          {value}
+        </Text>
       </View>
     </View>
   );
@@ -315,40 +390,100 @@ function buildPdfHtml(
   txs: Transaction[],
   totals: { income: number; spent: number; net: number },
   currency: string,
+  preparedFor: string,
+  filter: 'all' | 'income' | 'expense',
+  query: string,
 ) {
-  const fmt = (n: number) => currency + n.toLocaleString('en-PH', { maximumFractionDigits: 2 });
-  const rows = txs
+  const fmt = (n: number) => currency + n.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const dateFmt = (ts: number) =>
+    new Date(ts).toLocaleDateString('en-PH', { year: 'numeric', month: 'short', day: 'numeric' });
+
+  // Date range covered by this export.
+  const stamps = txs.map((x) => x.timestamp);
+  const range = stamps.length
+    ? `${dateFmt(Math.min(...stamps))} – ${dateFmt(Math.max(...stamps))}`
+    : 'No transactions';
+  const scope =
+    filter === 'all' ? 'All transactions' : filter === 'income' ? 'Income only' : 'Expenses only';
+
+  // Per-category totals (expenses), largest first — the "where did it go" view.
+  const byCat = new Map<string, number>();
+  for (const tx of txs) {
+    if (tx.isIncome) continue;
+    byCat.set(tx.categoryId, (byCat.get(tx.categoryId) ?? 0) + tx.amount);
+  }
+  const catRows = Array.from(byCat.entries())
+    .sort((a, b) => b[1] - a[1])
     .map(
-      (tx) => `<tr>
-        <td>${new Date(tx.timestamp).toLocaleDateString()}</td>
-        <td>${escapeHtml(tx.description)}</td>
-        <td>${escapeHtml(tx.categoryId)}</td>
-        <td class="${tx.isIncome ? 'in' : 'out'}">${tx.isIncome ? '+' : '-'}${fmt(tx.amount)}</td>
+      ([name, amt]) => `<tr>
+        <td>${escapeHtml(name)}</td>
+        <td class="num">${fmt(amt)}</td>
+        <td class="num muted">${totals.spent > 0 ? ((amt / totals.spent) * 100).toFixed(1) : '0.0'}%</td>
       </tr>`,
     )
     .join('');
+
+  const rows = txs
+    .map(
+      (tx) => `<tr>
+        <td class="muted">${dateFmt(tx.timestamp)}</td>
+        <td>${escapeHtml(tx.description)}</td>
+        <td class="muted">${escapeHtml(tx.categoryId)}</td>
+        <td class="num ${tx.isIncome ? 'in' : 'out'}">${tx.isIncome ? '+' : '−'}${fmt(tx.amount)}</td>
+      </tr>`,
+    )
+    .join('');
+
   return `<!DOCTYPE html><html><head><meta charset="utf-8" />
   <style>
-    body { font-family: -apple-system, Helvetica, Arial, sans-serif; color: #163023; padding: 28px; }
-    h1 { color: #0B6E4F; margin: 0 0 2px; font-size: 22px; }
-    .sub { color: #6b8a7a; font-size: 12px; margin-bottom: 18px; }
-    .totals { display: flex; gap: 12px; margin-bottom: 18px; }
-    .pill { background: #EDF5EF; border-radius: 12px; padding: 10px 16px; font-size: 13px; }
-    .pill b { display: block; font-size: 15px; }
-    table { width: 100%; border-collapse: collapse; font-size: 12px; }
-    th { text-align: left; color: #6b8a7a; font-weight: 600; padding: 8px 6px; border-bottom: 2px solid #DCE9DF; }
-    td { padding: 8px 6px; border-bottom: 1px solid #EDF3EE; }
+    body { font-family: -apple-system, Helvetica, Arial, sans-serif; color: #163023; padding: 34px 38px; font-size: 12px; }
+    .brandbar { display: flex; justify-content: space-between; align-items: flex-end;
+      border-bottom: 3px solid #0B9E6E; padding-bottom: 14px; margin-bottom: 18px; }
+    .wordmark { font-size: 24px; font-weight: 800; color: #0B6E4F; letter-spacing: -0.5px; }
+    .wordmark span { color: #0B9E6E; }
+    .doctype { font-size: 11px; color: #6b8a7a; text-transform: uppercase; letter-spacing: 1.5px; }
+    .meta { display: flex; gap: 34px; margin-bottom: 20px; }
+    .meta div { font-size: 11px; color: #6b8a7a; }
+    .meta b { display: block; font-size: 13px; color: #163023; margin-top: 2px; font-weight: 700; }
+    .totals { display: flex; gap: 12px; margin-bottom: 24px; }
+    .pill { flex: 1; border: 1px solid #DCE9DF; background: #F4FAF6; border-radius: 12px; padding: 12px 16px; font-size: 11px; color: #6b8a7a; }
+    .pill b { display: block; font-size: 17px; margin-top: 3px; color: #163023; }
+    .pill.net b { color: ${totals.net >= 0 ? '#0B9E6E' : '#C0392B'}; }
+    h2 { font-size: 13px; color: #0B6E4F; text-transform: uppercase; letter-spacing: 1px; margin: 22px 0 8px; }
+    table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+    th { text-align: left; color: #6b8a7a; font-weight: 700; padding: 8px 8px; border-bottom: 2px solid #DCE9DF; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.6px; }
+    td { padding: 8px 8px; border-bottom: 1px solid #EDF3EE; }
+    tbody tr:nth-child(even) td { background: #F8FBF9; }
+    th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; }
     .in { color: #0B9E6E; font-weight: 700; } .out { color: #C0392B; font-weight: 700; }
+    .muted { color: #6b8a7a; }
+    .foot { margin-top: 26px; padding-top: 10px; border-top: 1px solid #DCE9DF; color: #9AB3A6; font-size: 10px; display: flex; justify-content: space-between; }
   </style></head><body>
-  <h1>SaveCents Transaction Report</h1>
-  <div class="sub">Generated ${new Date().toLocaleString()} · ${txs.length} transactions</div>
-  <div class="totals">
-    <div class="pill">Income <b>${fmt(totals.income)}</b></div>
-    <div class="pill">Spent <b>${fmt(totals.spent)}</b></div>
-    <div class="pill">Net <b>${fmt(totals.net)}</b></div>
+  <div class="brandbar">
+    <div class="wordmark">Save<span>Cents</span></div>
+    <div class="doctype">Financial report</div>
   </div>
-  <table><thead><tr><th>Date</th><th>Description</th><th>Category</th><th>Amount</th></tr></thead>
+  <div class="meta">
+    <div>Prepared for<b>${escapeHtml(preparedFor)}</b></div>
+    <div>Period covered<b>${range}</b></div>
+    <div>Scope<b>${scope}${query ? ` · search “${escapeHtml(query)}”` : ''}</b></div>
+    <div>Generated<b>${new Date().toLocaleDateString('en-PH', { year: 'numeric', month: 'long', day: 'numeric' })}</b></div>
+  </div>
+  <div class="totals">
+    <div class="pill">Money in<b>${fmt(totals.income)}</b></div>
+    <div class="pill">Money out<b>${fmt(totals.spent)}</b></div>
+    <div class="pill net">Net saved<b>${fmt(totals.net)}</b></div>
+  </div>
+  ${catRows ? `<h2>Spending by category</h2>
+  <table><thead><tr><th>Category</th><th class="num">Spent</th><th class="num">Share</th></tr></thead>
+  <tbody>${catRows}</tbody></table>` : ''}
+  <h2>Transactions (${txs.length})</h2>
+  <table><thead><tr><th>Date</th><th>Description</th><th>Category</th><th class="num">Amount</th></tr></thead>
   <tbody>${rows}</tbody></table>
+  <div class="foot">
+    <span>SaveCents · generated for ${escapeHtml(preparedFor)}</span>
+    <span>${new Date().toLocaleString()}</span>
+  </div>
   </body></html>`;
 }
 
@@ -382,6 +517,16 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   },
   cardTitle: { color: t.textPrimary, fontSize: 15, fontWeight: '600' },
   cardSub: { color: t.textMuted, fontSize: 12 },
+  // D/W/M/Y selector — identical to the dashboard's Savings insight styles.
+  insightHead: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' },
+  periodSeg: {
+    flexDirection: 'row', gap: 3, padding: 3, borderRadius: 999,
+    backgroundColor: t.inputFill, borderWidth: 1, borderColor: t.borderSoft,
+  },
+  periodBtn: { width: 28, height: 24, borderRadius: 999, alignItems: 'center', justifyContent: 'center' },
+  periodBtnActive: { backgroundColor: t.emerald },
+  periodText: { color: t.textMuted, fontSize: 11, fontWeight: '800' },
+  chartFootnote: { color: t.textFaint, fontSize: 11, marginTop: 10 },
   searchBox: {
     flexDirection: 'row', alignItems: 'center', gap: 9,
     height: 48, borderRadius: 16, paddingHorizontal: 14,

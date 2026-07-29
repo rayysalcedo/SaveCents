@@ -1,18 +1,31 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+// M5.5d: Cents chat — full-screen liquid-glass overlay in the v4 language the
+// owner picked: centered title + status dot header, soft emerald top glow,
+// left-aligned hero, tinted icon chips, frosted soft-border MATTE bubbles (no
+// sheen). The scan button opens a two-option glass sheet (item / receipt)
+// that launches the in-app ScanOverlay camera.
+// Deliberately NOT an RN Modal, and no KeyboardAvoidingView (KAV mis-measures
+// inside absolute/transformed overlays; keyboard tracked via useKeyboardInset).
+//
+// M5.5f: every subcomponent lives at MODULE scope. Defining them inside the
+// screen component creates new component types on each render, so typing one
+// character remounted the whole thread and replayed every entrance animation
+// (the "blinking"). Keep new subcomponents at module scope.
+import React, { memo, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Alert, Image, Keyboard } from 'react-native';
-import {
-  Animated, Easing, FlatList, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View,
+  Animated, Easing, FlatList, Image, Keyboard, Modal, Platform,
+  Pressable, ScrollView, StyleSheet, Text, TextInput, View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import { Palette, radius, useTheme } from '../../theme/colors';
-import * as ImagePicker from 'expo-image-picker';
+import { Palette, useTheme } from '../../theme/colors';
 import { useFinance } from '../../store/finance';
 import { useUI } from '../../store/ui';
+import { useKeyboardInset } from '../../hooks/useKeyboardInset';
 import { ChatMessage, peso } from '../../models/types';
+
+type Styles = ReturnType<typeof makeStyles>;
 
 const QUICK_PROMPTS = [
   'Can I afford a 1500 game?',
@@ -21,184 +34,179 @@ const QUICK_PROMPTS = [
   'Add a Groceries budget for 3000',
 ];
 
-// M5: Cents chat is now an in-context OVERLAY, not a tab. The screen behind
-// stays visible through a darkened blur; the panel slides up over it. It is
-// deliberately NOT an RN Modal so the camera sheet + ImagePicker keep their
-// existing (fragile, documented) iOS presentation behavior.
-export function CentsChatModal() {
-  const t = useTheme();
-  const styles = useMemo(() => makeStyles(t), [t]);
-  const insets = useSafeAreaInsets();
-  const { chatOpen, closeChat, openVoice, consumeCameraFlag } = useUI();
-  const slide = useRef(new Animated.Value(0)).current;
-  const [kbVisible, setKbVisible] = useState(false);
+const SUGGESTIONS: { icon: keyof typeof Ionicons.glyphMap; title: string; prompt: string }[] = [
+  { icon: 'scale', title: 'Check a purchase', prompt: 'Can I afford a 1500 game?' },
+  { icon: 'create', title: 'Log an expense', prompt: 'Spent 250 on gas' },
+  { icon: 'pie-chart', title: 'Review my budget', prompt: "How's my budget looking this month?" },
+];
+
+// ── Module-scope subcomponents (see M5.5f note above) ───────────────────────
+
+function TypingDots({ styles }: { styles: Styles }) {
+  const d0 = useRef(new Animated.Value(0)).current;
+  const d1 = useRef(new Animated.Value(0)).current;
+  const d2 = useRef(new Animated.Value(0)).current;
   useEffect(() => {
-    const s1 = Keyboard.addListener('keyboardWillShow', () => setKbVisible(true));
-    const s2 = Keyboard.addListener('keyboardWillHide', () => setKbVisible(false));
-    const s3 = Keyboard.addListener('keyboardDidShow', () => setKbVisible(true));
-    const s4 = Keyboard.addListener('keyboardDidHide', () => setKbVisible(false));
-    return () => { s1.remove(); s2.remove(); s3.remove(); s4.remove(); };
-  }, []);
-  const { chat, isThinking, sendChat, sendImage, confirmAction } = useFinance();
-  const [input, setInput] = useState('');
-  const [cameraSheet, setCameraSheet] = useState(false);
-  const listRef = useRef<FlatList>(null);
-
-  // Entrance + "Scan" quick-action handoff from the hub
-  useEffect(() => {
-    if (chatOpen) {
-      Animated.timing(slide, { toValue: 1, duration: 300, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
-      if (consumeCameraFlag()) setTimeout(() => setCameraSheet(true), 380);
-    } else {
-      slide.setValue(0);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatOpen]);
-
-  const dismiss = () => {
-    Keyboard.dismiss();
-    Animated.timing(slide, { toValue: 0, duration: 220, easing: Easing.in(Easing.cubic), useNativeDriver: true })
-      .start(() => closeChat());
-  };
-
-  useEffect(() => {
-    const t = setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 80);
-    return () => clearTimeout(t);
-  }, [chat.length, isThinking]);
-
-  const send = () => {
-    const text = input.trim();
-    if (!text) return;
-    setInput('');
-    sendChat(text);
-  };
-
-
-  // Three bouncing dots while Cents thinks
-  const TypingDots = () => {
-    const dots = [useRef(new Animated.Value(0)).current, useRef(new Animated.Value(0)).current, useRef(new Animated.Value(0)).current];
-    useEffect(() => {
-      const loops = dots.map((d, i) =>
-        Animated.loop(
-          Animated.sequence([
-            Animated.delay(i * 140),
-            Animated.timing(d, { toValue: 1, duration: 340, easing: Easing.out(Easing.quad), useNativeDriver: true }),
-            Animated.timing(d, { toValue: 0, duration: 340, easing: Easing.in(Easing.quad), useNativeDriver: true }),
-            Animated.delay(280 - i * 140 > 0 ? 280 - i * 140 : 0),
-          ]),
-        ),
-      );
-      loops.forEach((l) => l.start());
-      return () => loops.forEach((l) => l.stop());
-    }, []);
-    return (
-      <View style={styles.typingRow}>
-        {dots.map((d, i) => (
-          <Animated.View
-            key={i}
-            style={[
-              styles.typingDot,
-              {
-                opacity: d.interpolate({ inputRange: [0, 1], outputRange: [0.35, 1] }),
-                transform: [{ translateY: d.interpolate({ inputRange: [0, 1], outputRange: [0, -5] }) }],
-              },
-            ]}
-          />
-        ))}
-      </View>
+    const dots = [d0, d1, d2];
+    const loops = dots.map((d, i) =>
+      Animated.loop(
+        Animated.sequence([
+          Animated.delay(i * 140),
+          Animated.timing(d, { toValue: 1, duration: 340, easing: Easing.out(Easing.quad), useNativeDriver: true }),
+          Animated.timing(d, { toValue: 0, duration: 340, easing: Easing.in(Easing.quad), useNativeDriver: true }),
+          Animated.delay(280 - i * 140 > 0 ? 280 - i * 140 : 0),
+        ]),
+      ),
     );
-  };
-
-  // Fade + rise entrance for every bubble
-  const AppearIn = ({ children }: { children: React.ReactNode }) => {
-    const a = useRef(new Animated.Value(0)).current;
-    useEffect(() => {
-      Animated.timing(a, { toValue: 1, duration: 260, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
-    }, [a]);
-    return (
-      <Animated.View
-        style={{
-          opacity: a,
-          transform: [{ translateY: a.interpolate({ inputRange: [0, 1], outputRange: [12, 0] }) }],
-        }}
-      >
-        {children}
-      </Animated.View>
-    );
-  };
-
-  const Row = ({ icon, label }: { icon: keyof typeof Ionicons.glyphMap; label: string }) => {
+    loops.forEach((l) => l.start());
+    return () => loops.forEach((l) => l.stop());
+  }, [d0, d1, d2]);
   return (
-    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 6 }}>
-      <Ionicons name={icon} size={14} color={t.emerald} />
-      <Text style={{ color: t.emerald, fontSize: 12, fontWeight: '700', letterSpacing: 0.5 }}>{label.toUpperCase()}</Text>
+    <View style={styles.typingRow}>
+      {[d0, d1, d2].map((d, i) => (
+        <Animated.View
+          key={i}
+          style={[
+            styles.typingDot,
+            {
+              opacity: d.interpolate({ inputRange: [0, 1], outputRange: [0.35, 1] }),
+              transform: [{ translateY: d.interpolate({ inputRange: [0, 1], outputRange: [0, -5] }) }],
+            },
+          ]}
+        />
+      ))}
     </View>
   );
-};
+}
 
-  const CentsMini = () => {
+// Fade + rise entrance. Runs ONCE per mount; module scope keeps mounts stable.
+function AppearIn({ children }: { children: React.ReactNode }) {
+  const a = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    Animated.timing(a, { toValue: 1, duration: 260, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
+  }, [a]);
   return (
-    <View style={styles.miniAvatar}>
-      <Ionicons name="sparkles" size={12} color={t.emerald} />
-    </View>
+    <Animated.View
+      style={{
+        opacity: a,
+        transform: [{ translateY: a.interpolate({ inputRange: [0, 1], outputRange: [12, 0] }) }],
+      }}
+    >
+      {children}
+    </Animated.View>
   );
-};
+}
 
-  const Bubble = ({ msg }: { msg: ChatMessage }) => {
+const CentsMini = ({ styles, t }: { styles: Styles; t: Palette }) => (
+  <View style={styles.miniAvatar}>
+    <Ionicons name="sparkles" size={12} color={t.emerald} />
+  </View>
+);
+
+const CardLabel = ({ styles, t, icon, label }: { styles: Styles; t: Palette; icon: keyof typeof Ionicons.glyphMap; label: string }) => (
+  <View style={styles.cardLabelRow}>
+    <Ionicons name={icon} size={14} color={t.emerald} />
+    <Text style={styles.cardLabelText}>{label.toUpperCase()}</Text>
+  </View>
+);
+
+// Frosted MATTE glass shell: blur + one soft fill + thin border. No sheen.
+const Glass = ({ styles, t, children, strong }: { styles: Styles; t: Palette; children: React.ReactNode; strong?: boolean }) => (
+  <View style={[styles.glassBubble, strong && styles.glassBubbleStrong]}>
+    <BlurView intensity={strong ? 44 : 30} tint={t.blurTint} style={StyleSheet.absoluteFill} />
+    <LinearGradient
+      colors={
+        t.mode === 'dark'
+          ? ['rgba(255,255,255,0.085)', 'rgba(255,255,255,0.05)']
+          : ['rgba(255,255,255,0.92)', 'rgba(255,255,255,0.78)']
+      }
+      style={StyleSheet.absoluteFill}
+    />
+    <View style={styles.glassInner}>{children}</View>
+  </View>
+);
+
+interface BubbleProps {
+  msg: ChatMessage;
+  styles: Styles;
+  t: Palette;
+  confirmAction: (id: string, confirm: boolean) => void;
+}
+
+const Bubble = memo(function Bubble({ msg, styles, t, confirmAction }: BubbleProps) {
   const isUser = msg.sender === 'USER';
 
   if (msg.type === 'text') {
-    return (
-      <View style={[styles.bubbleRow, isUser && { justifyContent: 'flex-end' }]}>
-        {!isUser && <CentsMini />}
-        <View style={[styles.bubble, isUser ? styles.userBubble : styles.centsBubble]}>
-          {msg.imageUri ? <Image source={{ uri: msg.imageUri }} style={styles.bubbleImage} resizeMode="cover" /> : null}
-          <Text style={styles.bubbleText}>{msg.text}</Text>
+    // A photo with no caption renders bare: just the image with a barely
+    // visible hairline border. No bubble, no label.
+    if (msg.imageUri && !msg.text) {
+      return (
+        <View style={[styles.bubbleRow, isUser && { justifyContent: 'flex-end' }]}>
+          {!isUser && <CentsMini styles={styles} t={t} />}
+          <Image source={{ uri: msg.imageUri }} style={styles.bareImage} resizeMode="cover" />
         </View>
+      );
+    }
+    if (isUser) {
+      return (
+        <View style={[styles.bubbleRow, { justifyContent: 'flex-end' }]}>
+          <LinearGradient colors={[t.emerald, t.teal]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.userBubble}>
+            {msg.imageUri ? <Image source={{ uri: msg.imageUri }} style={styles.bubbleImage} resizeMode="cover" /> : null}
+            <Text style={styles.userText}>{msg.text}</Text>
+          </LinearGradient>
+        </View>
+      );
+    }
+    return (
+      <View style={styles.bubbleRow}>
+        <CentsMini styles={styles} t={t} />
+        <Glass styles={styles} t={t}>
+          {msg.imageUri ? <Image source={{ uri: msg.imageUri }} style={styles.bubbleImage} resizeMode="cover" /> : null}
+          <Text style={styles.centsText}>{msg.text}</Text>
+        </Glass>
       </View>
     );
   }
 
-  // All interactive Cents cards
   const body = (() => {
     switch (msg.type) {
       case 'confirmation':
         return (
           <>
-            <Row icon="create" label={msg.lang === 'fil' ? 'I-log ang gastos' : 'Log expense'} />
-            <Text style={styles.bubbleText}>{msg.prompt}</Text>
+            <CardLabel styles={styles} t={t} icon="create" label={msg.lang === 'fil' ? 'I-log ang gastos' : 'Log expense'} />
+            <Text style={styles.centsText}>{msg.prompt}</Text>
           </>
         );
       case 'negotiation':
         return (
           <>
-            <Row icon="scale" label={msg.lang === 'fil' ? 'Purchase check' : 'Purchase check'} />
-            <Text style={styles.bubbleText}>{msg.prompt}</Text>
+            <CardLabel styles={styles} t={t} icon="scale" label="Purchase check" />
+            <Text style={styles.centsText}>{msg.prompt}</Text>
           </>
         );
       case 'receiptScan':
         return (
           <>
-            <Row icon="receipt" label="Receipt detected" />
+            <CardLabel styles={styles} t={t} icon="receipt" label="Receipt detected" />
             <Text style={styles.cardBig}>{peso(msg.amount)}</Text>
-            <Text style={styles.cardSub}>{msg.store} · category: Pets</Text>
-            <Text style={[styles.bubbleText, { marginTop: 8 }]}>Log this expense?</Text>
+            <Text style={styles.cardSub}>{msg.store}</Text>
+            <Text style={[styles.centsText, { marginTop: 8 }]}>Log this expense?</Text>
           </>
         );
       case 'consultItem':
         return (
           <>
-            <Row icon="bag-handle" label="Pre-purchase check" />
+            <CardLabel styles={styles} t={t} icon="bag-handle" label="Pre-purchase check" />
             <Text style={styles.cardBig}>{msg.item} · {peso(msg.amount)}</Text>
-            <Text style={[styles.bubbleText, { marginTop: 8 }]}>
-              Buying this delays your <Text style={{ color: t.mint, fontWeight: '600' }}>{msg.goalName}</Text> by{' '}
-              <Text style={{ color: t.red, fontWeight: '600' }}>{msg.delayWeeks} weeks</Text>. Proceed?
+            <Text style={[styles.centsText, { marginTop: 8 }]}>
+              Buying this delays your <Text style={{ color: t.emerald, fontWeight: '700' }}>{msg.goalName}</Text> by{' '}
+              <Text style={{ color: t.red, fontWeight: '700' }}>{msg.delayWeeks} weeks</Text>. Proceed?
             </Text>
           </>
         );
       case 'mismatch':
         return (
-          <Text style={styles.bubbleText}>
+          <Text style={styles.centsText}>
             "{msg.item}" ({peso(msg.amount)}) doesn't fit any of your budgets. Create a new category for it?
           </Text>
         );
@@ -212,8 +220,8 @@ export function CentsChatModal() {
 
   return (
     <View style={styles.bubbleRow}>
-      <CentsMini />
-      <View style={[styles.bubble, styles.centsBubble, styles.actionCard]}>
+      <CentsMini styles={styles} t={t} />
+      <Glass styles={styles} t={t} strong>
         {body}
         {!msg.handled ? (
           <View style={styles.actionRow}>
@@ -244,179 +252,249 @@ export function CentsChatModal() {
             </Text>
           </View>
         )}
-      </View>
+      </Glass>
     </View>
   );
-  };
+});
 
-  const SheetItem = (props: { icon: keyof typeof Ionicons.glyphMap; title: string; sub: string; onPress: () => void }) => {
+function SheetItem(props: {
+  styles: Styles; t: Palette;
+  icon: keyof typeof Ionicons.glyphMap; title: string; sub: string; onPress: () => void;
+}) {
+  const { styles, t } = props;
   return (
     <Pressable style={({ pressed }) => [styles.sheetItem, pressed && { backgroundColor: t.inputFill }]} onPress={props.onPress}>
       <View style={styles.sheetIcon}>
         <Ionicons name={props.icon} size={20} color={t.emerald} />
       </View>
-      <View>
+      <View style={{ flex: 1 }}>
         <Text style={styles.sheetItemTitle}>{props.title}</Text>
         <Text style={styles.sheetItemSub}>{props.sub}</Text>
       </View>
+      <Ionicons name="chevron-forward" size={16} color={t.textFaint} />
     </Pressable>
   );
-};
+}
 
-  // M4: real camera capture.
-  // iOS refuses to present the camera while ANY other presentation (the sheet
-  // modal, an alert, the permission dialog) is on screen or mid-dismissal — the
-  // launch just hangs silently. So sheet taps QUEUE the action and we run it
-  // from the Modal's onDismiss, which iOS fires only when the sheet is fully
-  // gone. Never launch the camera directly from a sheet button.
-  const pendingCameraAction = useRef<null | (() => void)>(null);
+// ── Screen ──────────────────────────────────────────────────────────────────
 
-  const queueFromSheet = (fn: () => void) => {
-    if (Platform.OS === 'ios') {
-      pendingCameraAction.current = fn; // runs in Modal onDismiss
-      setCameraSheet(false);
+export function CentsChatModal() {
+  const t = useTheme();
+  const styles = useMemo(() => makeStyles(t), [t]);
+  const insets = useSafeAreaInsets();
+  const { chatOpen, closeChat, openVoice, openScan } = useUI();
+  const { chat, isThinking, sendChat, confirmAction, profile } = useFinance();
+  const { inset: kbInset } = useKeyboardInset();
+
+  const enter = useRef(new Animated.Value(0)).current;
+  const [input, setInput] = useState('');
+  const [scanSheet, setScanSheet] = useState(false);
+  const listRef = useRef<FlatList>(null);
+
+  const fresh = chat.length <= 1; // only the seeded greeting so far
+
+  useEffect(() => {
+    if (chatOpen) {
+      Animated.timing(enter, { toValue: 1, duration: 320, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
     } else {
-      setCameraSheet(false); // Android has no such conflict (and no onDismiss)
-      setTimeout(fn, 250);
+      enter.setValue(0);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatOpen]);
+
+  const dismiss = () => {
+    Keyboard.dismiss();
+    Animated.timing(enter, { toValue: 0, duration: 220, easing: Easing.in(Easing.cubic), useNativeDriver: true })
+      .start(() => closeChat());
   };
 
-  const runPendingCameraAction = () => {
-    const fn = pendingCameraAction.current;
-    pendingCameraAction.current = null;
-    if (fn) fn();
+  // INVERTED list: newest message lives at offset 0, so when the keyboard
+  // shrinks the list the latest bubbles stay pinned above the composer with
+  // ZERO scroll bookkeeping. (Replaces the old setTimeout+scrollToEnd hack,
+  // which raced the keyboard animation and left new bubbles covered.)
+  const reversedChat = useMemo(() => [...chat].reverse(), [chat]);
+
+  // Dock spacer rides ONE continuous animated value: max(safe-area, keyboard).
+  // The old `kbVisible ? 10 : insets.bottom + 12` padding snapped between two
+  // heights the moment the keyboard started moving — that was the visible
+  // hitch when tapping out of the conversation.
+  const safe = insets.bottom + 4;
+  const dockSpacer = useMemo(
+    () =>
+      kbInset.interpolate({
+        inputRange: [0, safe, safe + 1000],
+        outputRange: [safe, safe, safe + 1000],
+      }),
+    [kbInset, safe],
+  );
+
+  const send = () => {
+    const text = input.trim();
+    if (!text) return;
+    setInput('');
+    sendChat(text);
   };
 
-  const captureAndSend = async (mode: 'receipt' | 'price') => {
-    try {
-      const perm = await ImagePicker.requestCameraPermissionsAsync();
-      if (!perm.granted) {
-        Alert.alert('Camera access needed', 'Allow camera access in iPhone Settings → Expo Go → Camera.');
-        return;
-      }
-      // Handwritten receipts need detail — 0.7 for receipts, 0.4 is enough for printed price tags.
-      const res = await ImagePicker.launchCameraAsync({ quality: mode === 'receipt' ? 0.7 : 0.4, base64: true });
-      const a = res.canceled ? null : res.assets?.[0];
-      if (!a?.base64) return;
-      sendImage(a.base64, 'image/jpeg', mode, a.uri);
-    } catch (e) {
-      Alert.alert('Camera error', String((e as Error)?.message ?? e));
-    }
-  };
-
-  const pickFromLibrary = async (mode: 'receipt' | 'price') => {
-    try {
-      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (!perm.granted) {
-        Alert.alert('Photos access needed', 'Allow photo access to upload a receipt.');
-        return;
-      }
-      const res = await ImagePicker.launchImageLibraryAsync({ quality: mode === 'receipt' ? 0.7 : 0.4, base64: true });
-      const a = res.canceled ? null : res.assets?.[0];
-      if (!a?.base64) return;
-      sendImage(a.base64, 'image/jpeg', mode, a.uri);
-    } catch (e) {
-      Alert.alert('Photos error', String((e as Error)?.message ?? e));
-    }
+  const startScan = (mode: 'price' | 'receipt') => {
+    setScanSheet(false);
+    openScan(mode); // our own overlay view, no iOS presentation conflict
   };
 
   if (!chatOpen) return null;
 
-  return (
-    <View style={StyleSheet.absoluteFill}>
-      {/* Darkened blurred backdrop — user stays in context; tap above the panel to close */}
-      <Animated.View style={[StyleSheet.absoluteFill, { opacity: slide }]}>
-        <Pressable style={StyleSheet.absoluteFill} onPress={dismiss}>
-          <BlurView intensity={30} tint={t.mode === 'dark' ? 'dark' : 'default'} style={StyleSheet.absoluteFill} />
-          <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(3,13,8,0.45)' }]} />
-        </Pressable>
-      </Animated.View>
+  const nickname = profile.nickname || profile.name || 'there';
 
-      <Animated.View
-        style={[
-          styles.panel,
-          {
-            top: insets.top + 46,
-            opacity: slide,
-            transform: [{ translateY: slide.interpolate({ inputRange: [0, 1], outputRange: [80, 0] }) }],
-          },
-        ]}
-      >
-        <BlurView intensity={50} tint={t.blurTint} style={StyleSheet.absoluteFill} />
-        <View style={[StyleSheet.absoluteFill, { backgroundColor: t.mode === 'dark' ? 'rgba(6,16,11,0.88)' : 'rgba(248,252,250,0.92)' }]} />
-      <KeyboardAvoidingView
-        style={{ flex: 1 }}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        keyboardVerticalOffset={0}
-      >
-        <View style={styles.header}>
-          <View>
-            <LinearGradient colors={[t.emerald, t.teal]} style={styles.avatarRing}>
-              <View style={styles.avatarInner}>
-                <Ionicons name="sparkles" size={17} color={t.emerald} />
-              </View>
-            </LinearGradient>
+  return (
+    <Animated.View
+      style={[
+        StyleSheet.absoluteFill,
+        {
+          opacity: enter,
+          transform: [{ translateY: enter.interpolate({ inputRange: [0, 1], outputRange: [26, 0] }) }],
+        },
+      ]}
+    >
+      {/* Liquid-glass veil over the screen the user was on */}
+      <BlurView intensity={80} tint={t.blurTint} style={StyleSheet.absoluteFill} />
+      <LinearGradient
+        colors={
+          t.mode === 'dark'
+            ? ['rgba(4,16,10,0.66)', 'rgba(3,12,8,0.44)', 'rgba(2,10,6,0.82)']
+            : ['rgba(238,246,240,0.7)', 'rgba(255,255,255,0.38)', 'rgba(228,240,232,0.86)']
+        }
+        style={StyleSheet.absoluteFill}
+      />
+      {/* Soft emerald glow for depth */}
+      <LinearGradient
+        colors={[t.emeraldGlow, 'rgba(16,185,129,0)']}
+        start={{ x: 0.5, y: 0 }} end={{ x: 0.5, y: 1 }}
+        style={styles.glowTop}
+        pointerEvents="none"
+      />
+
+      {/* Header */}
+      <View style={[styles.header, { paddingTop: insets.top + 8 }]}>
+        <Pressable style={styles.glassBtn} onPress={dismiss}>
+          <BlurView intensity={32} tint={t.blurTint} style={StyleSheet.absoluteFill} />
+          <Ionicons name="chevron-down" size={20} color={t.textPrimary} />
+        </Pressable>
+        <View style={styles.headerCenter}>
+          <View style={styles.headerTitleRow}>
+            <Text style={styles.headerTitle}>Cents</Text>
             <View style={styles.onlineDot} />
           </View>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.headerTitle}>Cents</Text>
-            <Text style={styles.headerSub}>AI coach · online</Text>
-          </View>
-          <View style={styles.headerBadge}>
-            <Ionicons name="shield-checkmark" size={12} color={t.emerald} />
-            <Text style={styles.headerBadgeText}>On guard</Text>
-          </View>
-          <Pressable style={styles.closeBtn} onPress={dismiss}>
-            <Ionicons name="close" size={19} color={t.textMuted} />
-          </Pressable>
+          <Text style={styles.headerSub}>AI coach</Text>
         </View>
+        <Pressable style={styles.glassBtn} onPress={() => setScanSheet(true)}>
+          <BlurView intensity={32} tint={t.blurTint} style={StyleSheet.absoluteFill} />
+          <Ionicons name="scan" size={18} color={t.textPrimary} />
+        </Pressable>
+      </View>
 
-        <FlatList
-          ref={listRef}
-          data={chat}
-          keyExtractor={(m) => m.id}
-          contentContainerStyle={styles.list}
-          keyboardShouldPersistTaps="handled"
-          keyboardDismissMode="on-drag"
-          renderItem={({ item }) => <AppearIn><Bubble msg={item} /></AppearIn>}
-          ListFooterComponent={
-            isThinking ? (
-              <View style={styles.bubbleRow}>
-                <CentsMini />
-                <View style={[styles.bubble, styles.centsBubble, styles.thinking]}>
-                  <TypingDots />
+      {/* Thread or hero */}
+      {fresh ? (
+        <Pressable style={styles.hero} onPress={Keyboard.dismiss}>
+          <Text style={styles.heroHello}>Hello, {nickname}</Text>
+          <Text style={styles.heroTitle}>What should we do{'\n'}with your money?</Text>
+          <View style={styles.suggestions}>
+            {SUGGESTIONS.map((sug) => (
+              <Pressable key={sug.title} onPress={() => sendChat(sug.prompt)} style={({ pressed }) => pressed && { transform: [{ scale: 0.985 }] }}>
+                <View style={styles.suggestCard}>
+                  <BlurView intensity={28} tint={t.blurTint} style={StyleSheet.absoluteFill} />
+                  <LinearGradient
+                    colors={
+                      t.mode === 'dark'
+                        ? ['rgba(255,255,255,0.1)', 'rgba(255,255,255,0.03)']
+                        : ['rgba(255,255,255,0.94)', 'rgba(255,255,255,0.66)']
+                    }
+                    style={StyleSheet.absoluteFill}
+                  />
+                  <View style={styles.suggestIcon}>
+                    <Ionicons name={sug.icon} size={16} color={t.emerald} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.suggestTitle}>{sug.title}</Text>
+                    <Text style={styles.suggestPrompt}>{sug.prompt}</Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={16} color={t.textFaint} />
                 </View>
-              </View>
-            ) : null
-          }
-        />
+              </Pressable>
+            ))}
+          </View>
+        </Pressable>
+      ) : (
+        // Tap-to-dismiss wrapper: with keyboardShouldPersistTaps="handled",
+        // taps on blank thread space aren't claimed by any child, so they
+        // bubble up here and close the keyboard immediately — no more
+        // "tapped out and nothing happened".
+        <Pressable style={{ flex: 1 }} onPress={Keyboard.dismiss}>
+          <FlatList
+            ref={listRef}
+            data={reversedChat}
+            inverted
+            keyExtractor={(m) => m.id}
+            style={{ flex: 1 }}
+            contentContainerStyle={styles.list}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+            maintainVisibleContentPosition={{ minIndexForVisible: 0, autoscrollToTopThreshold: 80 }}
+            renderItem={({ item }) => (
+              <AppearIn>
+                <Bubble msg={item} styles={styles} t={t} confirmAction={confirmAction} />
+              </AppearIn>
+            )}
+            // In an inverted list the HEADER renders at the visual bottom —
+            // exactly where the typing indicator belongs.
+            ListHeaderComponent={
+              isThinking ? (
+                <View style={styles.bubbleRow}>
+                  <CentsMini styles={styles} t={t} />
+                  <Glass styles={styles} t={t}>
+                    <TypingDots styles={styles} />
+                  </Glass>
+                </View>
+              ) : null
+            }
+          />
+        </Pressable>
+      )}
 
-        {/* Quick prompts */}
+      {/* Bottom dock: quick prompts + floating composer + keyboard inset */}
+      <View>
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.chipsRow}
-          style={{ flexGrow: 0, flexShrink: 0, height: 46 }}
+          style={{ flexGrow: 0, flexShrink: 0 }}
           keyboardShouldPersistTaps="always"
         >
           {QUICK_PROMPTS.map((p) => (
             <Pressable key={p} style={styles.chip} onPress={() => sendChat(p)}>
+              <BlurView intensity={24} tint={t.blurTint} style={StyleSheet.absoluteFill} />
               <Text style={styles.chipText}>{p}</Text>
             </Pressable>
           ))}
         </ScrollView>
 
-        {/* Composer */}
-        <View style={[styles.composerWrap, { paddingBottom: kbVisible ? 10 : insets.bottom + 14 }]}>
-          <BlurView intensity={30} tint={t.blurTint} style={styles.composer}>
-            <Pressable style={styles.iconBtn} onPress={() => setCameraSheet(true)}>
+        <View style={[styles.composerWrap, { paddingBottom: 10 }]}>
+          <View style={styles.composer}>
+            <BlurView intensity={46} tint={t.blurTint} style={StyleSheet.absoluteFill} />
+            <LinearGradient
+              colors={
+                t.mode === 'dark'
+                  ? ['rgba(255,255,255,0.13)', 'rgba(255,255,255,0.05)']
+                  : ['rgba(255,255,255,0.97)', 'rgba(255,255,255,0.76)']
+              }
+              style={StyleSheet.absoluteFill}
+            />
+            <Pressable style={styles.iconBtn} onPress={() => setScanSheet(true)}>
               <Ionicons name="camera" size={20} color={t.emerald} />
             </Pressable>
             <TextInput
               style={styles.input}
               value={input}
               onChangeText={setInput}
-              placeholder="Message Cents…"
+              placeholder="Message Cents"
               placeholderTextColor={t.textMuted}
               onSubmitEditing={send}
               returnKeyType="send"
@@ -426,144 +504,171 @@ export function CentsChatModal() {
             </Pressable>
             <Pressable onPress={send} style={({ pressed }) => pressed && { transform: [{ scale: 0.88 }] }}>
               <LinearGradient colors={[t.emerald, t.teal]} style={[styles.iconBtn, styles.sendBtn]}>
-                <Ionicons name="arrow-up" size={18} color={t.onEmerald} />
+                <Ionicons name="arrow-up" size={18} color="#FFFFFF" />
               </LinearGradient>
             </Pressable>
-          </BlurView>
+          </View>
         </View>
+        <Animated.View style={{ height: dockSpacer }} />
+      </View>
 
-        {/* Camera sheet — real vision via Gemini (M4) */}
-        <Modal visible={cameraSheet} transparent animationType="slide" onRequestClose={() => setCameraSheet(false)} onDismiss={runPendingCameraAction}>
-          <Pressable style={styles.sheetScrim} onPress={() => setCameraSheet(false)}>
-            <Pressable style={styles.sheet} onPress={() => {}}>
-              <View style={styles.sheetHandle} />
-              <Text style={styles.sheetTitle}>Use camera</Text>
-              <SheetItem
-                icon="receipt" title="Scan receipt" sub="Photograph a receipt to log it"
-                onPress={() => queueFromSheet(() => captureAndSend('receipt'))}
-              />
-              <SheetItem
-                icon="bag-handle" title="Consult item" sub="Snap a price tag. Can you afford it?"
-                onPress={() => queueFromSheet(() => captureAndSend('price'))}
-              />
-              <SheetItem
-                icon="images" title="Upload from Photos" sub="Use a receipt photo you already took"
-                onPress={() => queueFromSheet(() => pickFromLibrary('receipt'))}
-              />
-            </Pressable>
+      {/* Scan sheet: item or receipt, launches the in-app camera overlay */}
+      <Modal visible={scanSheet} transparent animationType="slide" onRequestClose={() => setScanSheet(false)}>
+        <Pressable style={styles.sheetScrim} onPress={() => setScanSheet(false)}>
+          <Pressable style={styles.sheet} onPress={() => {}}>
+            <View style={styles.sheetHandle} />
+            <Text style={styles.sheetTitle}>Scan with Cents</Text>
+            <SheetItem
+              styles={styles} t={t}
+              icon="pricetag" title="Scan an item" sub="Cents identifies it, finds the price, and checks your numbers"
+              onPress={() => startScan('price')}
+            />
+            <SheetItem
+              styles={styles} t={t}
+              icon="receipt" title="Scan a receipt" sub="Cents reads the total and breaks down what you paid for"
+              onPress={() => startScan('receipt')}
+            />
           </Pressable>
-        </Modal>
-      </KeyboardAvoidingView>
-      </Animated.View>
-    </View>
+        </Pressable>
+      </Modal>
+    </Animated.View>
   );
 }
 
-
-
-
-
-
-
 const makeStyles = (t: Palette) => StyleSheet.create({
-  miniAvatar: {
-    width: 26, height: 26, borderRadius: 10, marginRight: 8, marginTop: 2,
-    alignItems: 'center', justifyContent: 'center',
-    backgroundColor: t.emeraldTint, borderWidth: 1, borderColor: t.emeraldBorder,
-  },
-  panel: {
-    position: 'absolute', left: 0, right: 0, bottom: 0,
-    borderTopLeftRadius: 30, borderTopRightRadius: 30, overflow: 'hidden',
-    borderWidth: 1.2, borderColor: t.mode === 'dark' ? 'rgba(255,255,255,0.16)' : 'rgba(255,255,255,0.95)',
-    borderBottomWidth: 0,
-    shadowColor: '#02170D', shadowOpacity: 0.4, shadowRadius: 30, shadowOffset: { width: 0, height: -8 },
-    elevation: 24,
-  },
-  closeBtn: {
-    width: 36, height: 36, borderRadius: 13, alignItems: 'center', justifyContent: 'center',
-    backgroundColor: t.inputFill, borderWidth: 1, borderColor: t.borderSoft,
-  },
+  glowTop: { position: 'absolute', top: 0, left: 0, right: 0, height: 220, opacity: 0.5 },
+
   header: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 16, paddingBottom: 10,
+  },
+  headerCenter: { alignItems: 'center' },
+  headerTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  headerTitle: { color: t.textPrimary, fontSize: 17, fontWeight: '800', letterSpacing: 0.2 },
+  headerSub: { color: t.textMuted, fontSize: 11.5, marginTop: 1 },
+  onlineDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: t.emerald },
+  glassBtn: {
+    width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center',
+    overflow: 'hidden', borderWidth: 1,
+    borderColor: t.mode === 'dark' ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.9)',
+    backgroundColor: t.mode === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.5)',
+  },
+
+  hero: { flex: 1, justifyContent: 'center', paddingHorizontal: 28 },
+  heroHello: { color: t.textMuted, fontSize: 15, fontWeight: '600', marginBottom: 8 },
+  heroTitle: {
+    color: t.textPrimary, fontSize: 32, lineHeight: 40, fontWeight: '800', letterSpacing: -0.5,
+    marginBottom: 28,
+  },
+  suggestions: { gap: 10 },
+  suggestCard: {
     flexDirection: 'row', alignItems: 'center', gap: 12,
-    paddingHorizontal: 24, paddingVertical: 14,
-    borderBottomWidth: 1, borderBottomColor: t.borderSoft,
-  },
-  avatarRing: { width: 42, height: 42, borderRadius: 15, padding: 2 },
-  avatarInner: {
-    flex: 1, borderRadius: 13, backgroundColor: t.insetBg,
-    alignItems: 'center', justifyContent: 'center',
-  },
-  onlineDot: {
-    position: 'absolute', bottom: -1, right: -1, width: 11, height: 11, borderRadius: 6,
-    backgroundColor: t.emerald, borderWidth: 2, borderColor: t.bg,
-  },
-  headerBadge: {
-    flexDirection: 'row', alignItems: 'center', gap: 5,
-    backgroundColor: t.emeraldTint, borderWidth: 1, borderColor: t.emeraldBorder,
-    borderRadius: 999, paddingHorizontal: 10, paddingVertical: 5,
-  },
-  headerBadgeText: { color: t.emerald, fontSize: 11, fontWeight: '700' },
-  chipsRow: { gap: 8, paddingHorizontal: 16, alignItems: 'center' },
-  chip: {
-    backgroundColor: t.mode === 'light' ? t.surfaceStrong : t.inputFill, borderWidth: 1, borderColor: t.border,
-    borderRadius: 999, paddingHorizontal: 14, paddingVertical: 8,
-  },
-  chipText: { color: t.textPrimary, fontSize: 12, fontWeight: '600' },
-  headerTitle: { color: t.textPrimary, fontSize: 17, fontWeight: '700' },
-  headerSub: { color: t.textMuted, fontSize: 12 },
-  list: { padding: 20, gap: 12, paddingBottom: 20 },
-  bubbleRow: { flexDirection: 'row' },
-  bubble: {
-    maxWidth: '86%', borderRadius: 22, paddingHorizontal: 16, paddingVertical: 12, borderWidth: 1,
-  },
-  userBubble: { backgroundColor: t.emeraldTint, borderColor: t.emeraldBorder },
-  bubbleImage: { width: 200, height: 200, borderRadius: 14, marginBottom: 8 },
-  centsBubble: {
-    backgroundColor: t.mode === 'light' ? t.surfaceStrong : 'rgba(255,255,255,0.055)',
-    borderColor: t.mode === 'light' ? 'rgba(255,255,255,0.9)' : t.borderSoft,
-  },
-  actionCard: { minWidth: '70%' },
-  bubbleText: { color: t.textPrimary, fontSize: 14, lineHeight: 20 },
-  thinking: { paddingVertical: 16, paddingHorizontal: 18 },
-  typingRow: { flexDirection: 'row', gap: 5, alignItems: 'flex-end', height: 12 },
-  typingDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: t.emerald },
-  handledChip: {
-    flexDirection: 'row', alignItems: 'center', gap: 5, alignSelf: 'flex-start',
-    borderRadius: 999, paddingHorizontal: 10, paddingVertical: 5, marginTop: 12,
+    borderRadius: 20, padding: 13, overflow: 'hidden',
     borderWidth: 1,
+    borderColor: t.mode === 'dark' ? 'rgba(255,255,255,0.14)' : 'rgba(255,255,255,0.95)',
+    shadowColor: '#02170D', shadowOpacity: t.mode === 'dark' ? 0.2 : 0.08,
+    shadowRadius: 14, shadowOffset: { width: 0, height: 6 },
+    elevation: 4,
   },
-  handledYes: { backgroundColor: t.emeraldTint, borderColor: t.emeraldBorder },
-  handledNo: { backgroundColor: t.inputFill, borderColor: t.borderSoft },
-  handledText: { color: t.textMuted, fontSize: 12, fontWeight: '700' },
-  cardBig: { color: t.textPrimary, fontSize: 22, fontWeight: '700' },
+  suggestIcon: {
+    width: 36, height: 36, borderRadius: 13, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: t.emeraldTint, borderWidth: 1, borderColor: t.emeraldBorder,
+  },
+  suggestTitle: { color: t.textPrimary, fontSize: 14.5, fontWeight: '800' },
+  suggestPrompt: { color: t.textMuted, fontSize: 12.5, marginTop: 1 },
+
+  list: { padding: 18, gap: 12, paddingBottom: 16 },
+  bubbleRow: { flexDirection: 'row', alignItems: 'flex-end' },
+  miniAvatar: {
+    width: 26, height: 26, borderRadius: 10, marginRight: 8, marginBottom: 2,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: t.emeraldTint, borderWidth: 1, borderColor: t.emeraldBorder,
+  },
+  glassBubble: {
+    maxWidth: '84%', borderRadius: 22, borderBottomLeftRadius: 8, overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: t.mode === 'dark' ? 'rgba(255,255,255,0.13)' : 'rgba(255,255,255,0.95)',
+  },
+  glassBubbleStrong: {
+    minWidth: '72%',
+    borderColor: t.mode === 'dark' ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,1)',
+    shadowColor: '#02170D', shadowOpacity: t.mode === 'dark' ? 0.28 : 0.12,
+    shadowRadius: 18, shadowOffset: { width: 0, height: 8 },
+    elevation: 6,
+  },
+  glassInner: { paddingHorizontal: 16, paddingVertical: 12 },
+  userBubble: {
+    maxWidth: '84%', borderRadius: 22, borderBottomRightRadius: 8, overflow: 'hidden',
+    paddingHorizontal: 16, paddingVertical: 12,
+    shadowColor: t.emerald, shadowOpacity: 0.3, shadowRadius: 12, shadowOffset: { width: 0, height: 6 },
+    elevation: 5,
+  },
+  userText: { color: '#FFFFFF', fontSize: 14.5, lineHeight: 20, fontWeight: '500' },
+  centsText: { color: t.textPrimary, fontSize: 14.5, lineHeight: 21 },
+  bubbleImage: { width: 200, height: 200, borderRadius: 14, marginBottom: 8 },
+  bareImage: {
+    width: 232, height: 232, borderRadius: 22,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: t.mode === 'dark' ? 'rgba(255,255,255,0.28)' : 'rgba(2,44,34,0.18)',
+  },
+
+  cardLabelRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 6 },
+  cardLabelText: { color: t.emerald, fontSize: 11.5, fontWeight: '800', letterSpacing: 0.8 },
+  cardBig: { color: t.textPrimary, fontSize: 22, fontWeight: '800' },
   cardSub: { color: t.textMuted, fontSize: 12, marginTop: 2 },
   actionRow: { flexDirection: 'row', gap: 10, marginTop: 14 },
   actionBtn: { flex: 1, height: 44, borderRadius: 999, alignItems: 'center', justifyContent: 'center' },
   confirmText: { color: t.onEmerald, fontWeight: '800', fontSize: 14 },
   declineBtn: { backgroundColor: t.inputFill, borderWidth: 1, borderColor: t.borderSoft },
   declineText: { color: t.textMuted, fontWeight: '700', fontSize: 14 },
-  composerWrap: { paddingHorizontal: 16 },
+  handledChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 5, alignSelf: 'flex-start',
+    borderRadius: 999, paddingHorizontal: 10, paddingVertical: 5, marginTop: 12, borderWidth: 1,
+  },
+  handledYes: { backgroundColor: t.emeraldTint, borderColor: t.emeraldBorder },
+  handledNo: { backgroundColor: t.inputFill, borderColor: t.borderSoft },
+  handledText: { color: t.textMuted, fontSize: 12, fontWeight: '700' },
+
+  typingRow: { flexDirection: 'row', gap: 5, alignItems: 'flex-end', height: 12, paddingVertical: 2 },
+  typingDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: t.emerald },
+
+  chipsRow: { gap: 8, paddingHorizontal: 16, paddingBottom: 10, alignItems: 'center' },
+  chip: {
+    borderRadius: 999, paddingHorizontal: 14, paddingVertical: 9, overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: t.mode === 'dark' ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.94)',
+    backgroundColor: t.mode === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.6)',
+  },
+  chipText: { color: t.textPrimary, fontSize: 12, fontWeight: '600' },
+
+  composerWrap: { paddingHorizontal: 14 },
   composer: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
-    borderRadius: radius.chip, overflow: 'hidden', paddingHorizontal: 8, paddingVertical: 6,
-    backgroundColor: t.mode === 'light' ? t.surfaceStrong : t.surface,
-    borderWidth: 1, borderColor: t.mode === 'light' ? 'rgba(255,255,255,0.95)' : t.border,
+    borderRadius: 28, overflow: 'hidden', paddingHorizontal: 8, paddingVertical: 6,
+    borderWidth: 1,
+    borderColor: t.mode === 'dark' ? 'rgba(255,255,255,0.16)' : 'rgba(255,255,255,0.98)',
+    shadowColor: '#02170D', shadowOpacity: t.mode === 'dark' ? 0.3 : 0.14,
+    shadowRadius: 20, shadowOffset: { width: 0, height: 8 },
+    elevation: 10,
   },
-  input: { flex: 1, color: t.textPrimary, fontSize: 14, paddingHorizontal: 4 },
+  input: { flex: 1, color: t.textPrimary, fontSize: 14.5, paddingHorizontal: 4, paddingVertical: 8 },
   iconBtn: { width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center' },
-  sendBtn: { backgroundColor: t.emerald },
+  sendBtn: {
+    shadowColor: t.emerald, shadowOpacity: 0.45, shadowRadius: 10, shadowOffset: { width: 0, height: 4 },
+  },
+
   sheetScrim: { flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'flex-end' },
   sheet: {
     backgroundColor: t.sheet, borderTopLeftRadius: 28, borderTopRightRadius: 28,
-    padding: 24, paddingBottom: 44, borderWidth: 1, borderColor: t.border, gap: 6,
+    padding: 24, paddingBottom: 44, borderWidth: 1, borderColor: t.border, gap: 4,
   },
   sheetHandle: { width: 40, height: 4, borderRadius: 2, backgroundColor: t.dotIdle, alignSelf: 'center', marginBottom: 14 },
-  sheetTitle: { color: t.textPrimary, fontSize: 18, fontWeight: '700', marginBottom: 10 },
+  sheetTitle: { color: t.textPrimary, fontSize: 18, fontWeight: '800', marginBottom: 10 },
   sheetItem: { flexDirection: 'row', alignItems: 'center', gap: 14, padding: 12, borderRadius: 16 },
   sheetIcon: {
     width: 44, height: 44, borderRadius: 14, alignItems: 'center', justifyContent: 'center',
-    backgroundColor: 'rgba(16,185,129,0.12)', borderWidth: 1, borderColor: 'rgba(16,185,129,0.3)',
+    backgroundColor: t.emeraldTint, borderWidth: 1, borderColor: t.emeraldBorder,
   },
-  sheetItemTitle: { color: t.textPrimary, fontSize: 15, fontWeight: '600' },
+  sheetItemTitle: { color: t.textPrimary, fontSize: 15, fontWeight: '700' },
   sheetItemSub: { color: t.textMuted, fontSize: 12, marginTop: 1 },
 });

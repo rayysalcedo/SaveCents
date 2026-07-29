@@ -23,7 +23,17 @@
         "foregroundImage": "./assets/android-icon-foreground.png"
       }
     },
-    "plugins": ["expo-router"],
-    "web": { "favicon": "./assets/favicon.png" }
+    "plugins": [
+      "expo-router",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "SaveCents uses the camera to scan receipts and price tags."
+        }
+      ]
+    ],
+    "web": {
+      "favicon": "./assets/favicon.png"
+    }
   }
 }

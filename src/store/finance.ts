@@ -238,28 +238,49 @@ export const useFinance = create<FinanceState>()(
       isThinking: true,
     }));
 
-    const s = get();
-    const ctx = {
-      categories: s.categories,
-      goals: s.goals,
-      accounts: s.accounts,
-      currency: s.currency,
-    };
+    const ctx = buildBrainContext(get());
 
     let result: CentsResult;
     try {
       result = await parseCentsIntent(input, ctx);
     } catch (e: any) {
-      const errMsg = e?.message ?? String(e);
+      const errMsg = String(e?.message ?? e);
       console.warn('[Cents brain error]', errMsg);
       result = localParseIntent(input, ctx);
-      if (__DEV__ && result.intent === 'Unknown') {
-        result.reply += `\n\n[debug — brain error: ${String(errMsg).slice(0, 160)}]`;
+      if (result.intent === 'Unknown' && errMsg === 'cents-overloaded') {
+        result.reply = "I'm a bit swamped right now. Give me a few seconds and send that again.";
+      }
+      if (__DEV__ && result.intent === 'Unknown' && errMsg !== 'cents-overloaded') {
+        result.reply += `\n\n[debug, brain error: ${errMsg.slice(0, 160)}]`;
       }
     }
 
-    const reply = buildReplyFromResult(result, get());
-    set((st) => ({ chat: [...st.chat, reply], isThinking: false }));
+    // Multi-step requests produce one card per action, in order. Categories
+    // added earlier in the same batch count as "existing" for later cards
+    // (e.g. "add a Groceries budget 9000 and log that receipt there").
+    const st = get();
+    if (result.intent !== 'Unknown' && result.actions.length > 1) {
+      const replies: ChatMessage[] = [];
+      if (result.reply) replies.push({ id: uid(), sender: 'CENTS', type: 'text', text: result.reply });
+      const assumed: string[] = [];
+      for (const a of result.actions) {
+        const sub: CentsResult = {
+          ...result,
+          intent: a.intent,
+          amount: a.amount,
+          categoryName: a.categoryName,
+          item: a.item || a.categoryName,
+          reply: '',
+        };
+        replies.push(buildReplyFromResult(sub, st, assumed));
+        if (a.intent === 'AddCategory' && a.categoryName) assumed.push(a.categoryName);
+      }
+      set((s2) => ({ chat: [...s2.chat, ...replies], isThinking: false }));
+      return;
+    }
+
+    const reply = buildReplyFromResult(result, st);
+    set((s2) => ({ chat: [...s2.chat, reply], isThinking: false }));
   },
 
   confirmAction: (messageId, confirm) => {
@@ -271,8 +292,7 @@ export const useFinance = create<FinanceState>()(
       if (msg.type === 'confirmation' || msg.type === 'negotiation') {
         executeAction(msg.action, set);
       } else if (msg.type === 'receiptScan') {
-        executeAction({ kind: 'LogTransaction', amount: msg.amount, categoryName: 'Pets' }, set);
-        pushCents(set, `Logged ${peso(msg.amount)} under Pets.`);
+        executeAction({ kind: 'LogTransaction', amount: msg.amount, categoryName: 'Others' }, set);
       } else if (msg.type === 'consultItem') {
         pushCents(set, `Okay, logged the ${msg.item} for ${peso(msg.amount)}. I'll adjust your ${msg.goalName} trajectory.`);
       } else if (msg.type === 'mismatch') {
@@ -295,36 +315,41 @@ export const useFinance = create<FinanceState>()(
     set((st) => ({
       chat: [...st.chat, {
         id: uid(), sender: 'USER', type: 'text',
-        text: mode === 'receipt' ? 'Scanned a receipt' : 'Can I afford this?',
+        text: '', // photo renders bare in the chat; no label
         imageUri,
       }],
       isThinking: true,
     }));
 
-    const s = get();
-    const ctx = { categories: s.categories, goals: s.goals, accounts: s.accounts, currency: s.currency };
+    const ctx = buildBrainContext(get());
 
     let reply: ChatMessage;
     try {
       const result = await analyzeImage(base64, mimeType, mode, ctx);
+      // Coach lead-in first: what Cents saw and figured out, then the action card.
+      const analysis = [result.reply, result.details].filter(Boolean).join('\n\n');
+      if (analysis) {
+        const lead: ChatMessage = { id: uid(), sender: 'CENTS', type: 'text', text: analysis };
+        set((st) => ({ chat: [...st.chat, lead] }));
+      }
       if (!result.amount) {
         reply = {
           id: uid(), sender: 'CENTS', type: 'text',
-          text: result.reply || "I couldn't read an amount off that photo \u2014 try a clearer shot, or just type it (e.g. 'spent 250 on gas').",
+          text: analysis
+            ? "I couldn't pin down a number from that photo. Tell me the price and I'll take it from there."
+            : "I couldn't read that photo clearly. Try a closer, well-lit shot, or just type it (e.g. 'spent 250 on gas').",
         };
       } else {
         reply = buildReplyFromResult(result, get());
-        // Coach lead-in: say what Cents saw, then show the action card.
-        if (result.reply) {
-          const lead: ChatMessage = { id: uid(), sender: 'CENTS', type: 'text', text: result.reply };
-          set((st) => ({ chat: [...st.chat, lead] }));
-        }
       }
     } catch (e) {
-      console.warn('[Cents vision error]', (e as Error)?.message);
+      const msg = String((e as Error)?.message ?? e);
+      console.warn('[Cents vision error]', msg);
       reply = {
         id: uid(), sender: 'CENTS', type: 'text',
-        text: "I couldn't analyze that photo right now \u2014 check your connection and try again, or type the expense instead.",
+        text: msg === 'cents-overloaded'
+          ? "I'm getting a lot of requests right now. Give it a few seconds, then retake the shot or just type it (e.g. 'groceries 3670 at Savemore')."
+          : "I couldn't analyze that photo right now. Check your connection and try again, or type the expense instead.",
       };
     }
     set((st) => ({ chat: [...st.chat, reply], isThinking: false }));
@@ -352,22 +377,55 @@ export const useFinance = create<FinanceState>()(
   ),
 );
 
-function buildReplyFromResult(result: CentsResult, st2: FinanceState): ChatMessage {
+// M5.5: everything Cents' brain should know per call, including conversation
+// memory so follow-ups ("yes", "how about 500?", "what was that item again?")
+// resolve naturally.
+function buildBrainContext(s: FinanceState) {
+  const history = s.chat
+    .slice(-12)
+    .map((m) => {
+      const text =
+        m.type === 'text' ? (m.text || (m.imageUri ? 'Shared a photo to scan' : ''))
+        : m.type === 'confirmation' || m.type === 'negotiation' ? m.prompt
+        : m.type === 'receiptScan' ? `Receipt for ${peso(m.amount)} from ${m.store}`
+        : m.type === 'consultItem' ? `Purchase check: ${m.item} at ${peso(m.amount)}`
+        : m.type === 'mismatch' ? `${m.item} (${peso(m.amount)}) didn't fit any budget`
+        : '';
+      return text ? { sender: m.sender, text } : null;
+    })
+    .filter((x): x is { sender: 'USER' | 'CENTS'; text: string } => !!x);
+
+  return {
+    categories: s.categories,
+    goals: s.goals,
+    accounts: s.accounts,
+    currency: s.currency,
+    nickname: s.profile.nickname || s.profile.name,
+    history,
+    recentTransactions: s.transactions.slice(0, 8),
+  };
+}
+
+function buildReplyFromResult(result: CentsResult, st2: FinanceState, assumedCategories: string[] = []): ChatMessage {
     const { intent, amount, categoryName, lang } = result;
     const fil = lang === 'fil';
     const item = result.item || categoryName;
     const category = st2.categories.find((c) => c.name.toLowerCase() === categoryName.toLowerCase());
+    // A category being created by an EARLIER card in the same multi-step batch
+    // counts as existing, so "add Groceries and log there" reads naturally.
+    const assumed = !category && assumedCategories.some((n) => n.toLowerCase() === categoryName.toLowerCase());
 
     let reply: ChatMessage;
     switch (intent) {
       case 'LogTransaction': {
-        if (category) {
+        if (category || assumed) {
+          const name = category?.name ?? categoryName;
           reply = {
             id: uid(), sender: 'CENTS', type: 'confirmation',
             prompt: fil
-              ? `I-log ang ${peso(amount)} para sa ${item !== category.name ? `${item} sa ` : ''}${category.name}?`
-              : `Log ${peso(amount)} for ${item !== category.name ? `${item} under ` : ''}${category.name}?`,
-            action: { kind: 'LogTransaction', amount, categoryName: category.name },
+              ? `I-log ang ${peso(amount)} para sa ${item !== name ? `${item} sa ` : ''}${name}?`
+              : `Log ${peso(amount)} for ${item !== name ? `${item} under ` : ''}${name}?`,
+            action: { kind: 'LogTransaction', amount, categoryName: name },
             confirmed: false, handled: false, lang,
           };
         } else {
@@ -464,19 +522,28 @@ function pushCents(set: Setter, text: string) {
 
 function executeAction(action: ActionType, set: Setter) {
   switch (action.kind) {
-    case 'LogTransaction':
-      set((s) => ({
-        categories: s.categories.map((c) =>
-          c.name.toLowerCase() === action.categoryName.toLowerCase()
-            ? { ...c, spent: c.spent + action.amount } : c,
-        ),
-        transactions: [
-          { id: uid(), amount: action.amount, description: action.categoryName, categoryId: action.categoryName, timestamp: Date.now(), isIncome: false },
-          ...s.transactions,
-        ],
-      }));
+    case 'LogTransaction': {
+      // If the category doesn't exist yet (e.g. the log card of a multi-step
+      // batch was confirmed before, or instead of, its AddCategory card),
+      // create it on the spot so the log always lands somewhere real.
+      set((s) => {
+        const exists = s.categories.some((c) => c.name.toLowerCase() === action.categoryName.toLowerCase());
+        return {
+          categories: exists
+            ? s.categories.map((c) =>
+                c.name.toLowerCase() === action.categoryName.toLowerCase()
+                  ? { ...c, spent: c.spent + action.amount } : c,
+              )
+            : [...s.categories, { id: uid(), name: action.categoryName, limit: action.amount, spent: action.amount, icon: 'pricetag' }],
+          transactions: [
+            { id: uid(), amount: action.amount, description: action.categoryName, categoryId: action.categoryName, timestamp: Date.now(), isIncome: false },
+            ...s.transactions,
+          ],
+        };
+      });
       pushCents(set, `Logged ${peso(action.amount)} under ${action.categoryName}.`);
       break;
+    }
     case 'NegotiatePurchase':
       set((s) => ({
         categories: s.categories.map((c) =>

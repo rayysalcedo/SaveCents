@@ -32,7 +32,7 @@ interface ThemeMeta {
 
 export const darkPalette = {
   ...brand,
-  onEmerald: '#04140D',
+  onEmerald: '#FFFFFF', // white on emerald in BOTH modes (owner: no dark icons/text on green)
   ...( { mode: 'dark', blurTint: 'dark', statusBar: 'light' } as ThemeMeta ),
   bg: '#040906',
   surface: 'rgba(255,255,255,0.07)',

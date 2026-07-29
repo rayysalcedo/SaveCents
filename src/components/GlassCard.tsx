@@ -36,9 +36,12 @@ export function GlassCard({ children, style, glow = false, pad = 20 }: Props) {
 }
 
 const styles = StyleSheet.create({
-  shadowWrap: { borderRadius: radius.card, overflow: 'hidden' },
+  // Shadow and clipping must live on DIFFERENT views: overflow 'hidden'
+  // sets masksToBounds on iOS which crops the shadow (the light-mode
+  // 'cropped shadow' bug). The blur child clips itself.
+  shadowWrap: { borderRadius: radius.card },
   lightShadow: {
-    shadowColor: '#022C22', shadowOpacity: 0.06, shadowRadius: 16, shadowOffset: { width: 0, height: 6 },
+    shadowColor: '#0B3A2E', shadowOpacity: 0.09, shadowRadius: 18, shadowOffset: { width: 0, height: 8 },
     elevation: 3,
   },
   blur: { borderRadius: radius.card, overflow: 'hidden', flexGrow: 1 },

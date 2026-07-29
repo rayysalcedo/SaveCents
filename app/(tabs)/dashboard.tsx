@@ -283,8 +283,8 @@ export default function Dashboard() {
           showsHorizontalScrollIndicator={false}
           onScroll={Animated.event([{ nativeEvent: { contentOffset: { x: bankScrollX } } }], { useNativeDriver: false })}
           scrollEventThrottle={16}
-          style={{ marginHorizontal: -24 }}
-          contentContainerStyle={{ paddingHorizontal: 24 }}
+          style={{ marginHorizontal: -24, marginVertical: -44 }}
+          contentContainerStyle={{ paddingHorizontal: 24, paddingVertical: 44 }}
           renderItem={({ item, index }) => <BalanceCard item={item} index={index} />}
         />
         <View style={styles.dots}>
@@ -357,8 +357,8 @@ export default function Dashboard() {
           showsHorizontalScrollIndicator={false}
           onScroll={Animated.event([{ nativeEvent: { contentOffset: { x: insightScrollX } } }], { useNativeDriver: false })}
           scrollEventThrottle={16}
-          style={{ marginHorizontal: -24 }}
-          contentContainerStyle={{ paddingHorizontal: 24 }}
+          style={{ marginHorizontal: -24, marginVertical: -30 }}
+          contentContainerStyle={{ paddingHorizontal: 24, paddingVertical: 30 }}
           renderItem={({ item, index }) => (
             <InsightSlide index={index} scrollX={insightScrollX}>
               {item.key === 'goal' && goal && (
@@ -577,7 +577,10 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   // Balance carousel
   bankShadow: {
     borderRadius: 28,
-    shadowColor: '#03130C', shadowOpacity: 0.5, shadowRadius: 28, shadowOffset: { width: 0, height: 16 },
+    shadowColor: t.mode === 'dark' ? '#03130C' : '#0B3A2E',
+    shadowOpacity: t.mode === 'dark' ? 0.5 : 0.22,
+    shadowRadius: t.mode === 'dark' ? 28 : 22,
+    shadowOffset: { width: 0, height: t.mode === 'dark' ? 16 : 12 },
     elevation: 16,
   },
   bankCard: { borderRadius: 28, padding: 24, height: 204, overflow: 'hidden', justifyContent: 'space-between' },
