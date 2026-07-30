@@ -16,9 +16,36 @@ import { useFinance } from '../src/store/finance';
 import { COUNTRIES } from '../src/data/countries';
 import { authAvailable, authErrorMessage, changePassword, deleteAccount, resetPassword, signOutFirebase, getFirebaseAuth } from '../src/services/auth';
 import { OtpUnavailableError, requestPasswordOtp, verifyPasswordOtp } from '../src/services/otp';
+import { ensureNotificationPermission } from '../src/services/notifications';
 import { clearLastUid, deleteCloudData, stopAutoSync } from '../src/services/sync';
 
 const THEME_OPTS = ['light', 'dark', 'system'] as const;
+
+
+// Rule 3.1: module scope, not inside the screen's render body.
+const Row = ({ styles, t, icon, label, value, onPress, right, danger, divider }: {
+  styles: any; t: Palette;
+  icon: keyof typeof Ionicons.glyphMap;
+  label: string;
+  value?: string;
+  onPress?: () => void;
+  right?: React.ReactNode;
+  danger?: boolean;
+  divider?: boolean;
+}) => (
+  <Pressable
+    onPress={onPress}
+    disabled={!onPress}
+    style={({ pressed }) => [styles.row, divider && styles.rowDivider, pressed && onPress && { backgroundColor: t.inputFill }]}
+  >
+    <View style={[styles.rowIcon, danger && { backgroundColor: t.redTint }]}>
+      <Ionicons name={icon} size={16} color={danger ? t.red : t.emerald} />
+    </View>
+    <Text style={[styles.rowLabel, danger && { color: t.red }]}>{label}</Text>
+    {value ? <Text style={styles.rowValue}>{value}</Text> : null}
+    {right ?? (onPress ? <Ionicons name="chevron-forward" size={16} color={t.textMuted} /> : null)}
+  </Pressable>
+);
 
 export default function ProfileScreen() {
   const t = useTheme();
@@ -177,28 +204,18 @@ export default function ProfileScreen() {
     );
   };
 
-  const Row = ({ icon, label, value, onPress, right, danger, divider }: {
-    icon: keyof typeof Ionicons.glyphMap;
-    label: string;
-    value?: string;
-    onPress?: () => void;
-    right?: React.ReactNode;
-    danger?: boolean;
-    divider?: boolean;
-  }) => (
-    <Pressable
-      onPress={onPress}
-      disabled={!onPress}
-      style={({ pressed }) => [styles.row, divider && styles.rowDivider, pressed && onPress && { backgroundColor: t.inputFill }]}
-    >
-      <View style={[styles.rowIcon, danger && { backgroundColor: t.redTint }]}>
-        <Ionicons name={icon} size={16} color={danger ? t.red : t.emerald} />
-      </View>
-      <Text style={[styles.rowLabel, danger && { color: t.red }]}>{label}</Text>
-      {value ? <Text style={styles.rowValue}>{value}</Text> : null}
-      {right ?? (onPress ? <Ionicons name="chevron-forward" size={16} color={t.textMuted} /> : null)}
-    </Pressable>
-  );
+  // M5.6: turning notifications ON asks iOS for real permission; if the user
+  // denied it at the system level, the switch snaps back with directions.
+  const toggleNotifications = async (v: boolean) => {
+    setNotificationsEnabled(v);
+    if (v) {
+      const granted = await ensureNotificationPermission();
+      if (!granted) {
+        setNotificationsEnabled(false);
+        Alert.alert('Notifications are off in iOS Settings', 'Open Settings, find SaveCents, and allow notifications, then flip this switch again.');
+      }
+    }
+  };
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
@@ -248,21 +265,21 @@ export default function ProfileScreen() {
         {/* Account */}
         <Text style={styles.sectionLabel}>ACCOUNT</Text>
         <GlassCard pad={6} style={styles.card}>
-          <Row icon="person" label="Nickname & avatar" onPress={openPersona} />
-          <Row icon="key" label="Login" value={profile.email} divider onPress={openLoginEdit} />
-          <Row icon="lock-closed" label="Password" divider onPress={openPasswordFlow} />
+          <Row styles={styles} t={t} icon="person" label="Nickname & avatar" onPress={openPersona} />
+          <Row styles={styles} t={t} icon="key" label="Login" value={profile.email} divider onPress={openLoginEdit} />
+          <Row styles={styles} t={t} icon="lock-closed" label="Password" divider onPress={openPasswordFlow} />
         </GlassCard>
 
         {/* Preferences */}
         <Text style={styles.sectionLabel}>PREFERENCES</Text>
         <GlassCard pad={6} style={styles.card}>
-          <Row
+          <Row styles={styles} t={t}
             icon="notifications"
             label="Notifications"
             right={
               <Switch
                 value={notificationsEnabled}
-                onValueChange={setNotificationsEnabled}
+                onValueChange={toggleNotifications}
                 trackColor={{ true: t.emerald, false: t.inputFill }}
                 thumbColor="#FFFFFF"
               />
@@ -293,7 +310,7 @@ export default function ProfileScreen() {
               ))}
             </View>
           </View>
-          <Row
+          <Row styles={styles} t={t}
             icon="globe"
             label="Country & currency"
             value={`${countryData.flag} ${countryData.symbol}`}
@@ -305,7 +322,7 @@ export default function ProfileScreen() {
         {/* Privacy & security */}
         <Text style={styles.sectionLabel}>PRIVACY & SECURITY</Text>
         <GlassCard pad={6} style={styles.card}>
-          <Row
+          <Row styles={styles} t={t}
             icon="scan-circle"
             label="Face ID unlock"
             right={
@@ -317,8 +334,8 @@ export default function ProfileScreen() {
               />
             }
           />
-          <Row icon="help-circle" label="Help & support" divider onPress={contactSupport} />
-          <Row icon="trash" label="Delete account" divider danger onPress={confirmDeleteAccount} />
+          <Row styles={styles} t={t} icon="help-circle" label="Help & support" divider onPress={contactSupport} />
+          <Row styles={styles} t={t} icon="trash" label="Delete account" divider danger onPress={confirmDeleteAccount} />
         </GlassCard>
 
         {/* Log out */}

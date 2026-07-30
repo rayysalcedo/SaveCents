@@ -5,9 +5,10 @@
 // fight iOS presentation rules.
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Animated, Easing, Keyboard, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View,
+  Animated, Easing, Image, Keyboard, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useDragToDismiss } from '../../hooks/useDragToDismiss';
 import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
@@ -26,6 +27,7 @@ export function CentsHub() {
   const styles = useMemo(() => makeStyles(t), [t]);
   const insets = useSafeAreaInsets();
   const { hubOpen, closeHub, openChat, openScan } = useUI();
+  const sheetDrag = useDragToDismiss(() => dismiss());
   const { accounts, categories, country, addExpense, addIncome } = useFinance();
 
   const [mode, setMode] = useState<Mode>('menu');
@@ -160,7 +162,7 @@ export function CentsHub() {
           }}
         >
           {/* Glass sheet */}
-          <View style={styles.sheetShadow}>
+          <Animated.View style={[styles.sheetShadow, { transform: [{ translateY: sheetDrag.drag }] }]}>
             <View style={styles.sheetClip}>
               <BlurView intensity={60} tint={t.blurTint} style={StyleSheet.absoluteFill} />
               <LinearGradient
@@ -172,13 +174,15 @@ export function CentsHub() {
                 style={StyleSheet.absoluteFill}
               />
               <View style={[styles.sheetInner, { paddingBottom: 20 + insets.bottom }]}>
-                <View style={styles.handle} />
+                <View style={styles.grabZone} {...sheetDrag.panHandlers}>
+                  <View style={styles.handle} />
+                </View>
 
                 {mode === 'menu' && (
                   <>
                     <View style={styles.headRow}>
                       <LinearGradient colors={[t.emerald, t.teal]} style={styles.headBadge}>
-                        <Ionicons name="sparkles" size={20} color={t.onEmerald} />
+                        <Image source={require('../../../assets/cents-mark.png')} style={{ width: 26, height: 26 }} resizeMode="contain" />
                       </LinearGradient>
                       <View style={{ flex: 1 }}>
                         <Text style={styles.headTitle}>Hi, I'm Cents</Text>
@@ -292,7 +296,7 @@ export function CentsHub() {
                 )}
               </View>
             </View>
-          </View>
+          </Animated.View>
         </Animated.View>
       </KeyboardAvoidingView>
     </View>
@@ -324,6 +328,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   },
   sheetInner: { padding: 22, paddingTop: 12 },
   handle: { width: 42, height: 5, borderRadius: 3, backgroundColor: t.dotIdle, alignSelf: 'center', marginBottom: 16 },
+  grabZone: { alignSelf: 'stretch', alignItems: 'center', paddingTop: 8, paddingBottom: 4, marginTop: -8 },
   headRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 18 },
   headTitle: { color: t.textPrimary, fontSize: 19, fontWeight: '800' },
   headBadge: {

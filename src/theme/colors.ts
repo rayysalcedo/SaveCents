@@ -9,6 +9,8 @@ const brand = {
   teal: '#0D9488',
   // M5 redesign: soft sage accents for the friendlier green/white/sage look
   sage: '#9DBFA5',
+  centsYellow: '#FFDE59', // sampled from the Cents brand mark
+  centsYellowTint: 'rgba(255,222,89,0.16)',
   sageTint: 'rgba(157,191,165,0.22)',
   sageSoft: 'rgba(157,191,165,0.12)',
   forest: '#047857',

@@ -4,8 +4,9 @@ import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
-  Account, ActionType, Category, ChatMessage, Goal, Transaction, UserProfile, uid, peso, setCurrencySymbol,
+  Account, ActionType, Category, ChatMessage, Goal, Transaction, UserProfile, uid, peso, setCurrencySymbol, setNumberLocale,
 } from '../models/types';
+import { notifyBudgetCrossings } from '../services/notifications';
 import { COUNTRIES } from '../data/countries';
 import { analyzeImage, localParseIntent, parseCentsIntent, CentsResult } from '../services/cents';
 
@@ -23,6 +24,7 @@ export interface FinanceState {
   themeMode: 'light' | 'dark' | 'system';
   country: string;
   currency: string;
+  lastRollover: string; // M5.6: YYYY-MM of the last budget month rollover
 
   selectGoal: (id: string) => void;
   setThemeMode: (m: 'light' | 'dark' | 'system') => void;
@@ -48,6 +50,10 @@ export interface FinanceState {
   // M5 quick actions from the Cents hub — direct logging, no chat round-trip.
   addExpense: (amount: number, categoryName: string, accountId?: string, note?: string) => void;
   addIncome: (amount: number, accountId: string, note?: string) => void;
+  // M5.6 truth pass
+  updateTransaction: (id: string, patch: { amount?: number; description?: string; categoryId?: string }) => void;
+  removeTransaction: (id: string) => void;
+  rolloverBudgetsIfNeeded: () => void;
   sendChat: (input: string) => Promise<void>;
   sendImage: (base64: string, mimeType: string, mode: 'receipt' | 'price', imageUri?: string) => Promise<void>;
   confirmAction: (messageId: string, confirm: boolean) => void;
@@ -55,6 +61,30 @@ export interface FinanceState {
 
 const now = Date.now();
 const day = 86_400_000;
+
+// YYYY-MM for "which month have budgets last been reset for".
+export const monthKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+
+// Shared bookkeeping for edit/delete: the state deltas a transaction caused.
+// sign +1 applies the transaction, sign -1 reverses it. Balances and budget
+// spent clamp at 0 the same way addExpense always has.
+function applyTxEffect(s: { accounts: Account[]; categories: Category[] }, tx: Transaction, sign: 1 | -1) {
+  const accounts = tx.accountId
+    ? s.accounts.map((a) =>
+        a.id === tx.accountId
+          ? { ...a, balance: Math.max(a.balance + (tx.isIncome ? tx.amount : -tx.amount) * sign, 0) }
+          : a,
+      )
+    : s.accounts;
+  const categories = tx.isIncome
+    ? s.categories
+    : s.categories.map((c) =>
+        c.name.toLowerCase() === tx.categoryId.toLowerCase()
+          ? { ...c, spent: Math.max(c.spent + tx.amount * sign, 0) }
+          : c,
+      );
+  return { accounts, categories };
+}
 
 // The exact shape synced to Firestore (users/{uid}) and persisted locally.
 export interface CloudSnapshot {
@@ -70,6 +100,9 @@ export interface CloudSnapshot {
   currency: string;
   biometricsEnabled: boolean;
   notificationsEnabled: boolean;
+  // M5.6: YYYY-MM key of the last budget month rollover (see
+  // rolloverBudgetsIfNeeded). Persisted so a relaunch mid-month is a no-op.
+  lastRollover: string;
 }
 
 const makeDefaults = (): CloudSnapshot & { isThinking: boolean } => ({
@@ -105,6 +138,7 @@ const makeDefaults = (): CloudSnapshot & { isThinking: boolean } => ({
   currency: '\u20B1',
   biometricsEnabled: true,
   notificationsEnabled: true,
+  lastRollover: monthKey(),
 });
 
 // Single source of truth for "what gets saved" — used by both the local
@@ -122,6 +156,7 @@ export const buildSnapshot = (s: FinanceState): CloudSnapshot => ({
   currency: s.currency,
   biometricsEnabled: s.biometricsEnabled,
   notificationsEnabled: s.notificationsEnabled ?? true,
+  lastRollover: s.lastRollover ?? monthKey(),
 });
 
 export const useFinance = create<FinanceState>()(
@@ -138,6 +173,7 @@ export const useFinance = create<FinanceState>()(
     const c = COUNTRIES[code];
     if (!c) return;
     setCurrencySymbol(c.symbol);
+    setNumberLocale(c.locale);
     set({ country: code, currency: c.symbol });
   },
 
@@ -193,6 +229,7 @@ export const useFinance = create<FinanceState>()(
   // debit a source; income credits the chosen card/e-wallet. Both mirror into
   // chat so Cents stays the single timeline of what happened.
   addExpense: (amount, categoryName, accountId, note) => {
+    const prevCategories = get().categories;
     set((s) => {
       const exists = s.categories.some((c) => c.name.toLowerCase() === categoryName.toLowerCase());
       const categories = exists
@@ -214,6 +251,7 @@ export const useFinance = create<FinanceState>()(
         ],
       };
     });
+    notifyBudgetCrossings(prevCategories, get().categories, get().notificationsEnabled);
     const acct = accountId ? get().accounts.find((a) => a.id === accountId) : undefined;
     pushCents(set, `Logged ${peso(amount)} under ${categoryName}${acct ? ` from ${acct.name}` : ''}.`);
   },
@@ -228,6 +266,67 @@ export const useFinance = create<FinanceState>()(
     }));
     const acct = get().accounts.find((a) => a.id === accountId);
     pushCents(set, `Added ${peso(amount)} to ${acct?.name ?? 'your account'}.`);
+  },
+
+  // M5.6: edit a logged transaction. Old effects are reversed, new ones
+  // applied, so account balances and budget spent stay consistent.
+  updateTransaction: (id, patch) => {
+    const prevCategories = get().categories;
+    set((s) => {
+      const old = s.transactions.find((tx) => tx.id === id);
+      if (!old) return s;
+      const next: Transaction = {
+        ...old,
+        amount: patch.amount ?? old.amount,
+        description: patch.description?.trim() || old.description,
+        categoryId: old.isIncome ? old.categoryId : (patch.categoryId ?? old.categoryId),
+      };
+      const reversed = applyTxEffect(s, old, -1);
+      const applied = applyTxEffect({ ...s, ...reversed }, next, 1);
+      return {
+        ...applied,
+        transactions: s.transactions.map((tx) => (tx.id === id ? next : tx)),
+      };
+    });
+    notifyBudgetCrossings(prevCategories, get().categories, get().notificationsEnabled);
+  },
+
+  // M5.6: delete a logged transaction, reversing its balance/budget effects.
+  removeTransaction: (id) => {
+    set((s) => {
+      const old = s.transactions.find((tx) => tx.id === id);
+      if (!old) return s;
+      return {
+        ...applyTxEffect(s, old, -1),
+        transactions: s.transactions.filter((tx) => tx.id !== id),
+      };
+    });
+  },
+
+  // M5.6: budgets reset when the calendar month changes. spent is RECOMPUTED
+  // from this month's transactions (not zeroed) so a rollover mid-usage stays
+  // truthful, and monthly due dates advance until they land in the current
+  // month or later. Idempotent per month via the persisted lastRollover key.
+  rolloverBudgetsIfNeeded: () => {
+    const key = monthKey();
+    const s = get();
+    if (s.lastRollover === key) return;
+    const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).getTime();
+    set({
+      lastRollover: key,
+      categories: s.categories.map((c) => {
+        const spent = s.transactions
+          .filter((tx) => !tx.isIncome && tx.timestamp >= monthStart && tx.categoryId.toLowerCase() === c.name.toLowerCase())
+          .reduce((a, tx) => a + tx.amount, 0);
+        let dueDate = c.dueDate;
+        while (dueDate && dueDate < monthStart) {
+          const d = new Date(dueDate);
+          d.setMonth(d.getMonth() + 1);
+          dueDate = d.getTime();
+        }
+        return { ...c, spent, dueDate };
+      }),
+    });
   },
 
   // M2: real Gemini intent parsing via Firebase AI Logic, with the local
@@ -289,6 +388,7 @@ export const useFinance = create<FinanceState>()(
     if (!msg || !('handled' in msg) || msg.handled) return;
 
     if (confirm) {
+      const prevCategories = s.categories;
       if (msg.type === 'confirmation' || msg.type === 'negotiation') {
         executeAction(msg.action, set);
       } else if (msg.type === 'receiptScan') {
@@ -298,6 +398,8 @@ export const useFinance = create<FinanceState>()(
       } else if (msg.type === 'mismatch') {
         executeAction({ kind: 'CreateAndLog', item: msg.item, amount: msg.amount }, set);
       }
+      // Chat-confirmed spends should trip the 90 percent alert too.
+      notifyBudgetCrossings(prevCategories, get().categories, get().notificationsEnabled);
     } else if (msg.type === 'receiptScan') {
       pushCents(set, 'Receipt scan cancelled.');
     }
@@ -358,19 +460,27 @@ export const useFinance = create<FinanceState>()(
     {
       name: 'savecents-store',
       storage: createJSONStorage(() => AsyncStorage),
-      version: 2,
+      version: 4,
       partialize: (s) => buildSnapshot(s),
       // v2 = the M5 redesign ships light-first: existing installs are switched
       // to the light theme ONCE (users can still pick dark in Profile after).
+      // v3 = the M5.5 auth redesign re-asserts light as the default: installs
+      // that ended up dark during testing are reset to light ONE more time
+      // (the auth switcher and Profile picker still persist choices after).
+      // v4 = M5.6: lastRollover added; existing installs start at the current
+      // month so their budgets are not retroactively recomputed on upgrade.
       migrate: (persisted, version) => {
-        const p = persisted as FinanceState;
-        if (version < 2) return { ...p, themeMode: 'light' as const };
+        let p = persisted as FinanceState;
+        if (version < 3) p = { ...p, themeMode: 'light' as const };
+        if (version < 4) p = { ...p, lastRollover: monthKey() };
         return p;
       },
       onRehydrateStorage: () => (state) => {
         if (state) {
           setCurrencySymbol(state.currency); // resync module-level symbol
+          setNumberLocale(COUNTRIES[state.country]?.locale ?? 'en-PH');
           state.setHasHydrated(true);
+          state.rolloverBudgetsIfNeeded(); // month may have changed since last open
         }
       },
     },

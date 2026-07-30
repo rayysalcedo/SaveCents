@@ -5,10 +5,12 @@ import { StatusBar } from 'expo-status-bar';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useTheme } from '../src/theme/colors';
 import { useCloudSync } from '../src/services/sync';
+import { useNotificationSync } from '../src/hooks/useNotificationSync';
 
 export default function RootLayout() {
   const t = useTheme();
   useCloudSync(); // login / signup / cold-start session restore all sync here
+  useNotificationSync(); // bill-due-tomorrow reminders track the budgets
   const dark = t.mode === 'dark';
   return (
     <View style={[styles.root, { backgroundColor: t.bg }]}>

@@ -14,11 +14,12 @@ export interface Country {
   flag: string;
   symbol: string;
   institutions: Institution[];
+  locale: string;
 }
 
 export const COUNTRIES: Record<string, Country> = {
   PH: {
-    code: 'PH', name: 'Philippines', flag: '🇵🇭', symbol: '₱',
+    code: 'PH', locale: 'en-PH', name: 'Philippines', flag: '🇵🇭', symbol: '₱',
     institutions: [
       { name: 'GCash', initial: 'G', color: '#0071F2', kind: 'wallet' },
       { name: 'Maya', initial: 'M', color: '#12B76A', kind: 'wallet' },
@@ -32,7 +33,7 @@ export const COUNTRIES: Record<string, Country> = {
     ],
   },
   US: {
-    code: 'US', name: 'United States', flag: '🇺🇸', symbol: '$',
+    code: 'US', locale: 'en-US', name: 'United States', flag: '🇺🇸', symbol: '$',
     institutions: [
       { name: 'Chase', initial: 'C', color: '#117ACA', kind: 'bank' },
       { name: 'Bank of America', initial: 'BA', color: '#E31837', kind: 'bank' },
@@ -44,7 +45,7 @@ export const COUNTRIES: Record<string, Country> = {
     ],
   },
   SG: {
-    code: 'SG', name: 'Singapore', flag: '🇸🇬', symbol: 'S$',
+    code: 'SG', locale: 'en-SG', name: 'Singapore', flag: '🇸🇬', symbol: 'S$',
     institutions: [
       { name: 'DBS', initial: 'D', color: '#ED1B24', kind: 'bank' },
       { name: 'OCBC', initial: 'O', color: '#EE0000', kind: 'bank' },
@@ -54,7 +55,7 @@ export const COUNTRIES: Record<string, Country> = {
     ],
   },
   MY: {
-    code: 'MY', name: 'Malaysia', flag: '🇲🇾', symbol: 'RM',
+    code: 'MY', locale: 'ms-MY', name: 'Malaysia', flag: '🇲🇾', symbol: 'RM',
     institutions: [
       { name: 'Maybank', initial: 'M', color: '#FFC20E', kind: 'bank' },
       { name: 'CIMB', initial: 'C', color: '#ED1C24', kind: 'bank' },

@@ -9,7 +9,6 @@ import { C, useTheme, type } from '../theme/colors';
 import { peso } from '../models/types';
 
 const AnimatedPath = Animated.createAnimatedComponent(Path);
-const AnimatedCircle = Animated.createAnimatedComponent(Circle);
 
 // ---------------- Segmented donut ----------------
 
@@ -91,26 +90,21 @@ export function TrajectoryCurve({
   }, [w, h, clamped]);
 
   const draw = useRef(new Animated.Value(0)).current;
-  const pulse = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
     draw.setValue(0);
     Animated.timing(draw, {
       toValue: 1, duration: 1100, easing: Easing.out(Easing.cubic), useNativeDriver: false,
     }).start();
-    const loop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(pulse, { toValue: 1, duration: 900, easing: Easing.out(Easing.quad), useNativeDriver: false }),
-        Animated.timing(pulse, { toValue: 0, duration: 900, easing: Easing.in(Easing.quad), useNativeDriver: false }),
-      ]),
-    );
-    loop.start();
-    return () => loop.stop();
-  }, [draw, pulse, progLen]);
+  }, [draw, progLen]);
 
+  // PERF (v17): the marker used to pulse via an INFINITE Animated.loop with
+  // useNativeDriver:false. Animated SVG props run on the JS thread, so the
+  // loop fired ~60 updates/sec forever once Home or Goals mounted, starving
+  // Pressable/scroll gesture handling across the WHOLE app ("have to tap
+  // multiple times"). The halo is now static. Never reintroduce an unbounded
+  // JS-driven loop; if it must move, keep it finite or move it off SVG props.
   const dashOffset = draw.interpolate({ inputRange: [0, 1], outputRange: [progLen, 0] });
-  const haloOpacity = pulse.interpolate({ inputRange: [0, 1], outputRange: [0.45, 0.08] });
-  const haloR = pulse.interpolate({ inputRange: [0, 1], outputRange: [8, 15] });
 
   const grid = t.mode === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(2,44,34,0.07)';
 
@@ -155,8 +149,8 @@ export function TrajectoryCurve({
           strokeDashoffset={dashOffset as any}
         />
 
-        {/* pulsing marker */}
-        <AnimatedCircle cx={dot.x} cy={dot.y} r={haloR as any} fill={C.emerald} opacity={haloOpacity as any} />
+        {/* marker with a static halo (see PERF note above) */}
+        <Circle cx={dot.x} cy={dot.y} r={10} fill={C.emerald} opacity={0.22} />
         <Circle cx={dot.x} cy={dot.y} r={5} fill={C.emerald} />
         <Circle cx={dot.x} cy={dot.y} r={2} fill="#FFFFFF" />
       </Svg>

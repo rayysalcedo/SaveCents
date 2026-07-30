@@ -3,7 +3,7 @@
 // "truth & polish" work — no mocked series on this screen).
 import React, { useMemo, useState } from 'react';
 import {
-  Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View,
+  Alert, Animated, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -15,6 +15,7 @@ import { GlassCard } from '../../src/components/GlassCard';
 import { MoMBars, SpendBars } from '../../src/components/Charts';
 import { Palette, radius, type, useTheme } from '../../src/theme/colors';
 import { useFinance } from '../../src/store/finance';
+import { useDragToDismiss } from '../../src/hooks/useDragToDismiss';
 import { Transaction, peso } from '../../src/models/types';
 
 type Filter = 'all' | 'income' | 'expense';
@@ -26,14 +27,113 @@ const FILTERS: { key: Filter; label: string }[] = [
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
+
+// M5.6: tap a transaction to edit or delete it. Module scope per HANDOFF
+// rule 3.1. The store reverses the old effects and applies the new ones, so
+// account balances and budget spent stay truthful either way.
+function TxEditor({ t, styles, tx, categories, onSave, onDelete, onClose }: {
+  t: Palette; styles: any; tx: Transaction;
+  categories: { id: string; name: string }[];
+  onSave: (patch: { amount?: number; description?: string; categoryId?: string }) => void;
+  onDelete: () => void;
+  onClose: () => void;
+}) {
+  const sheetDrag = useDragToDismiss(onClose);
+  const [amount, setAmount] = useState(String(tx.amount));
+  const [description, setDescription] = useState(tx.description);
+  const [categoryId, setCategoryId] = useState(tx.categoryId);
+
+  const save = () => {
+    const v = parseFloat(amount.replace(/,/g, ''));
+    if (Number.isNaN(v) || v <= 0) {
+      Alert.alert('Check the amount', 'Enter an amount greater than zero.');
+      return;
+    }
+    onSave({ amount: v, description, categoryId });
+  };
+
+  const confirmDelete = () =>
+    Alert.alert('Delete this transaction', 'Balances and budgets will be adjusted back.', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Delete', style: 'destructive', onPress: onDelete },
+    ]);
+
+  return (
+    <Modal visible transparent animationType="slide" onRequestClose={onClose}>
+      <Pressable style={styles.editScrim} onPress={onClose}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.editKav} pointerEvents="box-none">
+          <Animated.View style={{ transform: [{ translateY: sheetDrag.drag }] }}>
+          <Pressable style={styles.editSheet} onPress={() => {}}>
+            <View style={styles.grabZone} {...sheetDrag.panHandlers}>
+              <View style={styles.editHandle} />
+            </View>
+            <Text style={styles.editTitle}>{tx.isIncome ? 'Edit income' : 'Edit expense'}</Text>
+
+            <Text style={styles.editLabel}>Description</Text>
+            <TextInput
+              style={styles.editInput}
+              value={description}
+              onChangeText={setDescription}
+              placeholder="What was this?"
+              placeholderTextColor={t.textFaint}
+            />
+
+            <Text style={styles.editLabel}>Amount</Text>
+            <TextInput
+              style={styles.editInput}
+              value={amount}
+              onChangeText={setAmount}
+              keyboardType="decimal-pad"
+              placeholder="0"
+              placeholderTextColor={t.textFaint}
+            />
+
+            {!tx.isIncome && (
+              <>
+                <Text style={styles.editLabel}>Budget</Text>
+                <View style={styles.editChips}>
+                  {categories.map((c) => {
+                    const active = c.name.toLowerCase() === categoryId.toLowerCase();
+                    return (
+                      <Pressable
+                        key={c.id}
+                        onPress={() => setCategoryId(c.name)}
+                        style={[styles.editChip, active && styles.editChipOn]}
+                      >
+                        <Text style={[styles.editChipText, active && styles.editChipTextOn]}>{c.name}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              </>
+            )}
+
+            <Pressable onPress={save} style={({ pressed }) => [styles.editSaveWrap, pressed && { opacity: 0.9 }]}>
+              <LinearGradient colors={[t.emerald, t.teal]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.editSave}>
+                <Text style={styles.editSaveText}>Save changes</Text>
+              </LinearGradient>
+            </Pressable>
+            <Pressable onPress={confirmDelete} style={styles.editDelete}>
+              <Ionicons name="trash-outline" size={15} color={t.red} />
+              <Text style={styles.editDeleteText}>Delete transaction</Text>
+            </Pressable>
+          </Pressable>
+          </Animated.View>
+        </KeyboardAvoidingView>
+      </Pressable>
+    </Modal>
+  );
+}
+
 export default function AnalyticsScreen() {
   const t = useTheme();
   const styles = useMemo(() => makeStyles(t), [t]);
-  const { transactions, categories, currency, profile } = useFinance();
+  const { transactions, categories, currency, profile, updateTransaction, removeTransaction } = useFinance();
 
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<Filter>('all');
   const [exporting, setExporting] = useState<null | 'csv' | 'pdf'>(null);
+  const [editing, setEditing] = useState<Transaction | null>(null);
 
   // ---- Search + filter ----
   const filtered = useMemo(() => {
@@ -289,7 +389,11 @@ export default function AnalyticsScreen() {
               <Text style={styles.dayLabel}>{day}</Text>
               <GlassCard pad={8}>
                 {txs.map((tx, i, arr) => (
-                  <View key={tx.id} style={[styles.txRow, i < arr.length - 1 && styles.txDivider]}>
+                  <Pressable
+                    key={tx.id}
+                    onPress={() => setEditing(tx)}
+                    style={({ pressed }) => [styles.txRow, i < arr.length - 1 && styles.txDivider, pressed && { backgroundColor: t.inputFill }]}
+                  >
                     <View style={[styles.txIcon, tx.isIncome && { backgroundColor: t.emeraldTint, borderColor: t.emeraldBorder }]}>
                       <Ionicons
                         name={tx.isIncome ? 'trending-up' : 'pricetag'}
@@ -304,7 +408,8 @@ export default function AnalyticsScreen() {
                     <Text style={[styles.txAmount, tx.isIncome && { color: t.emerald }]}>
                       {tx.isIncome ? '+' : '-'}{peso(tx.amount)}
                     </Text>
-                  </View>
+                    <Ionicons name="chevron-forward" size={14} color={t.textFaint} />
+                  </Pressable>
                 ))}
               </GlassCard>
             </View>
@@ -331,6 +436,18 @@ export default function AnalyticsScreen() {
 
         <View style={{ height: 140 }} />
       </ScrollView>
+
+      {editing && (
+        <TxEditor
+          t={t}
+          styles={styles}
+          tx={editing}
+          categories={categories}
+          onSave={(patch) => { updateTransaction(editing.id, patch); setEditing(null); }}
+          onDelete={() => { removeTransaction(editing.id); setEditing(null); }}
+          onClose={() => setEditing(null)}
+        />
+      )}
     </SafeAreaView>
   );
 }
@@ -488,6 +605,33 @@ function buildPdfHtml(
 }
 
 const makeStyles = (t: Palette) => StyleSheet.create({
+  editScrim: { flex: 1, backgroundColor: 'rgba(3,12,8,0.45)', justifyContent: 'flex-end' },
+  editKav: { justifyContent: 'flex-end' },
+  editSheet: {
+    backgroundColor: t.sheet, borderTopLeftRadius: radius.card, borderTopRightRadius: radius.card,
+    paddingHorizontal: 20, paddingTop: 10, paddingBottom: 34,
+  },
+  editHandle: { alignSelf: 'center', width: 40, height: 4, borderRadius: 2, backgroundColor: t.dotIdle, marginBottom: 12 },
+  grabZone: { alignSelf: 'stretch', alignItems: 'center', paddingTop: 8, paddingBottom: 4, marginTop: -8 },
+  editTitle: { color: t.textPrimary, fontSize: 18, fontWeight: '800', marginBottom: 14 },
+  editLabel: { color: t.textPrimary, fontSize: 13, fontWeight: '700', marginBottom: 6 },
+  editInput: {
+    backgroundColor: t.inputFill, borderWidth: 1, borderColor: t.borderSoft, borderRadius: radius.input,
+    paddingHorizontal: 14, height: 47, color: t.textPrimary, fontSize: 15, marginBottom: 12,
+  },
+  editChips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 4 },
+  editChip: {
+    paddingHorizontal: 12, paddingVertical: 7, borderRadius: radius.chip,
+    backgroundColor: t.inputFill, borderWidth: 1, borderColor: t.borderSoft,
+  },
+  editChipOn: { backgroundColor: t.emeraldTint, borderColor: t.emeraldBorder },
+  editChipText: { color: t.textMuted, fontSize: 13, fontWeight: '600' },
+  editChipTextOn: { color: t.emerald },
+  editSaveWrap: { borderRadius: radius.chip, marginTop: 12, shadowColor: t.emerald, shadowOpacity: 0.3, shadowRadius: 10, shadowOffset: { width: 0, height: 4 } },
+  editSave: { height: 50, borderRadius: radius.chip, alignItems: 'center', justifyContent: 'center' },
+  editSaveText: { color: t.onEmerald, fontSize: 15, fontWeight: '800' },
+  editDelete: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, marginTop: 14 },
+  editDeleteText: { color: t.red, fontSize: 13, fontWeight: '700' },
   safe: { flex: 1 },
   scroll: { padding: 24 },
   titleRow: { flexDirection: 'row', alignItems: 'center', gap: 14, marginBottom: 18 },

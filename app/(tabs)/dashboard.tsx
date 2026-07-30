@@ -20,6 +20,7 @@ import { C, Palette, radius, type, useTheme } from '../../src/theme/colors';
 import { useFinance } from '../../src/store/finance';
 import { peso } from '../../src/models/types';
 import { institutionFor } from '../../src/data/countries';
+import { savingsSeries, savingsNote as buildSavingsNote } from '../../src/utils/stats';
 
 const SCREEN_W = Dimensions.get('window').width;
 const CARD_W = SCREEN_W - 48;
@@ -53,6 +54,107 @@ function InsightSlide({ index, scrollX, children }: { index: number; scrollX: An
   );
 }
 
+
+// Rule 3.1: module scope, NOT inside Dashboard's render body. Inline
+// definitions re-create the component type per render, so the FlatList
+// REMOUNTED every card on each Home re-render, killing in-flight touches and
+// scroll gestures (part of the "tap several times" bug).
+type BalanceItem = { id: string; kind: 'total' } | { id: string; kind: 'account'; account: any };
+function BalanceCard({ item, index, scrollX, styles, country, hideBalance, onToggleHide, totalLiquid, accountCount, holder }: {
+  item: BalanceItem; index: number; scrollX: Animated.Value; styles: any;
+  country: string; hideBalance: boolean; onToggleHide: () => void;
+  totalLiquid: number; accountCount: number; holder: string;
+}) {
+  const inputRange = [(index - 1) * BANK_STEP, index * BANK_STEP, (index + 1) * BANK_STEP];
+  // The card in view scales up and casts a deeper shadow; off-screen cards
+  // shrink and dim so each swipe lands with a clear highlight.
+  const scale = scrollX.interpolate({ inputRange, outputRange: [0.8, 1, 0.8], extrapolate: 'clamp' });
+  const lift = scrollX.interpolate({ inputRange, outputRange: [26, 0, 26], extrapolate: 'clamp' });
+  const dim = scrollX.interpolate({ inputRange, outputRange: [0.35, 1, 0.35], extrapolate: 'clamp' });
+  const tilt = scrollX.interpolate({ inputRange, outputRange: ['6deg', '0deg', '-6deg'], extrapolate: 'clamp' });
+
+  const money = (n: number) => (hideBalance ? '****' : peso(n));
+  const isTotal = item.kind === 'total';
+  const acct = item.kind === 'account' ? item.account : null;
+  const inst = acct ? institutionFor(country, acct.name) : null;
+  const base = isTotal ? '#0C5138' : (acct?.color ?? inst?.color ?? ACCOUNT_COLORS[index % ACCOUNT_COLORS.length]);
+  const gradient: [string, string, string] = [shade(base, -0.55), shade(base, -0.2), base];
+  const kind = inst?.kind === 'wallet' ? 'E-wallet' : inst?.kind === 'bank' ? 'Bank' : inst?.kind === 'cash' ? 'Cash' : 'Account';
+
+  return (
+    <Animated.View style={{ width: BANK_CARD_W, marginRight: BANK_GAP, opacity: dim, transform: [{ scale }, { translateY: lift }, { rotateZ: tilt }] }}>
+      <View style={styles.bankShadow}>
+        <LinearGradient colors={gradient} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.bankCard}>
+          {/* decorative arcs */}
+          <View style={[styles.deco, { width: 220, height: 220, borderRadius: 110, top: -110, right: -60 }]} />
+          <View style={[styles.deco, { width: 150, height: 150, borderRadius: 75, bottom: -80, left: -40 }]} />
+          <LinearGradient
+            colors={['rgba(255,255,255,0.22)', 'rgba(255,255,255,0)']}
+            start={{ x: 0, y: 0 }} end={{ x: 0.65, y: 0.85 }}
+            style={StyleSheet.absoluteFill}
+          />
+
+          <View style={styles.bankTop}>
+            <Text style={styles.bankLabel}>{isTotal ? 'Total Balance' : acct!.name}</Text>
+            {isTotal ? (
+              <Pressable onPress={onToggleHide} hitSlop={10} style={styles.eyeBtn}>
+                <Ionicons name={hideBalance ? 'eye-off' : 'eye'} size={15} color="rgba(255,255,255,0.9)" />
+              </Pressable>
+            ) : (
+              <View style={styles.kindTag}>
+                <Text style={styles.kindTagText}>{kind}</Text>
+              </View>
+            )}
+          </View>
+
+          <Text style={styles.bankAmount}>{money(isTotal ? totalLiquid : acct!.balance)}</Text>
+          {isTotal && (
+            <Text style={styles.bankCaption}>Across {accountCount} source{accountCount === 1 ? '' : 's'}</Text>
+          )}
+
+          <View style={styles.bankBottom}>
+            <View style={styles.chipWrap}>
+              <View style={styles.chip}>
+                <View style={styles.chipLine} />
+                <View style={[styles.chipLine, { top: 12 }]} />
+                <View style={styles.chipLineV} />
+              </View>
+              <Ionicons name="wifi" size={15} color="rgba(255,255,255,0.75)" style={{ transform: [{ rotate: '90deg' }] }} />
+            </View>
+            <Text style={styles.bankHolder}>{holder.toUpperCase()}</Text>
+            <Text style={styles.bankMask}>****</Text>
+          </View>
+        </LinearGradient>
+      </View>
+    </Animated.View>
+  );
+}
+
+
+// Rule 3.1: module scope (see BalanceCard note above).
+const CardHeader = ({ styles, t, icon, title, sub }: { styles: any; t: Palette; icon: keyof typeof Ionicons.glyphMap; title: string; sub: string }) => (
+  <View style={styles.cardHeader}>
+    <View style={styles.cardHeaderIcon}>
+      <Ionicons name={icon} size={16} color={t.emerald} />
+    </View>
+    <View>
+      <Text style={styles.cardTitle}>{title}</Text>
+      <Text style={styles.cardSub}>{sub}</Text>
+    </View>
+  </View>
+);
+
+const Section = ({ styles, title, link, onLink }: { styles: any; title: string; link?: string; onLink?: () => void }) => (
+  <View style={styles.sectionRow}>
+    <Text style={styles.sectionTitle}>{title}</Text>
+    {link ? (
+      <Pressable onPress={onLink} hitSlop={8}>
+        <Text style={styles.sectionLink}>{link}</Text>
+      </Pressable>
+    ) : null}
+  </View>
+);
+
 function greetingFor() {
   const h = new Date().getHours();
   if (h < 12) return 'Good morning,';
@@ -85,12 +187,16 @@ export default function Dashboard() {
   const router = useRouter();
   const { accounts, categories, goals, transactions, profile, selectedGoalId, selectGoal } = useFinance();
 
+  const rolloverBudgetsIfNeeded = useFinance((st) => st.rolloverBudgetsIfNeeded);
+  React.useEffect(() => { rolloverBudgetsIfNeeded(); }, [rolloverBudgetsIfNeeded]);
+
   const goal = useMemo(
     () => goals.find((g) => g.id === selectedGoalId) ?? goals[0],
     [goals, selectedGoalId],
   );
   const [goalMenu, setGoalMenu] = useState(false);
   const [hideBalance, setHideBalance] = useState(false);
+  const toggleHide = React.useCallback(() => setHideBalance((v) => !v), []);
 
   const totalLiquid = accounts.reduce((a, x) => a + x.balance, 0);
   const totalLimit = categories.reduce((a, c) => a + c.limit, 0);
@@ -129,125 +235,17 @@ export default function Dashboard() {
 
   const money = (n: number) => (hideBalance ? '****' : peso(n));
 
-  const BalanceCard = ({ item, index }: { item: (typeof balanceCards)[number]; index: number }) => {
-    const inputRange = [(index - 1) * BANK_STEP, index * BANK_STEP, (index + 1) * BANK_STEP];
-    // The card in view scales up and casts a deeper shadow; off-screen cards
-    // shrink and dim so each swipe lands with a clear highlight.
-    const scale = bankScrollX.interpolate({ inputRange, outputRange: [0.8, 1, 0.8], extrapolate: 'clamp' });
-    const lift = bankScrollX.interpolate({ inputRange, outputRange: [26, 0, 26], extrapolate: 'clamp' });
-    const dim = bankScrollX.interpolate({ inputRange, outputRange: [0.35, 1, 0.35], extrapolate: 'clamp' });
-    const tilt = bankScrollX.interpolate({ inputRange, outputRange: ['6deg', '0deg', '-6deg'], extrapolate: 'clamp' });
-
-    const isTotal = item.kind === 'total';
-    const acct = item.kind === 'account' ? item.account : null;
-    const inst = acct ? institutionFor(country, acct.name) : null;
-    const base = isTotal ? '#0C5138' : (acct?.color ?? inst?.color ?? ACCOUNT_COLORS[index % ACCOUNT_COLORS.length]);
-    const gradient: [string, string, string] = [shade(base, -0.55), shade(base, -0.2), base];
-    const kind = inst?.kind === 'wallet' ? 'E-wallet' : inst?.kind === 'bank' ? 'Bank' : inst?.kind === 'cash' ? 'Cash' : 'Account';
-
-    return (
-      <Animated.View style={{ width: BANK_CARD_W, marginRight: BANK_GAP, opacity: dim, transform: [{ scale }, { translateY: lift }, { rotateZ: tilt }] }}>
-        <View style={styles.bankShadow}>
-          <LinearGradient colors={gradient} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.bankCard}>
-            {/* decorative arcs */}
-            <View style={[styles.deco, { width: 220, height: 220, borderRadius: 110, top: -110, right: -60 }]} />
-            <View style={[styles.deco, { width: 150, height: 150, borderRadius: 75, bottom: -80, left: -40 }]} />
-            <LinearGradient
-              colors={['rgba(255,255,255,0.22)', 'rgba(255,255,255,0)']}
-              start={{ x: 0, y: 0 }} end={{ x: 0.65, y: 0.85 }}
-              style={StyleSheet.absoluteFill}
-            />
-
-            <View style={styles.bankTop}>
-              <Text style={styles.bankLabel}>{isTotal ? 'Total Balance' : acct!.name}</Text>
-              {isTotal ? (
-                <Pressable onPress={() => setHideBalance((v) => !v)} hitSlop={10} style={styles.eyeBtn}>
-                  <Ionicons name={hideBalance ? 'eye-off' : 'eye'} size={15} color="rgba(255,255,255,0.9)" />
-                </Pressable>
-              ) : (
-                <View style={styles.kindTag}>
-                  <Text style={styles.kindTagText}>{kind}</Text>
-                </View>
-              )}
-            </View>
-
-            <Text style={styles.bankAmount}>{money(isTotal ? totalLiquid : acct!.balance)}</Text>
-            {isTotal && (
-              <Text style={styles.bankCaption}>Across {accounts.length} source{accounts.length === 1 ? '' : 's'}</Text>
-            )}
-
-            <View style={styles.bankBottom}>
-              <View style={styles.chipWrap}>
-                <View style={styles.chip}>
-                  <View style={styles.chipLine} />
-                  <View style={[styles.chipLine, { top: 12 }]} />
-                  <View style={styles.chipLineV} />
-                </View>
-                <Ionicons name="wifi" size={15} color="rgba(255,255,255,0.75)" style={{ transform: [{ rotate: '90deg' }] }} />
-              </View>
-              <Text style={styles.bankHolder}>{profile.name.toUpperCase()}</Text>
-              <Text style={styles.bankMask}>****</Text>
-            </View>
-          </LinearGradient>
-        </View>
-      </Animated.View>
-    );
-  };
 
   // ── Insights carousel (unchanged data, restyled shell) ────────────────
   const insightScrollX = useRef(new Animated.Value(0)).current;
   const STEP = CARD_W + BANK_GAP; // identical step to the balance carousel
   const insights = [{ key: 'goal' }, { key: 'alloc' }, { key: 'mom' }, { key: 'topspend' }];
   const [savingsPeriod, setSavingsPeriod] = useState<'D' | 'W' | 'M' | 'Y'>('M');
-  const savingsData = {
-    D: [
-      { label: 'Sun', value: 60 }, { label: 'Mon', value: 120 }, { label: 'Tue', value: 90 },
-      { label: 'Wed', value: 150 }, { label: 'Thu', value: 80 }, { label: 'Fri', value: 40 },
-      { label: 'Sat', value: 160 },
-    ],
-    W: [
-      { label: 'W1', value: 380 }, { label: 'W2', value: 520 }, { label: 'W3', value: 410 },
-      { label: 'W4', value: 640 }, { label: 'W5', value: 700 },
-    ],
-    M: [
-      { label: 'Mar', value: 1450 }, { label: 'Apr', value: 1100 }, { label: 'May', value: 1900 },
-      { label: 'Jun', value: 1990 }, { label: 'Jul', value: 2350 },
-    ],
-    Y: [
-      { label: '2022', value: 8200 }, { label: '2023', value: 11400 }, { label: '2024', value: 15800 },
-      { label: '2025', value: 21500 }, { label: '2026', value: 14200 },
-    ],
-  }[savingsPeriod];
-  const savingsSub = { D: 'This week', W: 'Last 5 weeks', M: 'Last 5 months', Y: 'Last 5 years' }[savingsPeriod];
-  const savingsNote = {
-    D: `${peso(160)} saved today. Saturdays are your strongest day.`,
-    W: `${peso(700)} saved this week, trending up 3 weeks straight.`,
-    M: `${peso(2350)} saved this month, your best since March.`,
-    Y: `${peso(14200)} saved so far in 2026, on pace to beat last year.`,
-  }[savingsPeriod];
-
-  const CardHeader = ({ icon, title, sub }: { icon: keyof typeof Ionicons.glyphMap; title: string; sub: string }) => (
-    <View style={styles.cardHeader}>
-      <View style={styles.cardHeaderIcon}>
-        <Ionicons name={icon} size={16} color={t.emerald} />
-      </View>
-      <View>
-        <Text style={styles.cardTitle}>{title}</Text>
-        <Text style={styles.cardSub}>{sub}</Text>
-      </View>
-    </View>
-  );
-
-  const Section = ({ title, link, onLink }: { title: string; link?: string; onLink?: () => void }) => (
-    <View style={styles.sectionRow}>
-      <Text style={styles.sectionTitle}>{title}</Text>
-      {link ? (
-        <Pressable onPress={onLink} hitSlop={8}>
-          <Text style={styles.sectionLink}>{link}</Text>
-        </Pressable>
-      ) : null}
-    </View>
-  );
+  // M5.6 truth pass: the chart and its note are computed from real
+  // transactions (src/utils/stats.ts), no more sample numbers.
+  const savingsData = useMemo(() => savingsSeries(transactions, savingsPeriod), [transactions, savingsPeriod]);
+  const savingsSub = { D: 'Last 7 days', W: 'Last 5 weeks', M: 'Last 5 months', Y: 'Last 5 years' }[savingsPeriod];
+  const savingsNote = useMemo(() => buildSavingsNote(savingsData, savingsPeriod), [savingsData, savingsPeriod]);
 
   const txIconFor = (categoryId: string, isIncome: boolean): keyof typeof Ionicons.glyphMap => {
     if (isIncome) return 'trending-up';
@@ -281,17 +279,25 @@ export default function Dashboard() {
           snapToInterval={BANK_STEP}
           decelerationRate="fast"
           showsHorizontalScrollIndicator={false}
-          onScroll={Animated.event([{ nativeEvent: { contentOffset: { x: bankScrollX } } }], { useNativeDriver: false })}
+          onScroll={Animated.event([{ nativeEvent: { contentOffset: { x: bankScrollX } } }], { useNativeDriver: true })}
           scrollEventThrottle={16}
           style={{ marginHorizontal: -24, marginVertical: -44 }}
           contentContainerStyle={{ paddingHorizontal: 24, paddingVertical: 44 }}
-          renderItem={({ item, index }) => <BalanceCard item={item} index={index} />}
+          renderItem={({ item, index }) => (
+            <BalanceCard
+              item={item} index={index} scrollX={bankScrollX} styles={styles}
+              country={country} hideBalance={hideBalance} onToggleHide={toggleHide}
+              totalLiquid={totalLiquid} accountCount={accounts.length} holder={profile.name}
+            />
+          )}
         />
         <View style={styles.dots}>
           {balanceCards.map((_, i) => {
-            const width = bankScrollX.interpolate({
+            // scaleX instead of width so the whole carousel can run on the
+            // native driver (width is not a native-animatable prop).
+            const scaleX = bankScrollX.interpolate({
               inputRange: [(i - 1) * BANK_STEP, i * BANK_STEP, (i + 1) * BANK_STEP],
-              outputRange: [6, 20, 6],
+              outputRange: [0.3, 1, 0.3],
               extrapolate: 'clamp',
             });
             const opacity = bankScrollX.interpolate({
@@ -299,7 +305,7 @@ export default function Dashboard() {
               outputRange: [0.3, 1, 0.3],
               extrapolate: 'clamp',
             });
-            return <Animated.View key={i} style={[styles.dot, { width, opacity }]} />;
+            return <Animated.View key={i} style={[styles.dot, { opacity, transform: [{ scaleX }] }]} />;
           })}
         </View>
 
@@ -347,7 +353,7 @@ export default function Dashboard() {
         </View>
 
         {/* 3 — Insights */}
-        <Section title="Insights" />
+        <Section styles={styles} title="Insights" />
         <Animated.FlatList
           data={insights}
           keyExtractor={(i) => i.key}
@@ -355,12 +361,21 @@ export default function Dashboard() {
           snapToInterval={STEP}
           decelerationRate="fast"
           showsHorizontalScrollIndicator={false}
-          onScroll={Animated.event([{ nativeEvent: { contentOffset: { x: insightScrollX } } }], { useNativeDriver: false })}
+          onScroll={Animated.event([{ nativeEvent: { contentOffset: { x: insightScrollX } } }], { useNativeDriver: true })}
           scrollEventThrottle={16}
           style={{ marginHorizontal: -24, marginVertical: -30 }}
           contentContainerStyle={{ paddingHorizontal: 24, paddingVertical: 30 }}
           renderItem={({ item, index }) => (
             <InsightSlide index={index} scrollX={insightScrollX}>
+              {/* M5.6 empty state: the slide used to render blank with no goals */}
+              {item.key === 'goal' && !goal && (
+                <GlassCard style={styles.insightCard}>
+                  <CardHeader styles={styles} t={t} icon="flag" title="No goal yet" sub="Trajectory appears here" />
+                  <Text style={styles.emptyLine}>
+                    Add a goal in the Goals tab and Cents will chart your path to it.
+                  </Text>
+                </GlassCard>
+              )}
               {item.key === 'goal' && goal && (
                 <GlassCard style={styles.insightCard}>
                   <View style={{ position: 'relative', zIndex: 20 }}>
@@ -424,7 +439,7 @@ export default function Dashboard() {
 
               {item.key === 'alloc' && (
                 <GlassCard style={styles.insightCard}>
-                  <CardHeader icon="wallet" title="Allocation" sub="Across your money sources" />
+                  <CardHeader styles={styles} t={t} icon="wallet" title="Allocation" sub="Across your money sources" />
                   <View style={styles.donutRow}>
                     <SegmentedDonut
                       size={124}
@@ -448,7 +463,7 @@ export default function Dashboard() {
               {item.key === 'mom' && (
                 <GlassCard style={styles.insightCard}>
                   <View style={styles.insightHead}>
-                    <CardHeader icon="stats-chart" title="Savings" sub={savingsSub} />
+                    <CardHeader styles={styles} t={t} icon="stats-chart" title="Savings" sub={savingsSub} />
                     <View style={styles.periodSeg}>
                       {(['D', 'W', 'M', 'Y'] as const).map((p) => (
                         <Pressable
@@ -467,7 +482,7 @@ export default function Dashboard() {
               )}
               {item.key === 'topspend' && (
                 <GlassCard style={styles.insightCard}>
-                  <CardHeader icon="flame" title="Top spend" sub="This month, by budget" />
+                  <CardHeader styles={styles} t={t} icon="flame" title="Top spend" sub="This month, by budget" />
                   <SpendBars data={categories.map((c) => ({ name: c.name, spent: c.spent, limit: c.limit }))} />
                 </GlassCard>
               )}
@@ -476,9 +491,11 @@ export default function Dashboard() {
         />
         <View style={styles.dots}>
           {insights.map((_, i) => {
-            const width = insightScrollX.interpolate({
+            // scaleX instead of width so the whole carousel can run on the
+            // native driver (width is not a native-animatable prop).
+            const scaleX = insightScrollX.interpolate({
               inputRange: [(i - 1) * STEP, i * STEP, (i + 1) * STEP],
-              outputRange: [6, 20, 6],
+              outputRange: [0.3, 1, 0.3],
               extrapolate: 'clamp',
             });
             const opacity = insightScrollX.interpolate({
@@ -486,12 +503,12 @@ export default function Dashboard() {
               outputRange: [0.3, 1, 0.3],
               extrapolate: 'clamp',
             });
-            return <Animated.View key={i} style={[styles.dot, { width, opacity }]} />;
+            return <Animated.View key={i} style={[styles.dot, { opacity, transform: [{ scaleX }] }]} />;
           })}
         </View>
 
         {/* 4 — Budgets */}
-        <Section title="Budgets" link="Manage" onLink={() => router.push({ pathname: '/(tabs)/goals', params: { tab: 'budgets' } })} />
+        <Section styles={styles} title="Budgets" link="Manage" onLink={() => router.push({ pathname: '/(tabs)/goals', params: { tab: 'budgets' } })} />
         <GlassCard pad={8} style={{ marginBottom: 24 }}>
           {categories.length === 0 && (
             <Text style={styles.emptyLine}>No budgets yet. Create one from the Goals tab.</Text>
@@ -537,13 +554,18 @@ export default function Dashboard() {
         </GlassCard>
 
         {/* 5 — Recent activity */}
-        <Section title="Recent activity" link="View all" onLink={() => router.push('/(tabs)/analytics')} />
+        <Section styles={styles} title="Recent activity" link="View all" onLink={() => router.push('/(tabs)/analytics')} />
         <GlassCard pad={8} style={{ marginBottom: 132 }}>
           {transactions.length === 0 && (
             <Text style={styles.emptyLine}>Nothing logged yet. Tap Cents to add your first one.</Text>
           )}
+          {/* M5.6: rows route to Analytics, where the tap-to-edit editor lives. */}
           {transactions.slice(0, 6).map((tx, i, arr) => (
-            <View key={tx.id} style={[styles.txRow, i < arr.length - 1 && styles.rowDivider]}>
+            <Pressable
+              key={tx.id}
+              onPress={() => router.push('/(tabs)/analytics')}
+              style={({ pressed }) => [styles.txRow, i < arr.length - 1 && styles.rowDivider, pressed && { backgroundColor: t.inputFill }]}
+            >
               <View style={[styles.txIcon, tx.isIncome && { backgroundColor: t.emeraldTint, borderColor: t.emeraldBorder }]}>
                 <Ionicons name={txIconFor(tx.categoryId, tx.isIncome)} size={16} color={tx.isIncome ? t.emerald : t.textMuted} />
               </View>
@@ -554,7 +576,7 @@ export default function Dashboard() {
               <Text style={[styles.txAmount, tx.isIncome && { color: t.emerald }]}>
                 {tx.isIncome ? '+' : '-'}{hideBalance ? '****' : peso(tx.amount)}
               </Text>
-            </View>
+            </Pressable>
           ))}
         </GlassCard>
       </ScrollView>
@@ -609,7 +631,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   bankHolder: { color: 'rgba(255,255,255,0.9)', fontSize: 12.5, fontWeight: '700', letterSpacing: 1.4 },
   bankMask: { color: 'rgba(255,255,255,0.75)', fontSize: 14, fontWeight: '800', letterSpacing: 2, marginLeft: 10 },
   dots: { flexDirection: 'row', gap: 6, justifyContent: 'center', alignItems: 'center', marginVertical: 14, height: 8 },
-  dot: { height: 6, borderRadius: 3, backgroundColor: t.emerald },
+  dot: { width: 20, height: 6, borderRadius: 3, backgroundColor: t.emerald },
 
   // Today strip
   todayRow: { flexDirection: 'row', gap: 12, marginBottom: 22 },

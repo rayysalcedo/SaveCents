@@ -2,7 +2,7 @@
 // Extracted from the old Profile tab and rebuilt with the friendly sage look.
 import React, { useMemo, useState } from 'react';
 import {
-  Keyboard, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View,
+  Animated, Keyboard, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -10,11 +10,35 @@ import { Ionicons } from '@expo/vector-icons';
 import { GlassCard } from '../../src/components/GlassCard';
 import { MoneyInput } from '../../src/components/MoneyInput';
 import { Palette, radius, type, useTheme } from '../../src/theme/colors';
+import { useDragToDismiss } from '../../src/hooks/useDragToDismiss';
 import { useFinance } from '../../src/store/finance';
 import { peso } from '../../src/models/types';
 import { COUNTRIES, institutionFor } from '../../src/data/countries';
 
 const SWATCHES = ['#10B981', '#0071F2', '#8B5CF6', '#F59E0B', '#EF4444', '#EC4899', '#14B8A6', '#64748B'];
+
+
+// Rule 3.1: module scope, not inside the screen's render body (inline
+// component types remount their subtree on every parent re-render).
+const InstTile = ({ country, t, name, size = 42, colorOverride, initialOverride }: {
+  country: string; t: Palette; name: string; size?: number; colorOverride?: string; initialOverride?: string;
+}) => {
+  const inst = institutionFor(country, name);
+  const color = colorOverride ?? inst?.color ?? t.emerald;
+  return (
+    <View
+      style={{
+        width: size, height: size, borderRadius: size * 0.34,
+        alignItems: 'center', justifyContent: 'center',
+        backgroundColor: color + '22', borderWidth: 1, borderColor: color + '55',
+      }}
+    >
+      <Text style={{ color, fontSize: size * 0.34, fontWeight: '800' }}>
+        {initialOverride ?? inst?.initial ?? name.slice(0, 1).toUpperCase()}
+      </Text>
+    </View>
+  );
+};
 
 export default function WalletScreen() {
   const t = useTheme();
@@ -24,6 +48,8 @@ export default function WalletScreen() {
   const totalLiquid = accounts.reduce((a, x) => a + x.balance, 0);
 
   const [addSheet, setAddSheet] = useState(false);
+  const addDrag = useDragToDismiss(() => setAddSheet(false));
+  const editDrag = useDragToDismiss(() => setEditing(null));
   const [customMode, setCustomMode] = useState(false);
   const [customName, setCustomName] = useState('');
   const [customColor, setCustomColor] = useState('#10B981');
@@ -34,26 +60,6 @@ export default function WalletScreen() {
     const v = parseFloat(editing.balance);
     if (!Number.isNaN(v) && v >= 0) setAccountBalance(editing.id, v);
     setEditing(null);
-  };
-
-  const InstTile = ({ name, size = 42, colorOverride, initialOverride }: {
-    name: string; size?: number; colorOverride?: string; initialOverride?: string;
-  }) => {
-    const inst = institutionFor(country, name);
-    const color = colorOverride ?? inst?.color ?? t.emerald;
-    return (
-      <View
-        style={{
-          width: size, height: size, borderRadius: size * 0.34,
-          alignItems: 'center', justifyContent: 'center',
-          backgroundColor: color + '22', borderWidth: 1, borderColor: color + '55',
-        }}
-      >
-        <Text style={{ color, fontSize: size * 0.34, fontWeight: '800' }}>
-          {initialOverride ?? inst?.initial ?? name.slice(0, 1).toUpperCase()}
-        </Text>
-      </View>
-    );
   };
 
   const kindOf = (name: string) => {
@@ -120,7 +126,7 @@ export default function WalletScreen() {
           )}
           {accounts.map((a, i, arr) => (
             <View key={a.id} style={[styles.acctRow, i < arr.length - 1 && styles.divider]}>
-              <InstTile name={a.name} colorOverride={a.color} initialOverride={a.initial} />
+              <InstTile country={country} t={t} name={a.name} colorOverride={a.color} initialOverride={a.initial} />
               <Pressable
                 style={{ flex: 1 }}
                 onPress={() => setEditing({ id: a.id, name: a.name, balance: a.balance ? String(a.balance) : '' })}
@@ -155,8 +161,11 @@ export default function WalletScreen() {
         <View style={{ flex: 1 }}>
           <Pressable style={styles.scrimFill} onPress={() => setAddSheet(false)} />
           <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.kav} pointerEvents="box-none">
+            <Animated.View style={{ transform: [{ translateY: addDrag.drag }] }}>
             <Pressable style={styles.sheet} onPress={Keyboard.dismiss}>
-              <View style={styles.handle} />
+              <View style={styles.grabZone} {...addDrag.panHandlers}>
+                <View style={styles.handle} />
+              </View>
               <Text style={styles.sheetTitle}>Add account</Text>
               <Text style={styles.sheetSub}>
                 {countryData.flag} {countryData.name}. One tap to add, then set the balance from your list.
@@ -175,7 +184,7 @@ export default function WalletScreen() {
                         pressed && !added && { backgroundColor: t.inputFill },
                       ]}
                     >
-                      <InstTile name={inst.name} size={38} />
+                      <InstTile country={country} t={t} name={inst.name} size={38} />
                       <View style={{ flex: 1 }}>
                         <Text style={[styles.instName, added && { color: t.textMuted }]}>{inst.name}</Text>
                         <Text style={styles.instKind}>{inst.kind === 'wallet' ? 'E-wallet' : inst.kind === 'bank' ? 'Bank' : 'Physical cash'}</Text>
@@ -235,6 +244,7 @@ export default function WalletScreen() {
                 </View>
               )}
             </Pressable>
+            </Animated.View>
           </KeyboardAvoidingView>
         </View>
       </Modal>
@@ -244,8 +254,11 @@ export default function WalletScreen() {
         <View style={{ flex: 1 }}>
           <Pressable style={styles.scrimFill} onPress={() => setEditing(null)} />
           <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.kav} pointerEvents="box-none">
+            <Animated.View style={{ transform: [{ translateY: editDrag.drag }] }}>
             <Pressable style={styles.sheet} onPress={Keyboard.dismiss}>
-              <View style={styles.handle} />
+              <View style={styles.grabZone} {...editDrag.panHandlers}>
+                <View style={styles.handle} />
+              </View>
               <Text style={styles.sheetTitle}>{editing?.name} balance</Text>
               <MoneyInput
                 value={editing?.balance ?? ''}
@@ -258,6 +271,7 @@ export default function WalletScreen() {
                 </LinearGradient>
               </Pressable>
             </Pressable>
+            </Animated.View>
           </KeyboardAvoidingView>
         </View>
       </Modal>
@@ -320,6 +334,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     padding: 24, paddingBottom: 44, borderWidth: 1, borderColor: t.border,
   },
   handle: { width: 40, height: 4, borderRadius: 2, backgroundColor: t.dotIdle, alignSelf: 'center', marginBottom: 14 },
+  grabZone: { alignSelf: 'stretch', alignItems: 'center', paddingTop: 8, paddingBottom: 4, marginTop: -8 },
   sheetTitle: { color: t.textPrimary, fontSize: 18, fontWeight: '800', marginBottom: 6 },
   sheetSub: { color: t.textMuted, fontSize: 12, marginBottom: 12, lineHeight: 17 },
   instRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, paddingHorizontal: 4, borderRadius: 12 },

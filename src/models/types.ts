@@ -73,5 +73,10 @@ export const uid = () => Math.random().toString(36).slice(2) + Date.now().toStri
 
 let CURRENCY_SYMBOL = '\u20B1';
 export const setCurrencySymbol = (s: string) => { CURRENCY_SYMBOL = s; };
+
+// M5.6: number grouping follows the selected country instead of a hardcoded
+// en-PH (setCountry and store rehydration both call setNumberLocale).
+let NUMBER_LOCALE = 'en-PH';
+export const setNumberLocale = (l: string) => { NUMBER_LOCALE = l; };
 export const peso = (n: number) =>
-  CURRENCY_SYMBOL + n.toLocaleString('en-PH', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+  CURRENCY_SYMBOL + n.toLocaleString(NUMBER_LOCALE, { minimumFractionDigits: 0, maximumFractionDigits: 2 });

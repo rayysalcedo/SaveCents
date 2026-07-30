@@ -12,6 +12,8 @@ import { MoneyInput } from '../../src/components/MoneyInput';
 import { TrajectoryCurve } from '../../src/components/Charts';
 import { Palette, radius, useTheme } from '../../src/theme/colors';
 import { useFinance } from '../../src/store/finance';
+import { paceLabel, weeklySavingsRate } from '../../src/utils/stats';
+import { useDragToDismiss } from '../../src/hooks/useDragToDismiss';
 import { peso } from '../../src/models/types';
 import { BUDGET_CATEGORIES } from '../../src/data/countries';
 
@@ -21,7 +23,8 @@ const TABS = ['Goals', 'Budgets'] as const;
 export default function GoalsScreen() {
   const t = useTheme();
   const styles = useMemo(() => makeStyles(t), [t]);
-  const { goals, addGoal, removeGoal, categories, addBudget, updateBudget, removeBudget } = useFinance();
+  const { goals, addGoal, removeGoal, categories, addBudget, updateBudget, removeBudget, transactions } = useFinance();
+  const weeklyRate = useMemo(() => weeklySavingsRate(transactions), [transactions]);
 
   const [tab, setTab] = useState<0 | 1>(0);
   const [segW, setSegW] = useState(0);
@@ -57,6 +60,8 @@ export default function GoalsScreen() {
   const [budgetSheet, setBudgetSheet] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [pickedCat, setPickedCat] = useState<string | null>(null);
+  const goalDrag = useDragToDismiss(() => setGoalSheet(false));
+  const budgetDrag = useDragToDismiss(() => setBudgetSheet(false));
   const [bName, setBName] = useState('');
   const [bLimit, setBLimit] = useState('');
   const [bHasDue, setBHasDue] = useState(false);
@@ -82,11 +87,11 @@ export default function GoalsScreen() {
     setBudgetSheet(true);
   };
 
-  // Picking a category fills the name unless the user already typed their own.
-  const pickCategory = (name: string) => {
-    setBName((prev) => (!prev.trim() || prev === pickedCat ? name : prev));
-    setPickedCat(name);
-  };
+  // Owner feedback (v30): picking a category must NEVER touch the name
+  // field. The category sets the icon and grouping; the name belongs to the
+  // user ("Netflix" under Subscriptions). A blank name falls back to the
+  // category name at submit (submitBudget already does this).
+  const pickCategory = (name: string) => setPickedCat(name);
 
   const submitGoal = () => {
     const v = parseFloat(gAmount);
@@ -177,8 +182,8 @@ export default function GoalsScreen() {
               )}
               {goals.map((g) => {
                 const pct = Math.min(g.current / g.target, 1);
-                const weekly = 500; // M2: derive from real savings rate
-                const weeksLeft = Math.max(Math.ceil((g.target - g.current) / weekly), 0);
+                // M5.6 truth pass: pace from the real 28-day savings rate.
+                const pace = paceLabel(g.target, g.current, weeklyRate);
                 return (
                   <GlassCard key={g.id} glow={pct >= 0.8}>
                     <View style={styles.goalHeader}>
@@ -203,7 +208,7 @@ export default function GoalsScreen() {
                       </View>
                       <View>
                         <Text style={styles.statLabel}>At current pace</Text>
-                        <Text style={[styles.statValue, { color: t.mint }]}>{weeksLeft} wks left</Text>
+                        <Text style={[styles.statValue, { color: t.mint }]}>{pace}</Text>
                       </View>
                     </View>
                   </GlassCard>
@@ -282,8 +287,11 @@ export default function GoalsScreen() {
         <View style={{ flex: 1 }}>
           <Pressable style={styles.scrimFill} onPress={() => setGoalSheet(false)} />
           <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.kav} pointerEvents="box-none">
+            <Animated.View style={{ transform: [{ translateY: goalDrag.drag }] }}>
             <Pressable style={styles.sheet} onPress={Keyboard.dismiss}>
-              <View style={styles.handle} />
+              <View style={styles.grabZone} {...goalDrag.panHandlers}>
+                <View style={styles.handle} />
+              </View>
               <Text style={styles.sheetTitle}>New goal</Text>
               <TextInput style={styles.input} placeholder="Goal name (e.g. Japan Trip)" placeholderTextColor={t.textMuted} value={gName} onChangeText={setGName} returnKeyType="done" />
               <MoneyInput value={gAmount} onChangeText={setGAmount} placeholder="Target amount" />
@@ -318,6 +326,7 @@ export default function GoalsScreen() {
                 </LinearGradient>
               </Pressable>
             </Pressable>
+            </Animated.View>
         </KeyboardAvoidingView>
         </View>
       </Modal>
@@ -327,8 +336,11 @@ export default function GoalsScreen() {
         <View style={{ flex: 1 }}>
           <Pressable style={styles.scrimFill} onPress={() => setBudgetSheet(false)} />
           <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.kav} pointerEvents="box-none">
+            <Animated.View style={{ transform: [{ translateY: budgetDrag.drag }] }}>
             <Pressable style={styles.sheet} onPress={Keyboard.dismiss}>
-              <View style={styles.handle} />
+              <View style={styles.grabZone} {...budgetDrag.panHandlers}>
+                <View style={styles.handle} />
+              </View>
               <Text style={styles.sheetTitle}>{editingId ? 'Edit budget' : 'New budget'}</Text>
               <Text style={styles.sheetSub}>
                 Pick a category, then name it and set a monthly limit. Cents files expenses into these automatically.
@@ -397,6 +409,7 @@ export default function GoalsScreen() {
                 </LinearGradient>
               </Pressable>
             </Pressable>
+            </Animated.View>
         </KeyboardAvoidingView>
         </View>
       </Modal>
@@ -472,6 +485,8 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     padding: 24, paddingBottom: 44, borderWidth: 1, borderColor: t.border,
   },
   handle: { width: 40, height: 4, borderRadius: 2, backgroundColor: t.dotIdle, alignSelf: 'center', marginBottom: 14 },
+  grabZone: { alignSelf: 'stretch', alignItems: 'center', paddingTop: 8, paddingBottom: 4, marginTop: -8 },
+
   sheetTitle: { color: t.textPrimary, fontSize: 18, fontWeight: '800', marginBottom: 6 },
   sheetSub: { color: t.textMuted, fontSize: 12, marginBottom: 14, lineHeight: 17 },
   catGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 14 },

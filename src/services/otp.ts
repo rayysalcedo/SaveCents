@@ -52,6 +52,11 @@ export async function requestPasswordOtp(email: string): Promise<OtpRequestResul
   throw new OtpUnavailableError();
 }
 
+// M5.5: the same code channel now also verifies new sign-ups on the auth
+// screen. Same rules (6 digits, 10 min, 5 tries), same delivery seam, same
+// Cloud Function at M6. Aliased so call sites read correctly.
+export const requestEmailOtp = requestPasswordOtp;
+
 export function verifyPasswordOtp(input: string): { ok: boolean; reason?: string } {
   if (!pending) return { ok: false, reason: 'Request a new code first.' };
   if (Date.now() > pending.expiresAt) {
@@ -69,3 +74,5 @@ export function verifyPasswordOtp(input: string): { ok: boolean; reason?: string
   pending = null;
   return { ok: true };
 }
+
+export const verifyEmailOtp = verifyPasswordOtp;

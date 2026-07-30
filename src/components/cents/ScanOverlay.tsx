@@ -424,7 +424,7 @@ export function ScanOverlay() {
             <View style={styles.panelHead}>
                 <View style={styles.panelAvatar}>
                   <LinearGradient colors={[t.emerald, t.teal]} style={StyleSheet.absoluteFill} />
-                  <Ionicons name="sparkles" size={13} color="#FFFFFF" />
+                  <Image source={require('../../../assets/cents-mark-white.png')} style={{ width: 16, height: 16 }} resizeMode="contain" />
                 </View>
                 <Text style={styles.panelName}>Cents</Text>
                 <View style={{ flex: 1 }} />

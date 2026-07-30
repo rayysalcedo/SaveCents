@@ -20,7 +20,7 @@ export function VoiceOverlay() {
   const t = useTheme();
   const styles = useMemo(() => makeStyles(t), [t]);
   const insets = useSafeAreaInsets();
-  const { voiceOpen, closeVoice } = useUI();
+  const { voiceOpen, closeVoice, openChat } = useUI();
   const sendChat = useFinance((s) => s.sendChat);
 
   const available = voiceAvailable();
@@ -61,8 +61,10 @@ export function VoiceOverlay() {
     if (clean) {
       sendChat(clean);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+      openChat(); // show Cents replying (no-op reopen if chat was already under)
+      return;
     }
-    closeVoice(); // chat stays open underneath and shows Cents replying
+    closeVoice(); // nothing sent: return to wherever the user was
   };
 
   const cancel = () => {
@@ -133,7 +135,7 @@ export function VoiceOverlay() {
 
         {/* Controls */}
         <View style={styles.controls}>
-          <Pressable style={styles.sideBtn} onPress={cancel}>
+          <Pressable style={styles.sideBtn} onPress={() => openChat()}>
             <Ionicons name="keypad" size={20} color="rgba(255,255,255,0.8)" />
             <Text style={styles.sideText}>Type instead</Text>
           </Pressable>

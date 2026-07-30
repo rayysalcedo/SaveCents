@@ -1,58 +1,122 @@
-import React, { useEffect, useMemo, useState } from 'react';
+// Auth (M5.5, v17) — reference layout in the locked sage language, kept SIMPLE:
+// solid card (white in light, deep green in dark; NO glow, NO glass here),
+// wordmark with a soft drop shadow, light/dark switcher, segmented
+// Login/Register pill, labeled fields, emerald pill CTA (white on emerald in
+// BOTH themes), Google + Face ID, sign-up password rules + retype, and the
+// email OTP step ending on the green Congratulations card.
+//
+// Register is sized to fit one screen on regular iPhones: compact brand block,
+// the "Already have an account? Log in" line lives under the title (like the
+// reference) instead of a bottom row, and Remember me appears on Login only.
+//
+// Steps: FORM -> (sign up only) OTP -> SUCCESS -> tabs.
+// Google accounts skip OTP (their email is already verified).
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ActivityIndicator, Alert, Keyboard, KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, TextInput,
-  TouchableWithoutFeedback, View,
+  ActivityIndicator, Alert, Animated, Image, Keyboard, KeyboardAvoidingView, Platform, Pressable,
+  ScrollView, StyleSheet, Text, TextInput, TouchableWithoutFeedback, View,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import * as LocalAuthentication from 'expo-local-authentication';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import Constants from 'expo-constants';
-import { GlassCard } from '../src/components/GlassCard';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Palette, radius, useTheme } from '../src/theme/colors';
 import { useFinance } from '../src/store/finance';
 import {
-  authAvailable, authErrorMessage, resetPassword, signIn, signUp, subscribeAuth,
+  authAvailable, authErrorMessage, resetPassword, sendVerificationEmail, signIn, signUp, subscribeAuth,
 } from '../src/services/auth';
+import { OtpUnavailableError, requestEmailOtp, verifyEmailOtp } from '../src/services/otp';
+import { IN_EXPO_GO, googleConfigured, useGoogleSignIn } from '../src/services/googleAuth';
 
-// Expo Go's binary lacks NSFaceIDUsageDescription, so Face ID can never work
-// inside it (iOS error: missing_usage_description). Hide the button there; it
-// returns automatically in the M4 development build.
-const IN_EXPO_GO = Constants.appOwnership === 'expo';
+const REMEMBER_KEY = 'savecents.rememberedEmail';
+const OTP_LENGTH = 6;
+const RESEND_COOLDOWN = 30;
+
+// Sign-up password rules, checked live and enforced on submit.
+const PW_RULES = [
+  { id: 'len', label: '8+ characters', test: (p: string) => p.length >= 8 },
+  { id: 'letter', label: 'A letter', test: (p: string) => /[a-zA-Z]/.test(p) },
+  { id: 'num', label: 'A number', test: (p: string) => /\d/.test(p) },
+] as const;
 
 type Styles = ReturnType<typeof makeStyles>;
+type Mode = 'LOGIN' | 'SIGNUP';
+type Step = 'FORM' | 'OTP' | 'SUCCESS';
 
-// Defined at module level ON PURPOSE. If these live inside AuthScreen, every
-// keystroke re-creates the component type, React remounts the TextInput, and
-// the keyboard dismisses after each character. Do not move them back inside.
+// ---------------------------------------------------------------------------
+// Module-scope subcomponents ON PURPOSE. Defining these inside AuthScreen
+// re-creates the component type each keystroke, React remounts the TextInput,
+// and the keyboard dismisses per character (HANDOFF rule 3.1). Do not inline.
+// ---------------------------------------------------------------------------
+
 const Field = (props: {
   t: Palette; styles: Styles;
-  icon: keyof typeof Ionicons.glyphMap; placeholder: string; value: string;
-  onChangeText: (v: string) => void; secure?: boolean; keyboardType?: 'default' | 'email-address' | 'number-pad';
-}) => (
-  <View style={props.styles.field}>
-    <Ionicons name={props.icon} size={18} color={props.t.textMuted} />
-    <TextInput
-      style={props.styles.input}
-      placeholder={props.placeholder}
-      placeholderTextColor={props.t.textMuted}
-      value={props.value}
-      onChangeText={props.onChangeText}
-      secureTextEntry={props.secure}
-      keyboardType={props.keyboardType ?? 'default'}
-      autoCapitalize="none"
-      autoCorrect={false}
-    />
+  label: string; placeholder: string; value: string;
+  onChangeText: (v: string) => void;
+  secure?: boolean; keyboardType?: 'default' | 'email-address';
+  autoComplete?: 'email' | 'name' | 'password' | 'new-password';
+}) => {
+  const [hidden, setHidden] = useState(true);
+  return (
+    <View style={props.styles.fieldBlock}>
+      <Text style={props.styles.fieldLabel}>{props.label}</Text>
+      <View style={props.styles.field}>
+        <TextInput
+          style={props.styles.input}
+          placeholder={props.placeholder}
+          placeholderTextColor={props.t.textFaint}
+          value={props.value}
+          onChangeText={props.onChangeText}
+          secureTextEntry={props.secure ? hidden : false}
+          keyboardType={props.keyboardType ?? 'default'}
+          autoCapitalize={props.autoComplete === 'name' ? 'words' : 'none'}
+          autoCorrect={false}
+          autoComplete={props.autoComplete}
+        />
+        {props.secure && (
+          <Pressable onPress={() => setHidden((h) => !h)} hitSlop={10} accessibilityLabel={hidden ? 'Show password' : 'Hide password'}>
+            <Ionicons name={hidden ? 'eye-off-outline' : 'eye-outline'} size={19} color={props.t.textMuted} />
+          </Pressable>
+        )}
+      </View>
+    </View>
+  );
+};
+
+// Compact live checklist: each rule becomes a chip that turns emerald when met.
+const PasswordRules = (props: { t: Palette; styles: Styles; password: string; confirm: string }) => (
+  <View style={props.styles.rulesRow}>
+    {PW_RULES.map((r) => {
+      const ok = r.test(props.password);
+      return (
+        <View key={r.id} style={[props.styles.ruleChip, ok && props.styles.ruleChipOk]}>
+          <Ionicons name={ok ? 'checkmark-circle' : 'ellipse-outline'} size={13} color={ok ? props.t.emerald : props.t.textFaint} />
+          <Text style={[props.styles.ruleText, ok && props.styles.ruleTextOk]}>{r.label}</Text>
+        </View>
+      );
+    })}
+    {(() => {
+      const ok = props.confirm.length > 0 && props.confirm === props.password;
+      return (
+        <View style={[props.styles.ruleChip, ok && props.styles.ruleChipOk]}>
+          <Ionicons name={ok ? 'checkmark-circle' : 'ellipse-outline'} size={13} color={ok ? props.t.emerald : props.t.textFaint} />
+          <Text style={[props.styles.ruleText, ok && props.styles.ruleTextOk]}>Passwords match</Text>
+        </View>
+      );
+    })()}
   </View>
 );
 
 const PrimaryButton = (props: {
-  t: Palette; styles: Styles; label: string; busy: boolean; onPress: () => void;
+  t: Palette; styles: Styles; label: string; busy?: boolean; onPress: () => void;
 }) => (
   <Pressable
     onPress={props.onPress}
     disabled={props.busy}
-    style={({ pressed }) => [props.styles.buttonWrap, (pressed || props.busy) && { opacity: 0.88 }]}
+    style={({ pressed }) => [props.styles.buttonWrap, (pressed || props.busy) && { opacity: 0.9 }]}
   >
     <LinearGradient
       colors={[props.t.emerald, props.t.teal]}
@@ -66,22 +130,142 @@ const PrimaryButton = (props: {
   </Pressable>
 );
 
-type Mode = 'LOGIN' | 'SIGNUP';
+// Segmented Login / Register pill with a sliding emerald thumb.
+const ModeSwitch = (props: {
+  t: Palette; styles: Styles; mode: Mode; onChange: (m: Mode) => void;
+}) => {
+  const [w, setW] = useState(0);
+  const x = useRef(new Animated.Value(props.mode === 'LOGIN' ? 0 : 1)).current;
+  useEffect(() => {
+    Animated.spring(x, {
+      toValue: props.mode === 'LOGIN' ? 0 : 1,
+      useNativeDriver: true, speed: 18, bounciness: 6,
+    }).start();
+  }, [props.mode, x]);
+  const thumbW = Math.max((w - 8) / 2, 0);
+  return (
+    <View style={props.styles.segment} onLayout={(e) => setW(e.nativeEvent.layout.width)}>
+      {w > 0 && (
+        <Animated.View
+          style={[
+            props.styles.segmentThumbWrap,
+            { width: thumbW, transform: [{ translateX: x.interpolate({ inputRange: [0, 1], outputRange: [0, thumbW] }) }] },
+          ]}
+        >
+          <LinearGradient
+            colors={[props.t.emerald, props.t.teal]}
+            start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
+            style={props.styles.segmentThumb}
+          />
+        </Animated.View>
+      )}
+      {(['LOGIN', 'SIGNUP'] as Mode[]).map((m) => {
+        const active = props.mode === m;
+        return (
+          <Pressable key={m} style={props.styles.segmentBtn} onPress={() => props.onChange(m)}>
+            <Text style={[props.styles.segmentText, active && props.styles.segmentTextActive]}>
+              {m === 'LOGIN' ? 'Login' : 'Register'}
+            </Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+};
+
+// Sun / moon light-dark switcher (auth screens only; Profile keeps the full picker).
+const ThemeSwitch = (props: { t: Palette; styles: Styles; onToggle: () => void }) => {
+  const light = props.t.mode === 'light';
+  return (
+    <Pressable
+      onPress={props.onToggle}
+      style={props.styles.themeSwitch}
+      accessibilityLabel={light ? 'Switch to dark mode' : 'Switch to light mode'}
+    >
+      <View style={[props.styles.themeIcon, light && props.styles.themeIconActive]}>
+        <Ionicons name="sunny" size={14} color={light ? props.t.onEmerald : props.t.textMuted} />
+      </View>
+      <View style={[props.styles.themeIcon, !light && props.styles.themeIconActive]}>
+        <Ionicons name="moon" size={13} color={!light ? props.t.onEmerald : props.t.textMuted} />
+      </View>
+    </Pressable>
+  );
+};
+
+// Six-box OTP input: the boxes are a visual skin over one hidden TextInput,
+// so paste, autofill, and backspace all behave natively.
+const OtpBoxes = (props: {
+  t: Palette; styles: Styles; value: string; onChange: (v: string) => void;
+}) => {
+  const ref = useRef<TextInput>(null);
+  const chars = props.value.split('');
+  return (
+    <Pressable style={props.styles.otpRow} onPress={() => ref.current?.focus()}>
+      {Array.from({ length: OTP_LENGTH }).map((_, i) => {
+        const filled = i < chars.length;
+        const activeBox = i === chars.length;
+        return (
+          <View key={i} style={[props.styles.otpBox, filled && props.styles.otpBoxFilled, activeBox && props.styles.otpBoxActive]}>
+            <Text style={props.styles.otpDigit}>{chars[i] ?? ''}</Text>
+          </View>
+        );
+      })}
+      <TextInput
+        ref={ref}
+        style={props.styles.otpHidden}
+        value={props.value}
+        onChangeText={(v) => props.onChange(v.replace(/\D/g, '').slice(0, OTP_LENGTH))}
+        keyboardType="number-pad"
+        textContentType="oneTimeCode"
+        autoFocus
+        caretHidden
+      />
+    </Pressable>
+  );
+};
+
+// ---------------------------------------------------------------------------
 
 export default function AuthScreen() {
   const t = useTheme();
   const styles = useMemo(() => makeStyles(t), [t]);
+  const insets = useSafeAreaInsets();
+  const router = useRouter();
+
   const [mode, setMode] = useState<Mode>('LOGIN');
+  const [step, setStep] = useState<Step>('FORM');
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [rememberMe, setRememberMe] = useState(false);
   const [busy, setBusy] = useState(false);
+
+  // OTP step state
+  const [otp, setOtp] = useState('');
+  const [otpBusy, setOtpBusy] = useState(false);
+  const [devCode, setDevCode] = useState<string | null>(null);
+  const [cooldown, setCooldown] = useState(0);
+  // 'code' = 6-digit flow; 'link' = fell back to Firebase's verification email
+  const [verifyChannel, setVerifyChannel] = useState<'code' | 'link'>('code');
+  const [pendingUser, setPendingUser] = useState<{ name: string; email: string } | null>(null);
+
   const [bioType, setBioType] = useState<'face' | 'fingerprint' | null>(null);
   const [hasSession, setHasSession] = useState(false);
   const [sessionUser, setSessionUser] = useState<{ name: string; email: string } | null>(null);
+
   const login = useFinance((s) => s.login);
   const biometricsEnabled = useFinance((s) => s.biometricsEnabled);
-  const router = useRouter();
+  const setThemeMode = useFinance((s) => s.setThemeMode);
+
+  // Fade between steps.
+  const fade = useRef(new Animated.Value(1)).current;
+  const goToStep = (next: Step) => {
+    Animated.timing(fade, { toValue: 0, duration: 120, useNativeDriver: true }).start(() => {
+      setStep(next);
+      Animated.timing(fade, { toValue: 1, duration: 180, useNativeDriver: true }).start();
+    });
+  };
 
   useEffect(() => {
     (async () => {
@@ -91,10 +275,14 @@ export default function AuthScreen() {
       if (types.includes(LocalAuthentication.AuthenticationType.FACIAL_RECOGNITION)) setBioType('face');
       else if (types.includes(LocalAuthentication.AuthenticationType.FINGERPRINT)) setBioType('fingerprint');
     })();
+    // Prefill a remembered email.
+    AsyncStorage.getItem(REMEMBER_KEY).then((saved) => {
+      if (saved) { setEmail(saved); setRememberMe(true); }
+    }).catch(() => {});
   }, []);
 
-  // Watch for a restored Firebase session — this is what makes Face ID a
-  // relock (it can only unlock an account that is already signed in).
+  // Restored Firebase session makes Face ID a relock (it can only unlock an
+  // account that is already signed in).
   useEffect(() => {
     const unsub = subscribeAuth((user) => {
       setHasSession(!!user);
@@ -103,29 +291,105 @@ export default function AuthScreen() {
     return unsub;
   }, []);
 
+  // Resend cooldown tick.
+  useEffect(() => {
+    if (cooldown <= 0) return;
+    const id = setInterval(() => setCooldown((c) => (c <= 1 ? 0 : c - 1)), 1000);
+    return () => clearInterval(id);
+  }, [cooldown > 0]);
+
+  const persistRemember = (mail: string) => {
+    if (rememberMe && mail.trim()) AsyncStorage.setItem(REMEMBER_KEY, mail.trim()).catch(() => {});
+    else AsyncStorage.removeItem(REMEMBER_KEY).catch(() => {});
+  };
+
   const enter = (displayName: string, mail: string) => {
     login(displayName, mail);
     router.replace('/(tabs)/dashboard');
   };
 
+  const toggleTheme = () => setThemeMode(t.mode === 'light' ? 'dark' : 'light');
+
+  // ----- email code delivery (sign-up verification) ------------------------
+  const sendSignupCode = async (mail: string): Promise<boolean> => {
+    try {
+      const r = await requestEmailOtp(mail);
+      if (r.devCode) setDevCode(r.devCode); // dev-only delivery, see services/otp.ts
+      setVerifyChannel('code');
+      setCooldown(RESEND_COOLDOWN);
+      return true;
+    } catch (e) {
+      if (e instanceof OtpUnavailableError) {
+        // Production without the M6 endpoint: Firebase's real verification
+        // link keeps the flow honest with zero backend.
+        const sent = await sendVerificationEmail().catch(() => false);
+        setVerifyChannel(sent ? 'link' : 'code');
+        setCooldown(RESEND_COOLDOWN);
+        return true;
+      }
+      Alert.alert('Could not send the code', 'Check your connection and try again.');
+      return false;
+    }
+  };
+
+  // ----- submit ------------------------------------------------------------
+  const validateSignupPassword = (): string | null => {
+    const failed = PW_RULES.filter((r) => !r.test(password));
+    if (failed.length) return `Your password still needs: ${failed.map((r) => r.label.toLowerCase()).join(', ')}.`;
+    if (password !== confirm) return 'The passwords do not match. Retype them and try again.';
+    return null;
+  };
+
   const submitEmail = async () => {
     if (busy) return;
-    // Offline-first philosophy: if Firebase isn't configured (fresh clone of
-    // the public repo), keep the old mock path so the app still works.
+    Keyboard.dismiss();
+    // Offline-first: without Firebase config (fresh public clone) the mock
+    // path still exercises the full flow, including the OTP step.
     if (!authAvailable()) {
-      enter(name || 'Guest', email || 'guest@savecents.app');
+      if (mode === 'SIGNUP') {
+        const pwError = validateSignupPassword();
+        if (pwError) { Alert.alert('Check your password', pwError); return; }
+      }
+      const displayName = name.trim() || 'Guest';
+      const mail = email.trim() || 'guest@savecents.app';
+      persistRemember(mail);
+      if (mode === 'SIGNUP') {
+        setPendingUser({ name: displayName, email: mail });
+        setBusy(true);
+        const ok = await sendSignupCode(mail);
+        setBusy(false);
+        if (ok) { setOtp(''); goToStep('OTP'); }
+        return;
+      }
+      enter(displayName, mail);
       return;
     }
     if (!email.trim() || !password) {
       Alert.alert('Missing info', 'Please enter your email and password.');
       return;
     }
+    if (mode === 'SIGNUP') {
+      if (!name.trim()) {
+        Alert.alert('Missing info', 'Please enter your full name.');
+        return;
+      }
+      const pwError = validateSignupPassword();
+      if (pwError) { Alert.alert('Check your password', pwError); return; }
+    }
     setBusy(true);
     try {
-      const user = mode === 'LOGIN'
-        ? await signIn(email, password)
-        : await signUp(name, email, password);
-      enter(user.displayName ?? name ?? 'You', user.email ?? email);
+      if (mode === 'LOGIN') {
+        const user = await signIn(email, password);
+        persistRemember(email);
+        enter(user.displayName ?? 'You', user.email ?? email);
+        return;
+      }
+      const user = await signUp(name, email, password);
+      persistRemember(email);
+      setPendingUser({ name: user.displayName ?? name.trim(), email: user.email ?? email.trim() });
+      const ok = await sendSignupCode(user.email ?? email);
+      if (ok) { setOtp(''); goToStep('OTP'); }
+      else enter(user.displayName ?? name, user.email ?? email); // account exists; never strand the user
     } catch (e) {
       Alert.alert(mode === 'LOGIN' ? 'Log in failed' : 'Sign up failed', authErrorMessage(e));
     } finally {
@@ -133,20 +397,82 @@ export default function AuthScreen() {
     }
   };
 
+  const submitOtp = async () => {
+    if (otpBusy || !pendingUser) return;
+    if (verifyChannel === 'link') {
+      // Link fallback: tapping Continue just moves on; Firebase flips
+      // emailVerified when they open the email.
+      goToStep('SUCCESS');
+      return;
+    }
+    if (otp.length < OTP_LENGTH) {
+      Alert.alert('Almost there', `Enter all ${OTP_LENGTH} digits of the code.`);
+      return;
+    }
+    setOtpBusy(true);
+    const r = verifyEmailOtp(otp);
+    setOtpBusy(false);
+    if (r.ok) {
+      Keyboard.dismiss();
+      goToStep('SUCCESS');
+    } else {
+      setOtp('');
+      Alert.alert('Wrong code', r.reason ?? 'Try again.');
+    }
+  };
+
+  const resendCode = async () => {
+    if (cooldown > 0 || !pendingUser) return;
+    setDevCode(null);
+    setOtp('');
+    await sendSignupCode(pendingUser.email);
+  };
+
   const forgotPassword = async () => {
-    if (!authAvailable()) return;
+    if (!authAvailable()) {
+      Alert.alert('Reset password', 'Connect Firebase first (src/services/firebaseConfig.ts).');
+      return;
+    }
     if (!email.trim()) {
       Alert.alert('Reset password', 'Type your email above first, then tap this again.');
       return;
     }
     try {
       await resetPassword(email);
-      Alert.alert('Check your inbox', `We sent a password-reset link to ${email.trim()}.`);
+      Alert.alert('Check your inbox', `We sent a password reset link to ${email.trim()}.`);
     } catch (e) {
       Alert.alert('Reset failed', authErrorMessage(e));
     }
   };
 
+  // ----- Google ------------------------------------------------------------
+  const google = useGoogleSignIn(
+    (user) => {
+      persistRemember(user.email ?? '');
+      enter(user.displayName ?? 'You', user.email ?? '');
+    },
+    (message) => Alert.alert('Google sign-in', message),
+  );
+
+  const googleLogin = () => {
+    if (IN_EXPO_GO) {
+      Alert.alert(
+        'Google needs the full app build',
+        'Google blocks sign-in inside Expo Go. It works in the development build and in the released app. Use email for now.',
+      );
+      return;
+    }
+    if (!googleConfigured()) {
+      Alert.alert(
+        'Google is almost ready',
+        'Paste the OAuth client ids into src/services/googleAuth.ts (setup steps are in that file), then this button signs you straight in.',
+      );
+      return;
+    }
+    google.begin();
+  };
+
+  // ----- biometrics --------------------------------------------------------
   const biometricLogin = async () => {
     try {
       const enrolled = await LocalAuthentication.isEnrolledAsync();
@@ -157,20 +483,19 @@ export default function AuthScreen() {
       const result = await LocalAuthentication.authenticateAsync({
         promptMessage: 'Unlock SaveCents',
         cancelLabel: 'Use password instead',
-        disableDeviceFallback: true, // Face ID or nothing — no passcode screen
+        disableDeviceFallback: true,
       });
       if (result.success) {
         if (sessionUser) enter(sessionUser.name, sessionUser.email);
         else Alert.alert('Session expired', 'Please log in with your email once, then Face ID will work again.');
         return;
       }
-      // Surface the real reason instead of failing silently.
       const err = (result as { error?: string }).error ?? 'unknown';
-      if (err === 'user_cancel' || err === 'system_cancel' || err === 'app_cancel') return; // user backed out — not an error
+      if (err === 'user_cancel' || err === 'system_cancel' || err === 'app_cancel') return;
       if (err === 'lockout') {
         Alert.alert('Face ID locked', 'Too many failed attempts. Unlock your iPhone with your passcode once, then try again.');
       } else if (err === 'not_available' || err === 'not_enrolled' || err === 'missing_usage_description') {
-        Alert.alert('Face ID unavailable', `iOS says: ${err}. Check Settings → Apps → Expo Go → Face ID is ON.`);
+        Alert.alert('Face ID unavailable', `iOS says: ${err}. Check Settings, then Expo Go, then Face ID is on.`);
       } else {
         Alert.alert('Face ID failed', `Reason: ${err}. You can log in with your email instead.`);
       }
@@ -179,117 +504,351 @@ export default function AuthScreen() {
     }
   };
 
-  // Real Google Sign-In needs the M4 development build.
-  const googleLogin = () =>
-    Alert.alert('Coming soon', 'Google Sign-In arrives in the next build. Use email for now.');
+  const showBiometric = !IN_EXPO_GO && bioType && biometricsEnabled && hasSession && mode === 'LOGIN';
 
+  // ----- render ------------------------------------------------------------
   return (
     <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
-    <KeyboardAvoidingView
-      style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-    >
-      <View style={styles.brand}>
-        <LinearGradient colors={[t.emerald, t.teal]} style={styles.logoRing}>
-          <View style={styles.logoInner}>
-            <Ionicons name="wallet" size={28} color={t.emerald} />
+      <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <ScrollView
+          contentContainerStyle={[styles.scroll, { paddingTop: insets.top + 8, paddingBottom: insets.bottom + 16 }]}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          {/* Top bar: back chevron on OTP, theme switcher always */}
+          <View style={styles.topBar}>
+            {step === 'OTP' ? (
+              <Pressable
+                style={styles.backBtn}
+                onPress={() => { setOtp(''); goToStep('FORM'); setMode('LOGIN'); }}
+                accessibilityLabel="Back to login"
+              >
+                <Ionicons name="chevron-back" size={20} color={t.textPrimary} />
+              </Pressable>
+            ) : <View style={styles.backBtn} />}
+            <ThemeSwitch t={t} styles={styles} onToggle={toggleTheme} />
           </View>
-        </LinearGradient>
-        <Text style={styles.title}>SaveCents</Text>
-        <Text style={styles.subtitle}>Your proactive financial coach</Text>
-      </View>
 
-      <GlassCard glow>
-        <Text style={styles.cardTitle}>{mode === 'LOGIN' ? 'Welcome back' : 'Create your account'}</Text>
+          <Animated.View style={{ opacity: fade }}>
+            {step === 'FORM' && (
+              <>
+                <View style={styles.brand}>
+                  <Image source={require('../assets/logo-wordmark.png')} style={styles.wordmark} resizeMode="contain" />
+                  <Text style={styles.title}>
+                    {mode === 'LOGIN' ? 'Welcome back' : 'Create an account'}
+                  </Text>
+                  {mode === 'LOGIN' ? (
+                    <Text style={styles.subtitle}>Your money, one calm place</Text>
+                  ) : (
+                    <Pressable onPress={() => setMode('LOGIN')} hitSlop={6}>
+                      <Text style={styles.subtitle}>
+                        Already have an account? <Text style={styles.link}>Log in</Text>
+                      </Text>
+                    </Pressable>
+                  )}
+                </View>
 
-        {/* Social + passkey options */}
-        <Pressable style={styles.providerBtn} onPress={googleLogin}>
-          <Text style={styles.gLogo}>G</Text>
-          <Text style={styles.providerText}>Continue with Google</Text>
-        </Pressable>
+                <View style={styles.card}>
+                  <ModeSwitch t={t} styles={styles} mode={mode} onChange={(m) => setMode(m)} />
 
-        {!IN_EXPO_GO && bioType && biometricsEnabled && hasSession && mode === 'LOGIN' && (
-          <Pressable style={styles.providerBtn} onPress={biometricLogin}>
-            <Ionicons
-              name={bioType === 'face' ? 'scan-circle-outline' : 'finger-print'}
-              size={20}
-              color={t.emerald}
-            />
-            <Text style={styles.providerText}>
-              {bioType === 'face' ? 'Unlock with Face ID' : 'Unlock with fingerprint'}
-            </Text>
-          </Pressable>
-        )}
+                  {mode === 'SIGNUP' && (
+                    <Field
+                      t={t} styles={styles} label="Full Name" placeholder="Juan Dela Cruz"
+                      value={name} onChangeText={setName} autoComplete="name"
+                    />
+                  )}
+                  <Field
+                    t={t} styles={styles} label="Email Address" placeholder="you@email.com"
+                    value={email} onChangeText={setEmail} keyboardType="email-address" autoComplete="email"
+                  />
+                  <Field
+                    t={t} styles={styles} label="Password" placeholder={mode === 'LOGIN' ? 'Your password' : '8+ characters'}
+                    value={password} onChangeText={setPassword} secure
+                    autoComplete={mode === 'LOGIN' ? 'password' : 'new-password'}
+                  />
+                  {mode === 'SIGNUP' && (
+                    <>
+                      <Field
+                        t={t} styles={styles} label="Retype Password" placeholder="Same password again"
+                        value={confirm} onChangeText={setConfirm} secure autoComplete="new-password"
+                      />
+                      <PasswordRules t={t} styles={styles} password={password} confirm={confirm} />
+                    </>
+                  )}
 
-        <View style={styles.dividerRow}>
-          <View style={styles.dividerLine} />
-          <Text style={styles.dividerText}>or use email</Text>
-          <View style={styles.dividerLine} />
-        </View>
+                  {mode === 'LOGIN' && (
+                    <View style={styles.rememberRow}>
+                      <Pressable style={styles.rememberTap} onPress={() => setRememberMe((v) => !v)} hitSlop={8}>
+                        <View style={[styles.checkbox, rememberMe && styles.checkboxOn]}>
+                          {rememberMe && <Ionicons name="checkmark" size={13} color={t.onEmerald} />}
+                        </View>
+                        <Text style={styles.rememberText}>Remember me</Text>
+                      </Pressable>
+                      <Pressable onPress={forgotPassword} hitSlop={8}>
+                        <Text style={styles.link}>Forgot password</Text>
+                      </Pressable>
+                    </View>
+                  )}
 
-        {mode === 'SIGNUP' && (
-          <Field t={t} styles={styles} icon="person" placeholder="Full name" value={name} onChangeText={setName} />
-        )}
-        <Field t={t} styles={styles} icon="mail" placeholder="Email" value={email} onChangeText={setEmail} keyboardType="email-address" />
-        <Field t={t} styles={styles} icon="lock-closed" placeholder="Password" value={password} onChangeText={setPassword} secure />
-        <PrimaryButton t={t} styles={styles} busy={busy} label={mode === 'LOGIN' ? 'Log in' : 'Sign up'} onPress={submitEmail} />
+                  <PrimaryButton
+                    t={t} styles={styles} busy={busy}
+                    label={mode === 'LOGIN' ? 'Login' : 'Create account'}
+                    onPress={submitEmail}
+                  />
 
-        {mode === 'LOGIN' && (
-          <Pressable onPress={forgotPassword} style={styles.forgotRow}>
-            <Text style={styles.switchLink}>Forgot password?</Text>
-          </Pressable>
-        )}
+                  <View style={styles.dividerRow}>
+                    <View style={styles.dividerLine} />
+                    <Text style={styles.dividerText}>Or continue with</Text>
+                    <View style={styles.dividerLine} />
+                  </View>
 
-        <Pressable onPress={() => setMode(mode === 'LOGIN' ? 'SIGNUP' : 'LOGIN')} style={styles.switchRow}>
-          <Text style={styles.switchText}>
-            {mode === 'LOGIN' ? 'New here? ' : 'Already have an account? '}
-            <Text style={styles.switchLink}>{mode === 'LOGIN' ? 'Create an account' : 'Log in'}</Text>
-          </Text>
-        </Pressable>
-      </GlassCard>
+                  <View style={styles.providerRow}>
+                    <Pressable
+                      style={({ pressed }) => [styles.providerBtn, pressed && { opacity: 0.85 }]}
+                      onPress={googleLogin}
+                    >
+                      {google.state === 'working'
+                        ? <ActivityIndicator size="small" color={t.textPrimary} />
+                        : <Ionicons name="logo-google" size={17} color={t.textPrimary} />}
+                      <Text style={styles.providerText}>Google</Text>
+                    </Pressable>
+                    {showBiometric && (
+                      <Pressable
+                        style={({ pressed }) => [styles.providerBtn, pressed && { opacity: 0.85 }]}
+                        onPress={biometricLogin}
+                      >
+                        <Ionicons
+                          name={bioType === 'face' ? 'scan-circle-outline' : 'finger-print'}
+                          size={18} color={t.emerald}
+                        />
+                        <Text style={styles.providerText}>{bioType === 'face' ? 'Face ID' : 'Fingerprint'}</Text>
+                      </Pressable>
+                    )}
+                  </View>
 
-      <Text style={styles.footnote}>Secured by Firebase · Face ID relock is live</Text>
-    </KeyboardAvoidingView>
+                  {mode === 'LOGIN' && (
+                    <Pressable onPress={() => setMode('SIGNUP')} style={styles.switchRow}>
+                      <Text style={styles.switchText}>
+                        Don't have an account? <Text style={styles.link}>Sign up</Text>
+                      </Text>
+                    </Pressable>
+                  )}
+                </View>
+              </>
+            )}
+
+            {step === 'OTP' && pendingUser && (
+              <>
+                <View style={styles.brand}>
+                  <Image source={require('../assets/logo-wordmark.png')} style={styles.wordmark} resizeMode="contain" />
+                  <Text style={styles.title}>Verify your email</Text>
+                  <Text style={styles.subtitle}>
+                    {verifyChannel === 'code'
+                      ? `Enter the 6 digit code sent to ${pendingUser.email}`
+                      : `We emailed a verification link to ${pendingUser.email}. Open it, then continue.`}
+                  </Text>
+                </View>
+
+                <View style={styles.card}>
+                  {verifyChannel === 'code' && (
+                    <>
+                      <OtpBoxes t={t} styles={styles} value={otp} onChange={setOtp} />
+                      {devCode && (
+                        <View style={styles.devCodeChip}>
+                          <Ionicons name="construct-outline" size={13} color={t.textMuted} />
+                          <Text style={styles.devCodeText}>Development delivery, your code is {devCode}</Text>
+                        </View>
+                      )}
+                    </>
+                  )}
+
+                  <PrimaryButton
+                    t={t} styles={styles} busy={otpBusy}
+                    label={verifyChannel === 'code' ? 'Submit' : 'Continue'}
+                    onPress={submitOtp}
+                  />
+
+                  <Pressable onPress={resendCode} style={styles.switchRow} disabled={cooldown > 0}>
+                    <Text style={styles.switchText}>
+                      {cooldown > 0
+                        ? `Resend available in ${cooldown}s`
+                        : <>Didn't get it? <Text style={styles.link}>Resend {verifyChannel === 'code' ? 'code' : 'email'}</Text></>}
+                    </Text>
+                  </Pressable>
+                </View>
+              </>
+            )}
+
+            {step === 'SUCCESS' && pendingUser && (
+              <View style={styles.successWrap}>
+                <View style={styles.successShadow}>
+                  <LinearGradient
+                    colors={[t.emerald, t.teal]}
+                    start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
+                    style={styles.successCard}
+                  >
+                    <View style={styles.successCheckRing}>
+                      <Ionicons name="checkmark" size={40} color={t.emerald} />
+                    </View>
+                    <Text style={styles.successTitle}>Congratulations</Text>
+                    <Text style={styles.successBody}>
+                      Your account is ready{pendingUser.name.trim() ? `, ${pendingUser.name.trim().split(' ')[0]}` : ''}. Cents is waiting to meet you.
+                    </Text>
+                    <Pressable
+                      style={({ pressed }) => [styles.successBtn, pressed && { opacity: 0.9 }]}
+                      onPress={() => enter(pendingUser.name, pendingUser.email)}
+                    >
+                      <Text style={styles.successBtnText}>Home Page</Text>
+                    </Pressable>
+                  </LinearGradient>
+                </View>
+              </View>
+            )}
+          </Animated.View>
+        </ScrollView>
+      </KeyboardAvoidingView>
     </TouchableWithoutFeedback>
   );
 }
 
 const makeStyles = (t: Palette) => StyleSheet.create({
-  container: { flex: 1, justifyContent: 'center', padding: 24 },
-  brand: { alignItems: 'center', marginBottom: 26 },
-  logoRing: { width: 66, height: 66, borderRadius: 22, padding: 2, marginBottom: 14 },
-  logoInner: {
-    flex: 1, borderRadius: 20, backgroundColor: t.insetBg,
-    alignItems: 'center', justifyContent: 'center',
+  flex: { flex: 1 },
+  scroll: { flexGrow: 1, justifyContent: 'center', paddingHorizontal: 22 },
+
+  topBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 },
+  backBtn: {
+    width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: t.sheet, borderWidth: 1, borderColor: t.borderSoft,
   },
-  title: { color: t.textPrimary, fontSize: 30, fontWeight: '800', letterSpacing: 0.3 },
-  subtitle: { color: t.textMuted, fontSize: 14, marginTop: 4 },
-  cardTitle: { color: t.textPrimary, fontSize: 20, fontWeight: '700', marginBottom: 16 },
-  providerBtn: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10,
-    height: 50, borderRadius: radius.input, marginBottom: 10,
-    backgroundColor: t.surfaceStrong, borderWidth: 1, borderColor: t.border,
+  themeSwitch: {
+    flexDirection: 'row', gap: 4, padding: 4, borderRadius: radius.chip,
+    backgroundColor: t.sheet, borderWidth: 1, borderColor: t.borderSoft,
   },
-  gLogo: { color: t.textPrimary, fontSize: 17, fontWeight: '800' },
-  providerText: { color: t.textPrimary, fontSize: 14, fontWeight: '600' },
-  dividerRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginVertical: 14 },
-  dividerLine: { flex: 1, height: 1, backgroundColor: t.borderSoft },
-  dividerText: { color: t.textFaint, fontSize: 11, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.8 },
+  themeIcon: { width: 28, height: 28, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
+  themeIconActive: { backgroundColor: t.emerald },
+
+  brand: { alignItems: 'center', marginBottom: 14 },
+  // The wordmark asset ships with its own soft shadow baked into the
+  // artwork, so NO runtime shadow props here (the iOS-only shadow looked off
+  // and Android could never match it). v19 asset aspect ~2.47.
+  wordmark: { width: 150, height: 61, marginBottom: 3 },
+  title: { color: t.textPrimary, fontSize: 22, fontWeight: '800', letterSpacing: 0.2, textAlign: 'center' },
+  subtitle: { color: t.textMuted, fontSize: 13.5, marginTop: 5, textAlign: 'center', lineHeight: 19, paddingHorizontal: 8 },
+
+  // Solid, simple card per the reference: white in light, deep green in dark.
+  // NO glow, NO blur. Shadow lives here and nothing clips it (rule 3.2 safe:
+  // no overflow hidden on this view).
+  card: {
+    backgroundColor: t.sheet,
+    borderRadius: radius.card,
+    borderWidth: 1,
+    borderColor: t.borderSoft,
+    padding: 18,
+    shadowColor: t.mode === 'light' ? '#0B3A2E' : '#000000',
+    shadowOpacity: t.mode === 'light' ? 0.08 : 0.3,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 3,
+  },
+
+  segment: {
+    flexDirection: 'row', backgroundColor: t.inputFill, borderRadius: radius.chip,
+    padding: 4, marginBottom: 13, borderWidth: 1, borderColor: t.borderSoft,
+  },
+  segmentThumbWrap: {
+    position: 'absolute', top: 4, bottom: 4, left: 4, borderRadius: radius.chip,
+    shadowColor: t.emerald, shadowOpacity: 0.3, shadowRadius: 8, shadowOffset: { width: 0, height: 2 },
+  },
+  segmentThumb: { flex: 1, borderRadius: radius.chip },
+  segmentBtn: { flex: 1, height: 38, alignItems: 'center', justifyContent: 'center' },
+  segmentText: { color: t.textMuted, fontSize: 14, fontWeight: '700' },
+  segmentTextActive: { color: t.onEmerald },
+
+  fieldBlock: { marginBottom: 10 },
+  fieldLabel: { color: t.textPrimary, fontSize: 13, fontWeight: '700', marginBottom: 6 },
   field: {
     flexDirection: 'row', alignItems: 'center', gap: 10,
     backgroundColor: t.inputFill, borderWidth: 1, borderColor: t.borderSoft,
-    borderRadius: radius.input, paddingHorizontal: 14, height: 50, marginBottom: 12,
+    borderRadius: radius.input, paddingHorizontal: 14, height: 47,
   },
   input: { flex: 1, color: t.textPrimary, fontSize: 15 },
-  buttonWrap: {
-    borderRadius: radius.input, marginTop: 6,
-    shadowColor: t.emerald, shadowOpacity: 0.45, shadowRadius: 16, shadowOffset: { width: 0, height: 4 },
+
+  rulesRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 4, marginTop: 2 },
+  ruleChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    paddingHorizontal: 9, paddingVertical: 5, borderRadius: radius.chip,
+    backgroundColor: t.inputFill, borderWidth: 1, borderColor: t.borderSoft,
   },
-  button: { height: 52, borderRadius: radius.input, alignItems: 'center', justifyContent: 'center' },
+  ruleChipOk: { backgroundColor: t.emeraldTint, borderColor: t.emeraldBorder },
+  ruleText: { color: t.textFaint, fontSize: 11.5, fontWeight: '600' },
+  ruleTextOk: { color: t.emerald },
+
+  rememberRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 2 },
+  rememberTap: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  checkbox: {
+    width: 19, height: 19, borderRadius: 6, borderWidth: 1.5, borderColor: t.border,
+    alignItems: 'center', justifyContent: 'center', backgroundColor: t.inputFill,
+  },
+  checkboxOn: { backgroundColor: t.emerald, borderColor: t.emerald },
+  rememberText: { color: t.textMuted, fontSize: 13, fontWeight: '600' },
+  link: { color: t.emerald, fontSize: 13, fontWeight: '700' },
+
+  buttonWrap: {
+    borderRadius: radius.chip, marginTop: 10,
+    shadowColor: t.emerald, shadowOpacity: 0.35, shadowRadius: 12, shadowOffset: { width: 0, height: 4 },
+  },
+  button: { height: 50, borderRadius: radius.chip, alignItems: 'center', justifyContent: 'center' },
   buttonText: { color: t.onEmerald, fontSize: 16, fontWeight: '800' },
-  forgotRow: { alignItems: 'center', marginTop: 12 },
-  switchRow: { alignItems: 'center', marginTop: 14 },
+
+  dividerRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginVertical: 12 },
+  dividerLine: { flex: 1, height: 1, backgroundColor: t.borderSoft },
+  dividerText: { color: t.textFaint, fontSize: 11, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.8 },
+
+  providerRow: { flexDirection: 'row', gap: 10 },
+  providerBtn: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    height: 46, borderRadius: radius.chip,
+    backgroundColor: t.inputFill, borderWidth: 1, borderColor: t.border,
+  },
+  providerText: { color: t.textPrimary, fontSize: 14, fontWeight: '700' },
+
+  switchRow: { alignItems: 'center', marginTop: 12 },
   switchText: { color: t.textMuted, fontSize: 13 },
-  switchLink: { color: t.emerald, fontWeight: '700' },
-  footnote: { color: t.textFaint, fontSize: 11, textAlign: 'center', marginTop: 18 },
+
+  otpRow: { flexDirection: 'row', gap: 9, justifyContent: 'center', marginBottom: 6, marginTop: 4 },
+  otpBox: {
+    width: 44, height: 52, borderRadius: 14, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: t.inputFill, borderWidth: 1.5, borderColor: t.borderSoft,
+  },
+  otpBoxFilled: { borderColor: t.emeraldBorder, backgroundColor: t.emeraldTint },
+  otpBoxActive: { borderColor: t.emerald },
+  otpDigit: { color: t.textPrimary, fontSize: 20, fontWeight: '800', fontVariant: ['tabular-nums'] },
+  otpHidden: { position: 'absolute', opacity: 0.01, width: '100%', height: '100%' },
+  devCodeChip: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    marginTop: 8, paddingVertical: 6, paddingHorizontal: 12, alignSelf: 'center',
+    borderRadius: radius.chip, backgroundColor: t.inputFill,
+  },
+  devCodeText: { color: t.textMuted, fontSize: 12, fontWeight: '600' },
+
+  successWrap: { paddingHorizontal: 6 },
+  successShadow: {
+    borderRadius: radius.card,
+    shadowColor: t.emerald, shadowOpacity: 0.45, shadowRadius: 26, shadowOffset: { width: 0, height: 10 },
+    elevation: 10,
+  },
+  successCard: {
+    borderRadius: radius.card, paddingVertical: 34, paddingHorizontal: 26, alignItems: 'center',
+  },
+  successCheckRing: {
+    width: 84, height: 84, borderRadius: 42, backgroundColor: '#FFFFFF',
+    alignItems: 'center', justifyContent: 'center', marginBottom: 18,
+  },
+  successTitle: { color: t.onEmerald, fontSize: 24, fontWeight: '800', marginBottom: 8 },
+  successBody: { color: 'rgba(255,255,255,0.92)', fontSize: 14, textAlign: 'center', lineHeight: 21, marginBottom: 22 },
+  successBtn: {
+    height: 50, borderRadius: radius.chip, backgroundColor: '#FFFFFF',
+    alignItems: 'center', justifyContent: 'center', alignSelf: 'stretch',
+  },
+  successBtnText: { color: t.deepForest, fontSize: 15, fontWeight: '800' },
 });

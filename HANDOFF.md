@@ -1,245 +1,233 @@
 # SaveCents — Project Handoff Document
-**Last updated:** July 29, 2026 · **Current build:** savecents-m5-v15 (notch arc-flag fix, verified geometry)
+**Last updated:** July 30, 2026 · **Current build:** savecents-m5.6-v30 (draggable sheets + budget name fix)
 **Owner:** Rayy (rayysalcedo@gmail.com) · **Dev environment:** Windows PC + iPhone (Expo Go)
 
 ---
 
 ## 1. What SaveCents is
 
-AI-powered behavioral personal finance app for Filipinos. Cents (the AI coach) intercepts purchases: users log expenses by chatting naturally (English/Tagalog/Taglish), ask "can I afford this?", and get real trade-off math ("this delays your Hong Kong Trip by 3 weeks"). Zero-based budgeting across PH wallets/banks (GCash, Maya, BPI…), goals with trajectory projections.
+AI-powered behavioral personal finance app for Filipinos. Cents (the AI coach) intercepts purchases: users log expenses by chatting naturally (English/Tagalog/Taglish), scan items and receipts with an in-app camera, ask "can I afford this?", and get real trade-off math ("this delays your Hong Kong Trip by 3 weeks"). Zero-based budgeting across PH wallets/banks (GCash, Maya, BPI…), goals with trajectory projections.
 
-**Design direction (locked in this session):** user-friendly, user-focused, NOT techy. Green/White/Sage light theme is the default (deep-green dark theme still available in Profile). Glassmorphism nav bar retained. **Hard content rules: no emojis, no em dashes, no feature disclaimers anywhere in user-facing copy.** Reference aesthetic: modern green fintech (ATM-card balance carousels, white cards, quiet section headers, round avatars).
+**Design direction (LOCKED):** user-friendly, user-focused, NOT techy. Green/White/Sage light theme default (deep-green dark theme in Profile). Matte liquid glassmorphism throughout. **Hard content rules: no emojis, no em dashes, no feature disclaimers anywhere in user-facing copy. Every visible button must do something real.**
 
-React Native + Expo **SDK 54** (do NOT upgrade until Expo Go on the App Store catches up, or until the dev build in the M-roadmap). TypeScript, expo-router, zustand.
+React Native + Expo **SDK 54** (do NOT upgrade until the dev build lands in the roadmap). TypeScript, expo-router, zustand.
 
 ---
 
 ## 2. Current state — what is DONE
 
 ### M0–M2 ✅ (scaffold, full UI v1, real Gemini brain)
-As per previous handoff: Firebase AI Logic (`firebase/ai`, GoogleAIBackend, NO API key in app), Taglish intent extraction with live budget/goal context injection, structured JSON intents, model fallback chain, offline heuristic parser, Hermes AbortSignal polyfills (KEEP `src/polyfills.ts` imported first in index.ts).
+Firebase AI Logic (`firebase/ai`, GoogleAIBackend, NO API key in the app), Taglish intent extraction with live budget/goal context, structured JSON intents, model fallback chain, offline heuristic parser, Hermes AbortSignal polyfills (KEEP `src/polyfills.ts` imported first in index.ts).
 
 ### M3 ✅ — Persistence + real accounts
-- zustand `persist` + AsyncStorage, **persist version 2** (see migrations below), `buildSnapshot` is the single source of truth for what is saved locally AND synced.
-- Firebase email/password auth (`src/services/auth.ts`) with RN session persistence (`getReactNativePersistence` + ts-ignore — known SDK quirk, do not remove).
-- Firestore per-user offline-first sync (`src/services/sync.ts`), Face ID relock on top, in-app account deletion (Apple 5.1.1(v)).
+zustand `persist` + AsyncStorage (**persist version 2**, migrations in `finance.ts` `migrate()`), `buildSnapshot` = single source of truth for local persist AND Firestore sync. Firebase email/password auth with RN session persistence (ts-ignore quirk in `auth.ts` is deliberate), per-user offline-first sync, Face ID relock, in-app account deletion (Apple 5.1.1(v)).
 
-### M4 ✅ — Vision
-- Receipt scan + "can I afford this?" price-tag scan via expo-image-picker camera → base64 → same Gemini model → existing action-card flows. iOS camera launch is QUEUED from sheets via Modal `onDismiss` (do not launch camera directly from a sheet button — it hangs silently).
-- Voice: premium UI shipped (see M5 below); native STT still needs the dev build.
+### M4 ✅ — Vision foundations
+Receipt + price-tag analysis via Gemini vision (base64 → same structured schema → existing action-card flows). Voice: premium overlay shipped; native STT still needs the dev build (`src/services/voice.ts` `loadVoiceModule` seam).
 
-### M5 (this session) ✅ — Full UI/UX overhaul + Cents interaction system
+### M5 ✅ — Full UI/UX overhaul
+Redesigned Home (ATM card carousel with swipe physics, Today strip, Insights, budgets with due dates), Wallet, Analytics (search + CSV/PDF export), Profile (animal avatars, nickname, OTP-gated password change, plan card). Budgets have `name` / `category` / `dueDate`. Cents became the center-button hub instead of a chat tab.
 
-**Navigation (`app/(tabs)/_layout.tsx`)**
-- 5-slot glass pill bar: **Home · Wallet · Cents (center action button) · Goals · Analytics**, with labels.
-- Cents is NOT a route: a raised gradient dome button that opens the Cents hub overlay. `chat` route deleted.
-- Overlay stack (CentsHub, CentsChatModal, VoiceOverlay) is mounted as siblings above `<Tabs>` inside the tab layout.
+### M5.5 (Cents overhaul, v4→v15, device-verified through v13; v14–v15 geometry fixes pending device check) ✅
 
-**Home (`dashboard.tsx`) — fully redesigned**
-1. **Balance card carousel:** ATM-style Total Balance card (chip, contactless mark, NAME + **** holder line, eye toggle that masks every amount on screen), then one branded card per linked source using institution colors. Full-width, no peek; swipe animation = scale 0.8 / lift / dim 0.35 / 6° tilt on off-screen cards. Dots use the JS animation driver (width interpolation cannot use the native driver — don't "optimize" this).
-2. **Today strip:** Saved today (net of today's real transactions) + Needs attention (nearest due-dated budget → maxed budget → 85%+ budget → All clear). Taps deep-link to the Budgets tab.
-3. **Insights carousel** (goal trajectory / allocation / savings / top spend): identical step + swipe animation as the balance cards, uniform card heights (GlassCard blur/inner have flexGrow so `minHeight` actually stretches the glass).
-4. **Budgets list** (rows with icon, due-date chips, slim bars) and **Recent activity** (icons resolved from the transaction's budget), quiet section headers with Manage / View all links.
-- Header: greeting + nickname left, **round avatar button top-right** (chosen animal avatar or first+last initials) → Profile. No bell.
+**Cents chat (`src/components/cents/CentsChatModal.tsx`)** — full-screen liquid-glass overlay: the screen behind stays visible through blur 80 + theme veil + soft emerald top glow. Header: centered "Cents" + status dot + "AI coach", glass chevron-down (close) and scan buttons. Fresh conversations (chat has only the seed message) show a left-aligned hero greeting + three suggestion cards. Matte frosted bubbles (blur + one soft fill + thin border), emerald-gradient user bubbles, tinted emerald icon chips. Photos send with NO label and NO bubble: bare image with a hairlineWidth border. Keyboard handled by `src/hooks/useKeyboardInset.ts` (NO KeyboardAvoidingView in absolute overlays, it mis-measures). Scan button opens a two-option sheet (item / receipt) that launches ScanOverlay.
 
-**Wallet tab (`wallet.tsx`)** — account management extracted from the old Profile: green hero total with source chips, linked-sources list (tap = balance editor, kind labels), one-tap country presets + custom account sheet.
+**ScanOverlay (`src/components/cents/ScanOverlay.tsx`)** — in-app camera on **expo-camera ~17.0.10**: viewfinder with corner brackets + sweeping scan line, Item/Receipt segmented switch (taller frame for receipts), torch, gallery import, gradient shutter. Capture freezes the shot, the line keeps sweeping under a "Cents is analyzing" chip, then a dark glass panel slides up over the image: analysis lines, compact action card (Confirm/Decline), and a composer (text + mic) so the user keeps talking over the scan. "Open chat" hands the same thread to the full chat (everything lives in the chat store; the panel renders `chat.slice(startIndex)`). Permission-denied has its own screen with Allow + Photos import.
 
-**Cents hub (`src/components/cents/CentsHub.tsx`)** — glass bottom sheet from the center button: quick actions **Add Expense** (amount, budget chips, optional Pay-from account, note), **Add Income** (amount, REQUIRED route-to account dropdown, note), **Scan** (opens chat + auto-opens camera sheet), plus the Chat with Cents entry with mic button. Store actions `addExpense`/`addIncome` adjust budgets AND account balances and mirror a message into chat. Rendered as an animated absolute overlay, NOT an RN Modal (protects the iOS camera-presentation rules).
+**Cents hub (`CentsHub.tsx`)** — quick Add Expense / Add Income / Scan (opens ScanOverlay directly) + Chat CTA with mic. Dark-mode sheet uses deep-green glass fill (never white-over-blur, it renders gray).
 
-**Cents chat (`CentsChatModal.tsx`)** — the old chat tab converted to an in-context overlay: screen behind stays visible through a darkened blur, panel slides up, tap-above or X to dismiss. All action cards / Taglish buttons / camera sheet intact. Mic opens the voice overlay.
+**Nav bar (`app/(tabs)/_layout.tsx`)** — floating liquid-glass pill, ICONS ONLY (labels kept as accessibilityLabel), blur masked to a notched capsule via **@react-native-masked-view/masked-view 0.3.2** + react-native-svg path; the border is an SVG stroke of the same path. Focused tab = soft emerald glass circle (spring). Tabs dip 0.92 on press. Center Cents button (56px gradient) is docked IN the carved notch: 10px above the bar, ~8px side gaps, 10px air below; press dips 0.94, hold 220ms swells to 1.08 with a mint glow ring.
 
-**Voice (`VoiceOverlay.tsx` + `src/services/voice.ts`)** — full-screen "Speaking to Cents": pulsing rings + breathing glow, live transcript with caret, send/cancel, en·fil. **Native STT cannot run in Expo Go.** `voice.ts` has ONE seam (`loadVoiceModule`): after the dev build, `npm i expo-speech-recognition` and point the loader at it — nothing else changes. Until then the overlay shows a single "coming soon" line + type-instead.
+**Cents brain (`src/services/cents.ts` + `src/store/finance.ts`)**
+- `buildBrainContext()` feeds EVERY text and vision call: nickname, date, budgets, goals, liquid balance, 8 recent transactions, last 12 chat turns (cards flattened to text; bare photos become "Shared a photo to scan"). Follow-ups ("yes", "log that receipt", "saan mas mura?") resolve from memory.
+- **Multi-step requests:** `CentsResult.actions[]` — one message like "add a Groceries budget 9000 and log that receipt there" produces sequential action cards; categories created earlier in a batch count as existing for later cards; `executeAction` LogTransaction auto-creates a missing category on confirm.
+- **Vision:** item scans identify the product and estimate PH market price when no tag is visible (`priceIsEstimate`, the reply says it's an estimate); receipt scans break down store/items/discounts in `details` and invite log-or-ask. Handwritten-receipt digit rules retained.
+- **Resilience:** transient errors (429/500/503, "high demand", "overloaded", "resource exhausted", "unavailable", "internal error") retry the same model once after 900ms then advance the candidate chain; only a fully exhausted chain throws `cents-overloaded`, which surfaces as a friendly "I'm getting a lot of requests" line (chat AND scan). 404-class errors skip straight to the next model. Offline parser recognizes receipt/resibo/worth/total/nagastos/gastos.
+- Models tried in order: gemini-3.5-flash → 3.6-flash → 3.1-flash-lite → flash-latest (move to Remote Config at launch).
 
-**Budgets model** — `Category` now has `name` (display, e.g. "Meralco Bill"), `category` (base category for icons/AI filing), `dueDate?` (optional, drives Needs attention + due chips). Goals budget sheet: category grid → name field (pre-fills from category) → limit → optional due-date toggle + native picker. Goals screen honors `?tab=budgets` deep link.
+### M5.5-auth ✅ — Auth screens redesigned (savecents-m5-v16)
+`app/auth.tsx` rebuilt to the owner's reference layout in the locked sage language: real wordmark (`assets/logo-wordmark.png`, cropped from the brand file), light/dark switcher pill top-right (light default; drives the same `setThemeMode` as the Profile picker), segmented Login/Register pill with a sliding emerald thumb, labeled fields with password eye toggle, functional Remember Me (email persisted under `savecents.rememberedEmail`), emerald pill CTA (white-on-emerald in both themes), "Or continue with" Google + Face ID pills, footer mode switch. Steps: FORM to OTP to SUCCESS with a short cross-fade. Sign-up sends a 6-digit code through `requestEmailOtp` (aliased in `services/otp.ts`; same channel as the password-change OTP: dev shows the code in a chip, prod without the M6 endpoint falls back to Firebase `sendEmailVerification`, a real link email, and the OTP screen adapts its copy). OTP UI: six boxes skinning ONE hidden TextInput (paste, iOS `oneTimeCode` autofill, and backspace all behave), 30s resend cooldown, back chevron returns to Login. Success: emerald gradient card with a white check ring and a Home Page button, per the reference. Google Sign-In fully plumbed: `src/services/googleAuth.ts` (expo-auth-session + expo-web-browser + expo-crypto, new deps) exposes `useGoogleSignIn`; `auth.ts` gained `signInWithGoogleIdToken` (`GoogleAuthProvider.credential` + `signInWithCredential`) and `sendVerificationEmail`. Paste the three OAuth client ids at the top of `googleAuth.ts` (setup steps documented in the file). Google blocks OAuth inside Expo Go (exp:// redirect), so there the button explains and defers to email; in the M4 dev build it completes with zero code changes. Google logins skip OTP (email already verified). Face ID relock, forgot password via `resetPassword`, and the offline mock path (which now exercises the OTP step too) all preserved.
 
-**Profile (`app/profile.tsx`)** — pushed screen (NOT a tab; slide_from_right declared in the ROOT `app/_layout.tsx` — per-screen `Stack.Screen` options are too late for entrance animations). Layout: round avatar with pencil badge → nickname → email → **Free plan card with Manage (Coming soon alert)** → Account (**Nickname & avatar / Login / Password**) → Preferences (Notifications toggle, animated Light/Dark/Auto, Country & currency) → Privacy & Security (Face ID toggle, Help & support mailto, Delete account) → full-width green Log out.
-- **Nickname & avatar sheet:** nickname (max 20) + 6 choices: initials or 5 SVG cartoon animals (panda/fox/cat/dog/penguin) in `src/components/Avatar.tsx` — vector, gradient-shaded, no image assets. Persisted on `profile.nickname` / `profile.avatarId`, used in the Home header.
-- **Password flow (OTP-first):** Send code → 6-digit verify (10-min expiry, 5 attempts, resend) → new password (8+ chars, match) → real Firebase `updatePassword`; `auth/requires-recent-login` auto-falls back to a real reset email. See `src/services/otp.ts` and §6.
+### M5.5-auth v17 ✅ — Auth polish + app-wide touch-lag fix
+1. **Touch lag EVERYWHERE fixed:** `TrajectoryCurve` (Charts.tsx) ran an INFINITE `Animated.loop` with `useNativeDriver:false` to pulse the chart marker. Animated SVG props update on the JS thread, so once Home or Goals mounted, ~60 JS updates/sec ran forever and starved Pressable + scroll gesture handling across the whole app ("tap several times before anything moves"). The halo is now static; a PERF comment in Charts.tsx forbids reintroducing unbounded JS-driven loops. This is effectively CRITICAL RULE 3.9.
+2. **Light default enforced:** persist bumped to **version 3**; migration resets any stored dark/system choice to light ONE time (testing installs had dark persisted). app.json `userInterfaceStyle` and root `backgroundColor` now light so the pre-JS frame matches.
+3. **Auth card is solid and simple** per owner feedback: `t.sheet` background (white light / deep-green dark), soft shadow, thin border. NO glow, NO blur on auth. GlassCard is no longer used there.
+4. **Wordmark (v18):** the owner supplied updated logo art with a soft shadow baked into the artwork; `assets/logo-wordmark.png` is the owner-supplied transparent PNG (alpha-cropped with padding so the baked shadow survives, resized to 840px wide, aspect ~2.47, slot 150x61). Runtime shadow props removed. If the logo changes again, swap the asset rather than adding shadow styles.
+5. **Register password UX:** Retype Password field + live rule chips (8+ characters, a letter, a number, passwords match) enforced on submit with specific error copy.
+6. **Register fits one screen** on regular iPhones: compact brand block, "Already have an account? Log in" moved under the title (reference-style) replacing the bottom switch row, Remember me is Login-only, tightened paddings. ScrollView remains as a fallback for SE-size phones and open-keyboard states.
 
-**Analytics tab (`analytics.tsx`)** — search (description/category/amount), All/Income/Expenses chips, In/Out/Net pills, net-saved-by-month computed from REAL transactions, spend-by-budget, day-grouped list, **CSV export** (expo-file-system/legacy + expo-sharing) and **PDF report** (expo-print) that respect the active filters.
+### M5.5 v20 ✅ — Cents brand mark + touch-responsiveness pass 2
+**Cents mark:** the owner's yellow cent-with-sparkles logo replaces the Ionicons "sparkles" glyph everywhere Cents appears: nav center button (30px), hub head badge (26px), chat mini avatars (16px), scan panel avatar (16px, white variant). Assets: `assets/cents-mark.png` (yellow, square-padded 256px) and `assets/cents-mark-white.png` (auto-derived white fill for dark chips).
+**Touch pass 2 — rule 3.1 violations were live on FOUR screens.** `dashboard.tsx` defined `BalanceCard`, `CardHeader`, and `Section` inside the render body; `wallet.tsx` had `InstTile` inline; `profile.tsx` had `Row` inline. Because tab screens subscribe to the whole finance store, ANY store change re-rendered them and the inline component types made React REMOUNT those subtrees, killing in-flight taps and scroll gestures. All five are module-scope with explicit props now. Additionally both Home carousels moved to the NATIVE driver (`useNativeDriver: true` on the Animated.events, and the page-dot `width` interpolation became `scaleX` since width is not native-animatable, base dot width 20), so swipes no longer do ANY JS work per frame.
+**Also tell the tester:** Expo Go dev mode (`npx expo start`) runs unminified JS with dev checks and is inherently 2 to 5x slower than release. To judge real responsiveness run `npx expo start --no-dev --minify` once.
 
-**Store additions** — `Transaction.accountId?`, `notificationsEnabled`, `updatePersona`, `addExpense`, `addIncome`; `src/store/ui.ts` = ephemeral overlay coordination (hub/chat/voice/camera-handoff), never persisted.
+### M5.6-start v21 ✅ — Cents quick dial (center-button gesture)
+The center Cents button is now a gesture surface via ONE PanResponder (`CentsButton` in `(tabs)/_layout.tsx`): tap = hub (unchanged); swipe up OR hold 220ms = the quick dial fans out above the notch with three matte-glass chips (Cents AI, Cents Scanner, Cents Voice); keep dragging to highlight (yellow ring + glow + selection haptics) and release to launch; release in place = the dial PINS and chips become tappable; backdrop tap or button tap dismisses. State lives in `store/ui.ts` (`quickOpen` / `quickDragging` / `quickIndex` + actions; `openHub`/`openChat`/`openScan` all clear it) so the button gesture and the `CentsQuickDial` overlay (`src/components/cents/CentsQuickDial.tsx`, mounted in TabLayout under the hub) stay in lockstep. Launches: AI = `openChat()`, Scanner = `openScan()`, Voice = `openChat({ voice: true })` (same as the hub mic CTA). Styling per the locked language + owner spec: glass chips (clipped BlurView, rule 3.3), emerald gradient badges with yellow marks (`assets/cents-mark.png`, new `assets/cents-scan-mark.png`), brand yellow `t.centsYellow = #FFDE59` (sampled from the logo, now in theme). Geometry constants + `quickIndexForDy` exported from CentsQuickDial.tsx; if the bar geometry in §3.5 changes, update QUICK_FIRST_BOTTOM there too. v22 fix: the chip Pressable must stay flex:1 or the flex:1 glass layer inside collapses to 0 height and the chips render as border hairlines (device-verified failure mode: "just lines").
 
-**Persist migrations** — version 2: existing installs are switched to the light theme ONCE (users can re-pick dark). Add future migrations in `migrate()` in `finance.ts`; optional new fields don't need one.
+### v23 ✅ — Dial restyle + chat and voice polish (owner feedback round)
+1. **Quick dial buttons** are now icon-only circles that mirror the Cents button exactly: same 56px top-lit emerald gradient, same emerald shadow, NO borders, NO labels (labels live on accessibilityLabel). Icons: yellow Cents mark (AI), yellow scan-corners mark (Scanner), yellow mic (Voice). Highlight while dragging = swell + brand-yellow glow ring drawn ABOVE the gradient. Geometry now 56 + 12 gap (step 68); `quickIndexForDy` updated to match.
+2. **Voice overlay X stays put:** the dial's Voice option launches `openVoice()` standalone (NOT `openChat({voice:true})`), so closing with X returns to whatever screen the user was on. A successfully finished transcript still opens chat to show Cents replying, and "Type instead" now opens chat explicitly (a composer, not a dead end). The hub mic CTA keeps its chat-first behavior.
+3. **Chat header:** the top scan button is REMOVED (scanning lives in the composer camera button, the dial, and the hub); a 40px spacer keeps the title centered. Title is now "Cents AI" + status dot with the "AI coach" subtitle removed.
+4. **Chat avatars:** the Cents mark sits plain inside a neutral hairline circle — no emerald fill behind it (miniAvatar: transparent bg, borderColor t.border, radius 13).
 
-### M5.5i (this session) ✅ — Carousel shadow room + deeper docked notch
+### v24 ✅ — Dial arc + highlight naming (owner feedback)
+1. **Arc layout:** the three dial buttons now fan out on a CURVE around the Cents button (Scanner up-left at dx -78 / rise 72, Cents AI at the top rise 106, Voice up-right at dx 78 / rise 72) instead of a vertical line — easier to drag-select. Selection is nearest-target 2D matching (`quickIndexForGesture(dx, dy)`, 48pt dead zone, 92pt capture radius); the old `quickIndexForDy` is gone. Option order in `QUICK_OPTIONS` is now scan / ai / voice and commits key off `QUICK_OPTIONS[i].key` in BOTH commit paths.
+2. **No duplicate Cents button:** the AI option wears a yellow chat bubble now, not the cent mark — the mark directly above the identical main button read as the button appearing twice.
+3. **Highlight = name reveal:** the highlighted button swells (1.14) with the yellow glow ring AND shows a small dark name pill above it ("Cents AI" / "Cents Scanner" / "Cents Voice"); unhighlighted buttons stay icon-only.
+4. **Thicker scanner mark:** `assets/cents-scan-mark.png` regenerated with a dilated (fattened) stroke; the original hairline corners read too thin at 26px.
 
-**ATM-card "cropped shadow" FIXED (different cause than GlassCard)** — the balance carousel's shadow/clip split was already correct; the slicing came from the horizontal Animated.FlatList clipping its children: the card shadow extends ~44px below the card and the scroll container's bounds cut it into a straight band. Fix: the list gets `marginVertical: -44` + `contentContainerStyle paddingVertical: 44` (layout unchanged, shadow has room). Insights carousel got the same treatment (-30/30) since GlassCard shadows now extend after M5.5h. RULE: any horizontal carousel whose items cast shadows needs vertical content padding + compensating negative margins. Bank card shadow is also mode-tuned now (light: #0B3A2E at 0.22 instead of the 0.5 dark smudge).
+### v25 ✅ — Chat scroll fix + dial label polish
+**Chat scroll (owner: "cannot scroll, takes many tries"), three causes fixed in CentsChatModal:**
+1. The FlatList was WRAPPED IN A PRESSABLE (tap-blank-to-dismiss-keyboard). A Pressable parent joins responder negotiation on every touch, so scroll drags started dead. Wrapper removed; keyboard dismissal = interactive drag + chevron. Never wrap scrollables in Pressable/Touchable.
+2. AppearIn ran on EVERY renderItem, so old rows mounting during upward scrolls faded in from blank (cost + "frozen list" look). Now only index 0 (newest, inverted list) animates.
+3. Every Cents bubble was its own BlurView over the blur-80 backdrop; long threads stacked a UIVisualEffectView per bubble and dropped frames. Bubbles now use the translucent-fill alternative rule 3.3 sanctions (dark fill deepened to keep the matte look; the full-screen backdrop still provides the glass depth). If the owner dislikes the dark-mode bubble tone, tune the Glass gradient, do NOT reintroduce per-bubble blur.
+**Dial labels:** highlight pill is now white, small (11px, deep-forest text), single-line, with an explicit 120px width + left offset — an absolute child sized by the 56px button wrapper had wrapped its text into a vertical blob. v26: the highlighted button gets zIndex 10 / elevation 20 so its pill renders OVER neighboring buttons (the Scanner pill used to slide under the AI button).
 
-**Notch geometry (v15, VERIFIED by rendering the path)** — CRITICAL SVG GOTCHA: the notch arc must use **large-arc-flag = 1** (`A R R 0 1 0 …`). With flag 0, SVG draws the shallow MINOR arc (center above the chord) and the bowl silently renders ~24px shallower than calculated; v14 shipped that way and the button visibly touched the glass. Current numbers: arc R=36, endpoints cx∓34 at y=8, large-arc 1 sweep 0 → deep bowl centered (cx, 20), bottom y=56 of the 64 bar; button 56px at top −10 → 10px above the bar, ~8px side gaps, 10px air below. Retune math (only valid with large-arc=1): bowl bottom = arcCenterY + R ≤ 56; bottom gap = bowlBottom − (top + 56); side gap ≈ sqrt(R² − (arcCenterY − btnCenterY)²) − 28. When changing the notch, RENDER the path first (cairosvg one-liner) rather than trusting the numbers.
+### M5.6 part 1 ✅ (v27) — Truth pass: real numbers everywhere they were fake
+1. **`src/utils/stats.ts` (new):** `savingsSeries` (D last 7 days / W last 5 Monday-start weeks / M last 5 months / Y last 5 years, net per bucket, bars clamp at 0 while `net` keeps the sign), `savingsNote` (honest latest-vs-previous comparison copy, no invented streaks), `weeklySavingsRate` (net of last 28 days / 4; 0 = no pace), `paceLabel` ("Reached" / "No pace yet" / "N wks left").
+2. **Home savings chart** now computes from real transactions via those utils; the hardcoded sample series and fictional note lines are gone. Sub-labels adjusted ("Last 7 days").
+3. **Goals pace** uses the real 28-day rate; the `weekly = 500` constant is gone. Empty history shows "No pace yet" instead of a fabricated countdown; reached goals say "Reached".
+4. **Budget month rollover:** persist bumped to **v4** adding `lastRollover` (YYYY-MM, in state + CloudSnapshot + buildSnapshot; migration seeds the current month so upgrades never retro-wipe). `rolloverBudgetsIfNeeded()` runs after hydration AND on Home mount: recomputes each budget's `spent` from the current month's transactions (not zeroed) and advances past-month `dueDate`s monthly until current. Idempotent per month.
+5. **Transaction edit/delete:** store gained `updateTransaction` / `removeTransaction` built on one `applyTxEffect(sign)` helper — reverses old effects, applies new, so account balances and budget spent stay consistent (same clamp-at-0 rules as addExpense). Analytics rows are now pressable and open a bottom-sheet `TxEditor` (module scope, rule 3.1): description, amount, budget chips for expenses, Save + confirm-Delete. Home "Recent activity" rows route to Analytics where the editor lives.
+Part 2 shipped in v28 (see below).
 
-### M5.5h (this session) ✅ — Docked-notch nav bar + light-mode card shadow fix
+### M5.6 part 2 ✅ (v28) — Local notifications, locale formatting, empty states
+1. **Local notifications** (`src/services/notifications.ts`, new dep expo-notifications ~0.32.17, works in Expo Go on iOS and the dev build; no push backend):
+   - **Bill due tomorrow:** scheduled at 9:00 AM the day before each budget dueDate; `src/hooks/useNotificationSync.ts` (mounted in root _layout next to useCloudSync) wipes and reschedules 1.2s after budgets change. The hook lives in its own file because the STORE imports `notifyBudgetCrossings` from the service; importing the store back into notifications.ts would create a require cycle.
+   - **Budget at 90 percent:** `notifyBudgetCrossings(prev, next, enabled)` fires an immediate alert when a spend pushes a budget across 0.9 (special copy at fully used). Called after addExpense, updateTransaction, and confirmAction (chat/scan confirms). Compared by category id.
+   - Foreground handler shows quiet banners (no sound/badge). Everything respects `notificationsEnabled`, and the Profile toggle is now REAL: enabling requests iOS permission and snaps back with directions if system-denied.
+2. **Per-country formatting:** `peso()` now groups via a module `NUMBER_LOCALE` (`setNumberLocale`), each `Country` entry gained a `locale` (en-PH, en-US, en-SG, ms-MY), and both `setCountry` and store rehydration resync it. The en-PH hardcode is gone.
+3. **Empty-state audit:** the Home goal insight slide rendered BLANK with no goals; it now shows a "No goal yet" card pointing at the Goals tab. Goals, Budgets, Wallet, Analytics list, and chat overload states already had proper empties (verified).
 
-**Nav bar: TRUE carved notch (docked-FAB style, reference on file)** — the pill now has a concave cradle cut into its top center and the Cents button floats IN the notch with a visible gap around it. Implementation: BlurView cannot be path-clipped, so the glass shell (blur + mode fill) is wrapped in **@react-native-masked-view/masked-view 0.3.2** (SDK-54 bundled pin, works in Expo Go) with an SVG mask of `notchedBarPath(w)` (capsule H=64, cap R=32, notch R=37, shoulder Q-curves), and the SAME path is stroked on top as the 1.2px border (a plain borderWidth cannot follow the notch). Bar width measured via onLayout. The button (56px gradient circle, top:-24, shadow wrapper OUTSIDE clip wrapper) keeps press-dip / hold-swell / mint glow physics. The old bulge disc is gone: the notch IS the cradle. If the gap looks off on a device, tune NOTCH_R (37) vs button size (56) vs top (-24) together.
+### M5.6 part 3 ✅ (v29) — Coaching notifications (owner: "check-ins and so on")
+`src/services/notifications.ts` rebuilt as the full coach set, all local, all quiet banners, all under the one Profile toggle:
+- **Evening check-in, 8 PM:** only the NEXT one is ever scheduled; today's is skipped if the user already logged something, and a lapsed user gets exactly one nudge then silence (anti-spam by construction). Four rotating copy lines picked deterministically by date.
+- **Weekly recap, Sunday 7 PM:** anchored to the first goal by name. Copy quotes NO numbers on purpose: scheduled content is frozen at schedule time and a stale figure would violate the honesty rule.
+- **Bill due today, 9 AM** added alongside the existing day-before reminder.
+- **Goal milestones (25/50/75/100):** `notifyGoalMilestones(prev, next, enabled)` fires the highest newly crossed threshold only. WIRED BUT DORMANT: nothing mutates goal.current yet, so the Goals redesign (M5.5-finish item 2) must add contributions and call this from the mutating action. Do NOT call it from replaceAll, cloud restores must not fire celebrations.
+- Hook `useNotificationSync` now feeds categories + transactions + goals; sync stays wipe-and-reschedule, debounced 1.2s.
 
-**Light-mode "weird and cropped" card shadows FIXED** — GlassCard had its shadow AND overflow:'hidden' on the same view; iOS masksToBounds crops the shadow. The wrapper now only carries radius + shadow (slightly richer: #0B3A2E, opacity 0.09, radius 18, y 8) and the blur child does the clipping. Same rule as the nav bulge fix: shadow and clipping never live on one view.
-
-### M5.5g (this session) ✅ — Nav bulge square-bleed fix + gentler press physics
-
-**Square behind the Cents button FIXED** — BlurView renders as a RECTANGLE unless clipped by an overflow-hidden parent; the center bulge's BlurView wasn't clipped, so a square blur patch bled out behind the circular button (device screenshot on file), and that same patch moving during the press-scale animation was the "blurs when I click" complaint. Fix: the bulge now has NO BlurView at all (translucent fill + 1px border reads as glass with zero artifacts), split into an outer shadow wrapper (centerShadow, marginTop -14) and an inner overflow-hidden circle (centerBulge) because iOS shadows and overflow:hidden fight on one view. RULE: every BlurView must sit inside an overflow-hidden, radius-matched parent; where that's impossible, use a translucent fill instead.
-
-**Press physics softened** — deep scale dips render icons soft mid-transform. Tab dip 0.82 → 0.92 (friction 6 / tension 320), Cents press dip 0.9 → 0.94. Hold-to-swell (1.08 + mint glow) unchanged.
-
-### M5.5f (this session) ✅ — Blink fix + liquid-glass nav + white-on-emerald
-
-**Chat/scan "blinking" FIXED (root cause, do not regress)** — every subcomponent of CentsChatModal and ScanOverlay (Bubble, Glass, AppearIn, TypingDots, CentsMini, CardLabel, ThreadItem, ScanFrame, GlassRound, Corner) was defined INSIDE the screen component. That creates NEW component types on every render, so typing one character remounted the whole thread and replayed every entrance animation. All subcomponents now live at MODULE scope taking {styles, t, ...} props (Bubble and ThreadItem are React.memo). RULE: never define components inside a render body in this codebase.
-
-**darkPalette.onEmerald changed '#04140D' → '#FFFFFF'** — owner dislikes dark icons/text on emerald. Both themes now use white on emerald everywhere (hub badge, CTA, confirm buttons, center nav button). The hub CTA subtitle is white in both modes too.
-
-**Nav bar: realistic liquid glass, ICONS ONLY** (`app/(tabs)/_layout.tsx` rebuilt, reference on file): matte glass pill (blur 85 + mode-tuned fill + 1px border, NO bright top gradient), labels REMOVED (kept as accessibilityLabel), icons 22 with outline↔filled swap, focused state = soft emerald-tint glass circle popping in via spring, every tab dips (scale 0.82) on touch and springs back. Center Cents button is a LIQUID BULGE fused into the pill: a 74px translucent glass disc swelling above the bar (marginTop -14) containing the 54px emerald gradient core; press dips it, HOLD (220ms) swells it to 1.08 with a mint glow ring fading in, release springs back. Bar height 64, insets 20.
-
-### M5.5e (this session) ✅ — Matte liquid glass + hub restyle + bare photo messages
-
-**Matte glass (owner feedback: bubbles looked "super glossy")** — ALL sheen overlays (white top-fade gradients) are removed: chat Glass shell, composer, user text bubbles, hub Chat-with-Cents CTA, scan result panel. Surfaces are now matte liquid glass: blur + one soft fill gradient + thin translucent border. The LOCKED design list from M5.5d now also includes: no sheen/gloss overlays on any Cents surface.
-
-**Cents hub matched to the chat glass + mode fix** — the hub sheet's dark-mode fill was white-over-blur ('rgba(255,255,255,0.14→0.03)') which rendered GRAY on the dark theme (device screenshot on file). Dark mode now uses deep green glass ('rgba(16,30,22,0.90)' → 'rgba(7,16,11,0.95)') over the blur; light mode is matte white. Tiles, sheet border and the close button branch on t.mode to match the chat bubbles. Do not reuse white-over-blur fills for dark sheets.
-
-**Bare photo messages** — sending a scan no longer shows "Scanned a receipt"/"Scanned an item" and no bubble around the photo: `sendImage` stores text '' and the chat renders caption-less images bare with a StyleSheet.hairlineWidth border (mode-tuned). The brain still gets context: the history builder maps bare photo messages to "Shared a photo to scan".
-
-### M5.5d (this session) ✅ — Multi-step requests + chat design LOCKED
-
-**Multi-intent brain (`cents.ts` + `finance.ts`)** — one message can now carry several actions. `CentsResult` gained `actions: CentsSubAction[]` (schema array of {intent, amount, categoryName, item}, first action mirrored into the top-level fields for fallback). The prompt teaches multi-step extraction ("add a groceries budget of 9000 and log that receipt there" = AddCategory then LogTransaction) plus conversation-reference resolution ("that receipt", "log it", "yun kanina" pull the amount/item from history, never re-ask). `sendChat` fans multiple actions into sequential action cards; categories added earlier in the batch count as existing for later cards (`assumedCategories` in `buildReplyFromResult`), and `executeAction` LogTransaction auto-creates a missing category on confirm (limit = spent = amount) so out-of-order or declined-AddCategory confirms still land somewhere real.
-
-**Chat design LOCKED to the v4 language** (owner preference, device screenshot on file): centered "Cents" + status dot + "AI coach" header with side glass buttons (NO avatar block in the header), soft emerald TOP GLOW (no aurora circles), blur 80, left-aligned hero with NO orb, tinted emerald icon chips (miniAvatar, suggestion icons, sheet icons, NOT gradient-filled), frosted soft-border bubbles with the top sheen, mode-tuned borders/shadows. Do not reintroduce: gradient hairline borders, gradient-filled mini avatars, the header avatar block, aurora blobs, or the hero orb.
-
-### M5.5c (this session) ✅ — Brain resilience + glass refinement
-
-**Gemini overload handling (`cents.ts` `generateStructured`)** — the fallback chain previously advanced ONLY on 404-class errors, so a 500 "model is currently experiencing high demand" killed the call instantly (seen on device with gemini-3.5-flash). Now: transient errors (429/500/503, "high demand", "overloaded", "resource exhausted", "unavailable", "internal error") retry the SAME model once after a 900ms backoff, then advance to the next candidate; only a fully exhausted chain throws `cents-overloaded`. The store shows a friendly "I'm getting a lot of requests right now" line for that case (chat AND vision) instead of the misleading "check your connection". The offline parser also gained log cues (receipt, resibo, worth, total, nagastos, gastos) so typed fallbacks like "receipt of Savemore worth 3670" land as LogTransaction. The dev debug suffix no longer uses an em dash and is suppressed for overload errors.
-
-**Design refinement (feedback: hairlines looked cheap)** — the gradient HAIRLINE borders from v5 are REMOVED everywhere (they rendered as harsh gray outlines in dark mode). Chat bubbles, action cards, suggestion cards and the composer are back to the v4 soft-glass language, upgraded: layered blur + gradient fill + a subtle top sheen + thin translucent border + mode-tuned shadows (all borderColor/shadowOpacity values branch on t.mode so dark and light stay aligned). The hero orb, aurora glows and gradient avatar orbs stay. The scan result panel matches: more translucent fill (the scanned image reads through), soft 1px border, top sheen, deeper drop shadow. The mode icon beside the shutter (mistaken for a button) is replaced by an invisible spacer so the shutter stays centered.
-
-### M5.5b (this session) ✅ — In-app camera scan + premium glass pass
-
-**ScanOverlay (`src/components/cents/ScanOverlay.tsx`, NEW) — Scan is now our own camera experience.** Built on **expo-camera ~17.0.10** (SDK-54 pin, added to package.json + the expo-camera plugin in app.json with the camera permission string; works in Expo Go). The hub's Scan tile calls `openScan()` directly, no chat detour. Flow: full-screen live viewfinder with corner brackets + a sweeping mint scan line (loops), Item/Receipt segmented switch (frame gets taller for receipts), torch, gallery import, big gradient shutter. Capture freezes the shot full-bleed, the scan line keeps sweeping under a "Cents is analyzing" glass chip, then a hairline-bordered glass panel slides up pinned to the bottom of the scanned image: Cents' analysis lines, the compact action card (Confirm/Decline wired to `confirmAction`), and a composer (text + mic + send) so the user keeps talking to Cents right over the scan. "Open chat" closes the overlay and opens the full chat; nothing is lost because every scan message already lives in the chat store (the panel renders `chat.slice(startIndex)`). Mounted in the tab layout between CentsChatModal and VoiceOverlay so voice draws on top. Permission-denied state has its own glass screen with Allow + import fallback. NOTE: ImagePicker's system camera (and its iOS presentation-queue workaround) is GONE from chat; only `launchImageLibraryAsync` remains, called from the overlay, which has no presentation conflict.
-
-**Chat scan sheet simplified** — the chat header/composer scan buttons open a two-option sheet only (**Scan an item / Scan a receipt**), each launching ScanOverlay in that mode above the chat (closing the scan returns to chat). Uploads moved into the overlay's gallery button.
-
-**Premium glass pass (`CentsChatModal.tsx`)** — deeper veil (blur 90), two aurora glows (emerald top-left, teal bottom-right), gradient HAIRLINE borders (LinearGradient wrapper with ~1.2 padding) on Cents bubbles, action cards, suggestion cards and the composer, gradient-filled avatar orbs everywhere (header, bubbles, sheet icons), and a **breathing hero orb** (pulsing concentric gradients) above the centered greeting on fresh conversations. Suggestion cards are now icon-orb + title + prompt + chevron rows. Send button glows.
-
-**ui store (`src/store/ui.ts`)** — `chatOpensScan`/`consumeScanFlag` replaced by `scanOpen` + `scanMode` (`'price' | 'receipt'`) with `openScan(mode?)`/`closeScan`. `openChat` now only takes `{ voice? }`.
+### v30 ✅ — Every bottom sheet is draggable; budget name fix
+1. **Drag-to-dismiss** (`src/hooks/useDragToDismiss.ts`, new): the handle pills were decorative. One PanResponder + Animated.Value per sheet: the sheet follows a downward drag, release past 110px or a fast flick slides it out and dismisses, less springs back. Wired on SIX sheets: hub (menu/expense/income), goals New goal, goals New/Edit budget, wallet Add account, wallet balance editor, analytics TxEditor. The responder attaches to a GRAB ZONE around the handle only, never the whole sheet — a whole-sheet responder would steal vertical scrolls from inner ScrollViews/inputs (same bug class as the v25 chat FlatList Pressable). Chat's scan sheet has no handle and keeps its tap-scrim dismissal.
+2. **Budget category no longer overwrites the name field** (owner report): picking a category sets only the icon and grouping; the typed name is untouched, and a blank name still falls back to the category name at submit (existing behavior in submitBudget).
 
 ---
 
-### M5.5a ✅ — Cents chat redesign + real Scan flow + smarter brain
+## 3. CRITICAL RULES — every future session must respect these
 
-**Chat keyboard bug FIXED (`CentsChatModal.tsx`)** — root cause: KeyboardAvoidingView mis-measures inside absolutely-positioned + transformed overlays (the old panel's exact setup), so the keyboard covered the composer. KAV is gone; the overlay now tracks the keyboard frame itself via a `useKeyboardInset()` hook (`keyboardWillChangeFrame` on iOS with the keyboard's own animation duration, did-show/hide on Android) and animates a bottom spacer. Do not reintroduce KAV in any absolute/transformed overlay. The CentsHub keeps its KAV — its KAV wraps the whole window frame, which is why it never had the bug.
+**Design (owner-locked, with device screenshots on file):**
+1. Chat = the v4 language: centered title + dot header (NO avatar block), soft top glow (NO aurora circles), left-aligned hero (NO orb), tinted emerald icon chips (NOT gradient-filled), matte bubbles. NO sheen/gloss overlays on any surface. NO gradient hairline borders.
+2. White on emerald in BOTH themes (`darkPalette.onEmerald = '#FFFFFF'`). Never dark icons/text on green.
+3. Nav bar: icons only, docked-notch center button. Bare photos in chat: hairline border only.
 
-**Chat UI — full liquid-glass redesign (`CentsChatModal.tsx`)** — the chat is now a FULL-SCREEN glass overlay: the screen the user was on stays visible through an 80-intensity blur + theme gradient veil + soft emerald top glow. Minimal header (glass chevron-down close · Cents + online dot · glass scan button). Fresh conversations (only the seeded greeting in `chat`) open on a hero: "Hello, {nickname}" + "What should we do with your money?" + three glass suggestion cards that send real prompts. Ongoing conversations show the thread: user bubbles are emerald-gradient glass with a sheen (right, tail bottom-right), Cents bubbles and action cards are frosted `Glass` shells (blur + white gradient + border, tail bottom-left). Floating glass composer pill (camera · input · mic · gradient send) with glass quick-prompt chips above it. All action cards, Taglish buttons, handled chips, image bubbles and the entrance animations are intact.
-
-**Scan is now a real feature** — the hub's Scan tile calls `openChat({ scan: true })` (ui store flag renamed: `chatOpensScan` / `consumeScanFlag`), which opens chat and auto-presents the new "Scan with Cents" sheet: **Scan an item / Scan a receipt / Upload an item photo / Upload a receipt photo**. Item scans: Gemini identifies the product (brand/model when recognizable), reads the price off the tag OR estimates the typical PH market price when no price is visible (`priceIsEstimate` flag, the reply says it's an estimate), shares a short analysis (`details`: what it is, what it goes for, where it's cheapest, one buying tip), then flows into the existing affordability/negotiation card. Receipt scans: reads the final total (handwritten-receipt rules retained), `details` breaks down store/line items/discounts/category, the reply invites the user to log it or ask about it, then the confirmation card appears. The user continues via chat or voice as usual. iOS camera QUEUE rules unchanged (actions run from Modal `onDismiss` — never launch the camera from a sheet button).
-
-**Smarter brain (`cents.ts` + `finance.ts`)** — every brain call (text AND vision) now receives `buildBrainContext()`: nickname, today's date, budgets, goals, liquid balance, the 8 most recent transactions, and the last 12 chat turns (action-card prompts are flattened to text). Follow-ups like "yes", "how about 500?", or questions about a just-scanned item resolve from conversation memory. `CentsResult` gained `details` and `priceIsEstimate` (schema updated); temperature 0.2 → 0.3 for warmer replies. Vision `sendImage` now posts the analysis (reply + details) first, then the action card; a readable-but-priceless photo asks for the price instead of dead-ending. Legacy `receiptScan` confirm no longer hardcodes the Pets category (files to Others). Prompts now explicitly enforce the no-emoji / no-em-dash content rules and the touched fallback strings were cleaned of em dashes.
+**Engineering gotchas (each one bit us):**
+1. **Never define components inside a render body.** Inline component types remount the subtree per keystroke and replay entrance animations (the "blinking" bug). Module scope + props.
+2. **Never put a shadow and `overflow: 'hidden'` on the same view** (iOS masksToBounds crops the shadow). Shadow wrapper outside, clipping child inside.
+3. **Every BlurView needs an overflow-hidden radius-matched parent**, or use a translucent fill instead (unclipped BlurView renders as a SQUARE).
+4. **Horizontal carousels whose items cast shadows** need `contentContainerStyle paddingVertical` + compensating negative `marginVertical` or the ScrollView slices the shadow into a straight band.
+5. **The notch arc must use SVG large-arc-flag = 1** (`A R R 0 1 0`). Flag 0 silently renders the shallow arc ~24px off. When changing the notch, RENDER the path to an image first (cairosvg) before shipping. Geometry: arc R=36, endpoints cx∓34 at y=8, bowl bottom = arcCenterY + R = 56 ≤ 56; bottom gap = bowlBottom − (buttonTop + 56); side gap ≈ sqrt(R² − (arcCenterY − btnCenterY)²) − 28.
+6. **No KeyboardAvoidingView inside absolute/transformed overlays** — use `useKeyboardInset`.
+7. iOS camera-presentation queue rules are GONE with ImagePicker's system camera; only `launchImageLibraryAsync` remains (no conflict). Do not reintroduce system-camera launches from sheets.
+8. Dark sheets use deep-green glass fills, never white-over-blur.
 
 ---
 
-## 3. Firebase project state
+## 4. Firebase project state
 
-Unchanged from previous handoff: project `savecents-78a95`, Spark plan, AI Logic via Gemini Developer API, web app registered. **Config lives in `src/services/firebaseConfig.ts` — the repo/zip ships a placeholder; re-paste the real config after every zip extraction** (it is in the old handoff §3 and in Firebase console → project settings). App Check enforcement manually OFF for AI Logic — MUST re-enable with App Attest/Play Integrity before launch.
+Project `savecents-78a95`, Spark plan, AI Logic via Gemini Developer API. **`src/services/firebaseConfig.ts` is NOT in the zip — re-paste the real config after every extraction** (Firebase console → project settings). App Check enforcement manually OFF for AI Logic — MUST re-enable with App Attest/Play Integrity before launch.
 
 ---
 
-## 4. Repo structure
+## 5. Repo structure
 
 ```
 index.ts                       # polyfills FIRST, then expo-router entry
 app/
-  _layout.tsx                  # themed bg + aurora; ROOT Stack: profile gets slide_from_right here
-  index.tsx / auth.tsx         # auth gate, Firebase email/password + Face ID relock
-  profile.tsx                  # redesigned Profile (pushed screen, no tab bar)
-  (tabs)/_layout.tsx           # 5-slot glass bar, center Cents button, overlay stack mounted here
-  (tabs)/dashboard.tsx         # Home: card carousel, today strip, insights, budgets, activity
-  (tabs)/wallet.tsx            # sources management
-  (tabs)/goals.tsx             # Plan: goals + budgets (name/category/limit/dueDate), ?tab=budgets
-  (tabs)/analytics.tsx         # search/filter/charts + CSV/PDF export
+  _layout.tsx                  # themed bg + aurora; ROOT Stack: profile slide_from_right lives here
+  index.tsx / auth.tsx         # auth gate
+  profile.tsx                  # pushed Profile screen
+  (tabs)/_layout.tsx           # notched liquid-glass bar + Cents overlay stack (Hub, Chat, Scan, Voice)
+  (tabs)/dashboard.tsx         # Home (carousels have the shadow-room padding, see rules)
+  (tabs)/wallet.tsx / goals.tsx / analytics.tsx
 src/
-  components/Avatar.tsx        # 5 SVG animal avatars + initials fallback (AvatarBadge)
-  components/GlassCard.tsx     # glass card; blur/inner flexGrow (uniform-height support)
-  components/Charts.tsx / MoneyInput.tsx
-  components/cents/            # CentsHub, CentsChatModal, VoiceOverlay
-  data/countries.ts            # countries, institutions (colors/kinds), BUDGET_CATEGORIES
-  models/types.ts              # + Transaction.accountId, Category.category/dueDate, profile persona
-  services/auth.ts             # + changePassword (OTP-gated callers only)
-  services/otp.ts              # email OTP: OTP_ENDPOINT seam, dev delivery, reset-email fallback
-  services/voice.ts            # STT seam for the dev build
-  services/cents.ts / sync.ts / firebaseApp.ts / firebaseConfig(.example).ts
-  store/finance.ts             # persist v2 + migrate; addExpense/addIncome/updatePersona
-  store/ui.ts                  # overlay state (hub/chat/voice), never persisted
-  theme/colors.ts              # light-first sage palette + dark; sage tokens
+  components/GlassCard.tsx     # shadow wrapper / clipping child split — do not merge
+  components/Avatar.tsx / Charts.tsx / MoneyInput.tsx
+  components/cents/            # CentsHub, CentsChatModal, ScanOverlay, VoiceOverlay
+  hooks/useKeyboardInset.ts    # the keyboard fix — reuse for any new overlay
+  data/countries.ts            # countries, institutions, BUDGET_CATEGORIES
+  models/types.ts              # ChatMessage, Transaction.accountId, Category.category/dueDate
+  services/cents.ts            # brain: context, multi-action schema, retry chain, vision prompts
+  services/auth.ts / otp.ts / voice.ts / sync.ts / firebaseApp.ts / firebaseConfig.example.ts
+  store/finance.ts             # persist v2; buildBrainContext; multi-action fan-out; executeAction
+  store/ui.ts                  # hub/chat/scan(+mode)/voice overlay state, never persisted
+  theme/colors.ts              # onEmerald WHITE in both modes
   polyfills.ts                 # KEEP
 ```
 
-**Deps added this milestone (SDK-54 pinned):** expo-print ~15.0.8, expo-sharing ~14.0.8, expo-file-system ~19.0.23 (Analytics imports `expo-file-system/legacy`). Install always with `npm install --legacy-peer-deps`.
+**Deps pinned for SDK 54:** expo-auth-session ~7.0.11 (+ expo-web-browser, expo-crypto) for Google Sign-In, expo-camera ~17.0.10, @react-native-masked-view/masked-view 0.3.2, expo-print ~15.0.8, expo-sharing ~14.0.8, expo-file-system ~19.0.23 (Analytics imports `expo-file-system/legacy`). Always `npm install --legacy-peer-deps` (npm, not npx — `npx install` fails with "could not determine executable").
 
 ---
 
-## 5. Dev workflow — READ THIS, it bit us twice
+## 6. Dev workflow
 
-1. Project lives at `C:\Projects\savecents-rn`. VS Code → PowerShell.
-2. **When replacing from a zip: DELETE the old folder first, then extract fresh.** Extracting over an existing folder cannot delete removed files; leftover route files get auto-registered by expo-router and SHADOW new screens (this exact bug: stale `app/(tabs)/profile.tsx` + `app/(tabs)/chat.tsx` hijacked the redesigned Profile for two sessions). If you must extract over: delete `app/(tabs)/profile.tsx`, `app/(tabs)/chat.tsx`, `src/components/Illustration.tsx` if present.
+1. Project at `C:\Projects\savecents-rn`, VS Code → PowerShell.
+2. **Replacing from a zip: DELETE the old folder first, then extract fresh** (leftover route files get auto-registered by expo-router and shadow new screens).
 3. Re-paste `src/services/firebaseConfig.ts`, then `npm install --legacy-peer-deps`.
-4. First start after a replacement: `npx expo start -c` (clear Metro cache). Then normal `npx expo start`.
+4. First start after replacement: `npx expo start -c`; then normal `npx expo start`.
 5. Pre-handoff checks: `npx tsc --noEmit` clean + `npx expo export --platform ios` bundles.
-6. **Strongly recommended next session: `git init` + push to GitHub** so updates arrive as diffs that CAN delete files and this whole zip-ghost class of bug dies.
+6. **Still strongly recommended: `git init` + GitHub** so updates arrive as diffs and the zip-ghost bug class dies.
 
 ---
 
-## 6. Known tech debt / seams (intentional, tracked)
+## 7. Known tech debt / seams (intentional, tracked)
 
 | Item | Where | Plan |
 |---|---|---|
-| OTP email needs a backend | `src/services/otp.ts` `OTP_ENDPOINT` | M6: tiny Cloud Function (email relay). Today: dev shows the code in a dialog; prod without endpoint falls back to a real Firebase reset email |
-| Voice STT needs dev build | `src/services/voice.ts` `loadVoiceModule` | After `eas build --profile development`: install expo-speech-recognition, point the loader at it |
-| Savings D/W/M/Y chart data on Home is hardcoded | dashboard `savingsData` | M5.x: compute from transactions (Analytics already computes monthly for its own chart — reuse) |
-| Goal "weeks left" uses weekly=500 constant | goals.tsx | M5.x: reuse the store's real weekly-rate calc |
-| Budgets never reset monthly | store | M5.x: month rollover (Transaction now has timestamps; Category.dueDate exists) |
-| No edit/delete on transactions | Analytics/Home lists | M5.x |
-| Subscription = "Free plan" + Coming soon Manage | profile.tsx | M6 decision: RevenueCat IAP or keep free for v1 |
-| App Check unenforced; model names hardcoded | Firebase console; cents.ts | M6: App Attest/Play Integrity; Remote Config |
-| Debug `[debug — brain error]` line on brain failures | finance.ts sendChat (`__DEV__` only) | Remove before TestFlight |
-| Bank tiles are monograms | countries.ts | Licensed assets later; legally safe default |
-| en-PH number formatting for all countries | types.ts `peso()` | M5.x nicety |
-| Notifications toggle is state only | store/profile | Wire expo-notifications when local alerts land (budget 90% used, bill due) |
-
-**Content rules to preserve in ALL future work:** no emojis, no em dashes, no feature disclaimers in user-facing copy. Every visible button must do something real.
+| v14–v15 notch geometry not yet device-verified | (tabs)/_layout.tsx | First thing next session: check the docked button gap on device; tune via the formulas in §3.5 |
+| OTP email needs a backend (now used by sign-up verification AND password change) | services/otp.ts `OTP_ENDPOINT` | M6 Cloud Function; today dev shows the code, prod falls back to Firebase verification/reset emails |
+| Google OAuth client ids not pasted; flow inert in Expo Go by Google policy | services/googleAuth.ts `GOOGLE_CLIENT_IDS` | Paste web/iOS/Android ids (steps in file); test in the M4 dev build |
+| Voice STT needs the dev build | services/voice.ts `loadVoiceModule` | After `eas build --profile development`: install expo-speech-recognition, point the loader |
+| Subscription = Free plan + Coming soon | profile.tsx | M6: RevenueCat or free v1 |
+| App Check unenforced; model names hardcoded | console; cents.ts | M6: App Attest/Play Integrity; Remote Config |
+| Multi-step extraction untested breadth | cents.ts prompt | If the model merges a phrasing into one action, add it as a few-shot example |
+| Bank tiles are monograms | countries.ts | Licensed assets later |
 
 ---
 
-## 7. NEXT STEPS — the roadmap
+## 8. NEXT STEPS — the roadmap
 
-### ▶ M5.5 — Redesign the remaining tabs (NEXT SESSION)
-Bring the rest of the app up to the Home/Profile design language (card carousel physics, quiet headers, white cards, round shapes):
-1. **Goals tab:** redesign to match (hero goal card with the new card physics? due-chip styling shipped already), real weeks-left calc, empty states.
-2. **Wallet tab:** card-style source list (mini versions of the Home bank cards instead of rows?), reorder support.
-3. **Analytics tab:** restyle summary/chart shells to the new language; add transaction edit/delete here.
-4. **Auth screens:** restyle to the light sage language (currently still the old look), real "Forgot password" using `resetPassword`.
-5. **Cents chat/hub polish pass** against the new language.
+
+### ▶ M5.5-finish — Redesign the remaining tabs (NEXT SESSION)
+Bring the rest of the app to the locked design language (matte glass, card physics, quiet headers, white cards):
+1. **Device-verify the v15 notch first** (5 minutes; tune with §3.5 formulas + render check if needed).
+2. **Goals tab:** redesign to match; add goal CONTRIBUTIONS (mutate goal.current, call notifyGoalMilestones from the action); empty states. (Real weeks-left shipped in v27.)
+3. **Wallet tab:** card-style source list (mini bank cards), reorder support.
+4. **Analytics tab:** restyle summary/chart shells; add transaction edit/delete.
+5. ~~Auth screens~~ DONE in v16 (see M5.5-auth above).
 
 ### ▶ M5.6 — Truth pass
-Real Home savings chart from transactions, real streaks/deltas, unified weekly-rate, budget month rollover, per-country formatting, empty/error-state audit, local notifications (budget 90%, bill due tomorrow — the toggle already exists).
+Real Home savings chart from transactions, real streaks/deltas, unified weekly rate, budget month rollover, per-country formatting, empty/error-state audit, local notifications (budget 90%, bill due tomorrow).
 
 ### ▶ M4-completion — Dev build (one-time)
-`eas build --profile development` (free tier; Apple free provisioning for personal device). Then: expo-speech-recognition wired via the voice.ts seam (streaming captions in the shipped overlay), Google Sign-In, and the SDK can be upgraded freely. Expo Go retires.
+`eas build --profile development` (free tier, Apple free provisioning). Then: expo-speech-recognition through the voice.ts seam (streaming captions in the shipped overlay), Google Sign-In, SDK upgrades unlocked. Expo Go retires.
 
 ### ▶ M6 — Launch
-Cloud Function for OTP email; App Check enforced; model via Remote Config; remove debug line; Sentry/Crashlytics; privacy policy + data-safety forms; billing decision (Free plan card is already the placeholder); iOS $99 → TestFlight → review; Android $25 → closed testing (14 days / 12 testers) → production.
+Cloud Function for OTP email; App Check enforced; models via Remote Config; Sentry/Crashlytics; privacy policy + data-safety forms; billing decision; iOS $99 → TestFlight → review; Android $25 → closed testing (14 days / 12 testers) → production.
 
 ---
 
-## 8. Paste-ready brief for the next session
+## 9. Paste-ready brief for the next session
 
-> "Continuing SaveCents (React Native + Expo SDK 54 — see HANDOFF.md, build savecents-m5-v15). M0–M5.5i done: icons-only liquid-glass nav with center Cents bulge, redesigned Home/Wallet/Analytics/Profile, premium liquid-glass Cents chat (aurora glows, gradient hairline borders, breathing hero orb, keyboard fixed via useKeyboardInset — no KAV in absolute overlays), the NEW in-app camera ScanOverlay (expo-camera ~17.0.10: viewfinder + sweeping scan line, Item/Receipt modes, analyze-in-place, talk to Cents over the scanned image, Open chat handoff), and conversation memory in the brain (buildBrainContext into every text/vision call, priceIsEstimate + details fields). Design rules: light sage green/white default, no emojis, no em dashes, no disclaimers, every button real. Today is **M5.5: redesign the remaining tabs** — Goals, Wallet polish, Analytics restyle, and the Auth screens — to match the design language. Workflow: DELETE old folder before extracting the zip, re-paste firebaseConfig.ts, npm install --legacy-peer-deps, first start with npx expo start -c."
+> "Continuing SaveCents (React Native + Expo SDK 54 — see HANDOFF.md, build savecents-m5-v15). M0–M5.5 done: icons-only liquid-glass nav with a docked-notch Cents button (SVG-masked blur; notch arc MUST keep large-arc-flag 1 — see HANDOFF §3), full-screen matte-glass Cents chat (design LOCKED per §3, keyboard via useKeyboardInset), in-app camera ScanOverlay (expo-camera: sweep animation, item price estimation, receipt breakdown, talk-over-the-scan), brain with conversation memory + multi-step actions + overload retry chain. Read HANDOFF §3 CRITICAL RULES before writing any UI code. Today: (1) device-verify the v15 notch gap, then (2) M5.5-finish — redesign Goals, Wallet polish, Analytics restyle + transaction edit/delete, and the Auth screens to the locked language. Workflow: DELETE old folder before extracting, re-paste firebaseConfig.ts, npm install --legacy-peer-deps, first start npx expo start -c."
 
 ---
 
-## 9. Quick regression script (run after any change, light + dark)
+## 10. Quick regression script (run after any change, light + dark)
 
-1. Home: swipe balance cards (scale/tilt/dim, no peek), eye toggle masks everything, Saved today moves after logging, Needs attention shows the due budget and opens the Budgets tab, Manage opens the Budgets tab, insights swipe feels identical to the cards.
-2. Cents: center button → hub; Add Expense routed from GCash (Wallet balance drops); Add Income to Maya (balance rises); Scan opens the in-app camera (frame + sweeping line, Item/Receipt switch, torch, gallery); chat chevron-down dismisses back to the screen underneath (still visible through the glass); mic shows the voice overlay pulse.
-2b. Chat keyboard: tap the composer → keyboard rises and the composer rides ON TOP of it (light + dark, hero and thread states); dismiss by dragging the list down.
-2c. Camera scan: capture an item → shot freezes, line keeps sweeping, "Cents is analyzing" chip → glass panel slides up with the analysis + action card; type a follow-up in the panel ("saan mas mura?") → Cents answers over the image; mic → voice overlay on top; Confirm on the card → handled chip; Open chat → full chat shows the same thread; camera-reverse retakes. Receipt mode: taller frame → total + breakdown + log card. Item with NO price tag → estimate clearly marked as an estimate. Deny camera permission once → glass permission screen with Allow + import from Photos.
-2d. Multi-step: after a receipt scan, decline the card, then type "add a Groceries budget 9000 and log that receipt there" -> TWO cards appear in order (Add budget, then Log under Groceries); confirm both -> budget exists AND expense logged; confirming the Log card FIRST still works (category auto-created).
-2e. Chat scan sheet: header scan button shows ONLY Scan an item / Scan a receipt; each opens the camera above chat and closing it returns to chat.
-3. Chat brain: "bumili ako ng 800 na dog food" (Taglish card), "kaya ko ba bumili ng jordans na 12k?" (overshoot + delay), confirm one → totals update everywhere.
-4. Budgets: create "Electric Bill", category Bills, due in 3 days → chip on Home + Needs attention.
-5. Profile: slides in from the right; pick the fox + nickname → Home header updates; Notifications + Face ID toggles persist after app kill; Password → Send code → dev dialog code → wrong code once (attempt counter) → correct → new password → re-login works; Manage plan shows Coming soon; log out/in.
-6. Analytics: search "gas", filter Expenses, export CSV and PDF (share sheet opens, filters respected).
+1. **Home:** swipe balance cards (scale/tilt/dim, shadows NOT sliced into bands), eye toggle masks everything, Saved today moves after logging, Needs attention opens Budgets, insights swipe matches.
+2. **Nav:** icons only; quick dial: swipe up on Cents -> three chips, slide highlights with yellow ring, release launches; hold + release in place pins it, chips tappable, backdrop closes; plain tap still opens the hub; active tab gets the glass circle; tabs dip on press; Cents button sits in the notch with visible air below and ~8px sides; hold it 220ms → swell + mint glow; tap → hub.
+3. **Hub:** dark mode sheet is deep green (not gray); Add Expense from GCash drops the Wallet balance; Add Income to Maya raises it; Scan opens the camera directly.
+4. **Camera scan:** item with a price tag → identification + price + affordability card; item with NO tag → estimate clearly marked as estimate; handwritten receipt → total + breakdown + log card; type "saan mas mura?" in the panel → answer from scan context; mic → voice overlay on top; Open chat → same thread; deny permission once → permission screen with Photos import.
+5. **Chat:** keyboard rises WITH the composer on top of it; typing causes NO blinking; photo messages are bare with a hairline border; multi-step "add a Groceries budget 9000 and log that receipt there" → two cards in order, both confirm correctly, confirming Log first still works.
+6. **Brain resilience:** if Gemini 500s, Cents retries then says the friendly swamped line (never "check your connection" for overload); typed fallback "receipt of Savemore worth 3670" still produces a log card.
+7. **Profile/Analytics:** unchanged from M5 — spot-check avatar change reflects on Home, CSV/PDF export respects filters.

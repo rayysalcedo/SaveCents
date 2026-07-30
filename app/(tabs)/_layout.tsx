@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Animated, Easing, Pressable, StyleSheet, View } from 'react-native';
+import { Animated, Easing, Image, PanResponder, Pressable, StyleSheet, View } from 'react-native';
 import { Tabs } from 'expo-router';
 import { BottomTabBarProps } from '@react-navigation/bottom-tabs';
 import { BlurView } from 'expo-blur';
@@ -14,6 +14,7 @@ import { CentsHub } from '../../src/components/cents/CentsHub';
 import { CentsChatModal } from '../../src/components/cents/CentsChatModal';
 import { ScanOverlay } from '../../src/components/cents/ScanOverlay';
 import { VoiceOverlay } from '../../src/components/cents/VoiceOverlay';
+import { CentsQuickDial, QUICK_OPTIONS, quickIndexForGesture } from '../../src/components/cents/CentsQuickDial';
 
 // M5.5f nav: realistic liquid-glass pill, ICONS ONLY (no labels), with
 // press/hold physics. 5 slots: Home · Wallet · Cents (center ACTION, opens
@@ -89,6 +90,14 @@ function TabItem({ focused, icon, label, color, dark, onPress }: {
 
 // Center Cents button: floats in the bar's carved notch (docked-FAB style).
 // Press dips it, holding swells it with a mint glow, release springs back.
+// M5.6: the center button is now a gesture surface, not just a Pressable.
+//   tap            -> hub (unchanged)
+//   swipe up       -> quick dial opens; slide over a chip, release to launch
+//   hold 220ms     -> swell + glow (unchanged feel) AND the dial opens;
+//                     release in place pins it for tapping
+// A PanResponder replaces the Pressable because tap / hold / drag-select all
+// need to live in ONE responder; state flows through the ui store so the
+// CentsQuickDial overlay (mounted in TabLayout) renders in lockstep.
 function CentsButton({ active, onPress }: { active: boolean; onPress: () => void }) {
   const t = useTheme();
   const scale = useRef(new Animated.Value(1)).current;
@@ -97,24 +106,93 @@ function CentsButton({ active, onPress }: { active: boolean; onPress: () => void
     Animated.spring(scale, { toValue: v, friction: 5, tension: 220, useNativeDriver: true }).start();
   const glowTo = (v: number, dur = 220) =>
     Animated.timing(glow, { toValue: v, duration: dur, easing: Easing.out(Easing.quad), useNativeDriver: true }).start();
+
+  // Gesture bookkeeping. Handlers read the freshest store via useUI.getState()
+  // so the responder (created once) never sees stale closures.
+  const holdTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const openedThisGesture = useRef(false);
+  const movedRef = useRef(false);
+  const startTs = useRef(0);
+  const onPressRef = useRef(onPress);
+  onPressRef.current = onPress;
+
+  const clearHold = () => { if (holdTimer.current) { clearTimeout(holdTimer.current); holdTimer.current = null; } };
+
+  const openDial = () => {
+    if (openedThisGesture.current) return;
+    openedThisGesture.current = true;
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy).catch(() => {});
+    spring(1.08);
+    glowTo(1, 160);
+    useUI.getState().openQuick();
+  };
+
+  const settle = () => { spring(1); glowTo(0, 320); };
+
+  const pan = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: () => true,
+      onPanResponderGrant: () => {
+        movedRef.current = false;
+        openedThisGesture.current = false;
+        startTs.current = Date.now();
+        spring(0.94);
+        glowTo(0.6);
+        clearHold();
+        holdTimer.current = setTimeout(openDial, 220);
+      },
+      onPanResponderMove: (_e, g) => {
+        if (Math.abs(g.dy) > 10 || Math.abs(g.dx) > 10) movedRef.current = true;
+        if (!openedThisGesture.current && g.dy < -18) { clearHold(); openDial(); }
+        if (openedThisGesture.current) {
+          const idx = quickIndexForGesture(g.dx, g.dy);
+          const st = useUI.getState();
+          if (idx !== st.quickIndex) {
+            st.setQuickIndex(idx);
+            if (idx >= 0) Haptics.selectionAsync().catch(() => {});
+          }
+        }
+      },
+      onPanResponderRelease: () => {
+        clearHold();
+        settle();
+        const st = useUI.getState();
+        if (openedThisGesture.current) {
+          if (st.quickIndex >= 0) {
+            // Drag-select commit: same launches the pinned chips use.
+            const i = st.quickIndex;
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+            st.closeQuick();
+            const key = QUICK_OPTIONS[i].key;
+            if (key === 'ai') st.openChat();
+            else if (key === 'scan') st.openScan();
+            else st.openVoice(); // overlay in place; X returns right here
+          } else {
+            // Released in place: pin the dial so its chips become tappable.
+            st.setQuickDragging(false);
+            st.setQuickIndex(-1);
+          }
+          return;
+        }
+        // Plain tap: dismiss a pinned dial if one is up, else toggle the hub.
+        if (!movedRef.current && Date.now() - startTs.current < 320) {
+          if (st.quickOpen) { st.closeQuick(); return; }
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+          onPressRef.current();
+        }
+      },
+      onPanResponderTerminate: () => {
+        clearHold();
+        settle();
+        const st = useUI.getState();
+        if (openedThisGesture.current && st.quickDragging) st.closeQuick();
+      },
+    }),
+  ).current;
+
   return (
-    <Pressable
-      style={styles.centerFloat}
-      accessibilityLabel="Cents"
-      hitSlop={8}
-      onPressIn={() => { spring(0.94); glowTo(0.6); }}
-      onPressOut={() => { spring(1); glowTo(0, 320); }}
-      onLongPress={() => {
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy).catch(() => {});
-        spring(1.08);
-        glowTo(1, 160);
-      }}
-      delayLongPress={220}
-      onPress={() => {
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
-        onPress();
-      }}
-    >
+    <View style={styles.centerFloat} accessibilityLabel="Cents" {...pan.panHandlers}>
       <Animated.View style={[styles.centerShadow, { transform: [{ scale }] }]}>
         <View style={styles.centerClip}>
           {/* Glow ring: brightens while held */}
@@ -127,11 +205,11 @@ function CentsButton({ active, onPress }: { active: boolean; onPress: () => void
             start={{ x: 0.5, y: 0 }} end={{ x: 0.5, y: 1 }}
             style={styles.centerBtn}
           >
-            <Ionicons name="sparkles" size={24} color={t.onEmerald} />
+            <Image source={require('../../assets/cents-mark.png')} style={{ width: 30, height: 30 }} resizeMode="contain" />
           </LinearGradient>
         </View>
       </Animated.View>
-    </Pressable>
+    </View>
   );
 }
 
@@ -279,6 +357,7 @@ export default function TabLayout() {
         <Tabs.Screen name="analytics" />
       </Tabs>
       {/* Cents overlay stack — above everything incl. the tab bar */}
+      <CentsQuickDial />
       <CentsHub />
       <CentsChatModal />
       <ScanOverlay />

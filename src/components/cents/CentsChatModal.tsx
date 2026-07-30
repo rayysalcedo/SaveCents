@@ -99,7 +99,7 @@ function AppearIn({ children }: { children: React.ReactNode }) {
 
 const CentsMini = ({ styles, t }: { styles: Styles; t: Palette }) => (
   <View style={styles.miniAvatar}>
-    <Ionicons name="sparkles" size={12} color={t.emerald} />
+    <Image source={require('../../../assets/cents-mark.png')} style={{ width: 16, height: 16 }} resizeMode="contain" />
   </View>
 );
 
@@ -110,15 +110,18 @@ const CardLabel = ({ styles, t, icon, label }: { styles: Styles; t: Palette; ico
   </View>
 );
 
-// Frosted MATTE glass shell: blur + one soft fill + thin border. No sheen.
+// Frosted MATTE glass shell. v25 PERF: the per-bubble BlurView is replaced by
+// the translucent fill rule 3.3 sanctions — one UIVisualEffectView PER BUBBLE
+// over the blur-80 backdrop made long threads drop frames while scrolling.
+// The fill is tuned up slightly (esp. dark) so the matte look is unchanged;
+// the full-screen backdrop blur still supplies the liquid-glass depth.
 const Glass = ({ styles, t, children, strong }: { styles: Styles; t: Palette; children: React.ReactNode; strong?: boolean }) => (
   <View style={[styles.glassBubble, strong && styles.glassBubbleStrong]}>
-    <BlurView intensity={strong ? 44 : 30} tint={t.blurTint} style={StyleSheet.absoluteFill} />
     <LinearGradient
       colors={
         t.mode === 'dark'
-          ? ['rgba(255,255,255,0.085)', 'rgba(255,255,255,0.05)']
-          : ['rgba(255,255,255,0.92)', 'rgba(255,255,255,0.78)']
+          ? ['rgba(30,48,39,0.92)', 'rgba(22,38,30,0.88)']
+          : ['rgba(255,255,255,0.96)', 'rgba(255,255,255,0.86)']
       }
       style={StyleSheet.absoluteFill}
     />
@@ -380,15 +383,14 @@ export function CentsChatModal() {
         </Pressable>
         <View style={styles.headerCenter}>
           <View style={styles.headerTitleRow}>
-            <Text style={styles.headerTitle}>Cents</Text>
+            <Text style={styles.headerTitle}>Cents AI</Text>
             <View style={styles.onlineDot} />
           </View>
-          <Text style={styles.headerSub}>AI coach</Text>
         </View>
-        <Pressable style={styles.glassBtn} onPress={() => setScanSheet(true)}>
-          <BlurView intensity={32} tint={t.blurTint} style={StyleSheet.absoluteFill} />
-          <Ionicons name="scan" size={18} color={t.textPrimary} />
-        </Pressable>
+        {/* Right spacer keeps the title centered; the header scan button was
+            removed (owner request) — scanning lives in the composer camera
+            button, the quick dial, and the hub. */}
+        <View style={styles.glassBtnSpacer} />
       </View>
 
       {/* Thread or hero */}
@@ -423,11 +425,13 @@ export function CentsChatModal() {
           </View>
         </Pressable>
       ) : (
-        // Tap-to-dismiss wrapper: with keyboardShouldPersistTaps="handled",
-        // taps on blank thread space aren't claimed by any child, so they
-        // bubble up here and close the keyboard immediately — no more
-        // "tapped out and nothing happened".
-        <Pressable style={{ flex: 1 }} onPress={Keyboard.dismiss}>
+        // v25: the FlatList must NOT be wrapped in a Pressable — a Pressable
+        // parent joins the responder negotiation for every touch, so scroll
+        // drags started with a dead zone and often failed to move at all
+        // (owner-reported). Keyboard dismissal now relies on
+        // keyboardDismissMode="interactive" (drag the thread down) and the
+        // chevron; blank-space tap dismissal was the cost of working scroll.
+        <View style={{ flex: 1 }}>
           <FlatList
             ref={listRef}
             data={reversedChat}
@@ -438,11 +442,16 @@ export function CentsChatModal() {
             keyboardShouldPersistTaps="handled"
             keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
             maintainVisibleContentPosition={{ minIndexForVisible: 0, autoscrollToTopThreshold: 80 }}
-            renderItem={({ item }) => (
-              <AppearIn>
+            renderItem={({ item, index }) =>
+              // inverted list: index 0 = newest = the only row that animates.
+              index === 0 ? (
+                <AppearIn>
+                  <Bubble msg={item} styles={styles} t={t} confirmAction={confirmAction} />
+                </AppearIn>
+              ) : (
                 <Bubble msg={item} styles={styles} t={t} confirmAction={confirmAction} />
-              </AppearIn>
-            )}
+              )
+            }
             // In an inverted list the HEADER renders at the visual bottom —
             // exactly where the typing indicator belongs.
             ListHeaderComponent={
@@ -456,7 +465,7 @@ export function CentsChatModal() {
               ) : null
             }
           />
-        </Pressable>
+        </View>
       )}
 
       {/* Bottom dock: quick prompts + floating composer + keyboard inset */}
@@ -553,6 +562,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     borderColor: t.mode === 'dark' ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.9)',
     backgroundColor: t.mode === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.5)',
   },
+  glassBtnSpacer: { width: 40, height: 40 },
 
   hero: { flex: 1, justifyContent: 'center', paddingHorizontal: 28 },
   heroHello: { color: t.textMuted, fontSize: 15, fontWeight: '600', marginBottom: 8 },
@@ -579,10 +589,12 @@ const makeStyles = (t: Palette) => StyleSheet.create({
 
   list: { padding: 18, gap: 12, paddingBottom: 16 },
   bubbleRow: { flexDirection: 'row', alignItems: 'flex-end' },
+  // Owner spec: the Cents mark sits plain inside a neutral circle — no green
+  // fill behind it.
   miniAvatar: {
-    width: 26, height: 26, borderRadius: 10, marginRight: 8, marginBottom: 2,
+    width: 26, height: 26, borderRadius: 13, marginRight: 8, marginBottom: 2,
     alignItems: 'center', justifyContent: 'center',
-    backgroundColor: t.emeraldTint, borderWidth: 1, borderColor: t.emeraldBorder,
+    backgroundColor: 'transparent', borderWidth: 1, borderColor: t.border,
   },
   glassBubble: {
     maxWidth: '84%', borderRadius: 22, borderBottomLeftRadius: 8, overflow: 'hidden',

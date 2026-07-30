@@ -2,11 +2,14 @@
 // Google Sign-In arrives with the M4 dev build.
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
+  GoogleAuthProvider,
   createUserWithEmailAndPassword,
   deleteUser,
   initializeAuth,
   onAuthStateChanged,
+  sendEmailVerification,
   sendPasswordResetEmail,
+  signInWithCredential,
   signInWithEmailAndPassword,
   signOut as fbSignOut,
   updatePassword,
@@ -48,6 +51,25 @@ export async function signIn(email: string, password: string): Promise<User> {
   const a = getFirebaseAuth();
   const cred = await signInWithEmailAndPassword(a, email.trim(), password);
   return cred.user;
+}
+
+// Exchange a Google ID token (from expo-auth-session) for a Firebase session.
+// Google accounts arrive with a verified email, so the auth screen skips the
+// OTP step for them.
+export async function signInWithGoogleIdToken(idToken: string): Promise<User> {
+  const credential = GoogleAuthProvider.credential(idToken);
+  const cred = await signInWithCredential(getFirebaseAuth(), credential);
+  return cred.user;
+}
+
+// Firebase's built-in verification email (a link, not a code). Used as the
+// zero-backend fallback when no OTP endpoint is configured in production.
+export async function sendVerificationEmail(): Promise<boolean> {
+  if (!authAvailable()) return false;
+  const u = getFirebaseAuth().currentUser;
+  if (!u || u.emailVerified) return false;
+  await sendEmailVerification(u);
+  return true;
 }
 
 export async function resetPassword(email: string): Promise<void> {
