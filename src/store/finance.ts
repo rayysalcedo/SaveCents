@@ -6,7 +6,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   Account, ActionType, Category, ChatMessage, Goal, Transaction, UserProfile, uid, peso, setCurrencySymbol, setNumberLocale,
 } from '../models/types';
-import { notifyBudgetCrossings } from '../services/notifications';
+import { notifyBudgetCrossings, notifyGoalMilestones } from '../services/notifications';
 import { COUNTRIES } from '../data/countries';
 import { analyzeImage, localParseIntent, parseCentsIntent, CentsResult } from '../services/cents';
 
@@ -47,6 +47,10 @@ export interface FinanceState {
   replaceAll: (snap: CloudSnapshot) => void;
   resetToDefaults: () => void;
   addGoal: (name: string, target: number, date: string) => void;
+  // Session A: goal contributions. Bumps goal.current, optionally debits a
+  // source account, never touches budgets. The ONLY caller of
+  // notifyGoalMilestones (cloud restores via replaceAll must stay silent).
+  addToGoal: (goalId: string, amount: number, accountId?: string) => void;
   // M5 quick actions from the Cents hub — direct logging, no chat round-trip.
   addExpense: (amount: number, categoryName: string, accountId?: string, note?: string) => void;
   addIncome: (amount: number, accountId: string, note?: string) => void;
@@ -224,6 +228,29 @@ export const useFinance = create<FinanceState>()(
 
   addGoal: (name, target, date) =>
     set((s) => ({ goals: [...s.goals, { id: uid(), name, target, current: 0, date }] })),
+
+  // Session A: "Add savings" on a goal card. current is NOT capped at target
+  // (over-saving is real and the numbers stay honest; the UI caps the percent
+  // display). An optional source account is debited with the same clamp-at-0
+  // convention as addExpense. Budgets are untouched by design: moving money
+  // into a goal is not spending. Mirrors into chat like every other money
+  // action so Cents stays the single timeline.
+  addToGoal: (goalId, amount, accountId) => {
+    if (!(amount > 0)) return;
+    const prevGoals = get().goals;
+    if (!prevGoals.some((g) => g.id === goalId)) return;
+    set((s) => ({
+      goals: s.goals.map((g) => (g.id === goalId ? { ...g, current: g.current + amount } : g)),
+      accounts: accountId
+        ? s.accounts.map((a) => (a.id === accountId ? { ...a, balance: Math.max(a.balance - amount, 0) } : a))
+        : s.accounts,
+    }));
+    // Wakes the previously dormant milestone notifications (25/50/75/100).
+    notifyGoalMilestones(prevGoals, get().goals, get().notificationsEnabled);
+    const goal = get().goals.find((g) => g.id === goalId);
+    const acct = accountId ? get().accounts.find((a) => a.id === accountId) : undefined;
+    if (goal) pushCents(set, `Set aside ${peso(amount)} for ${goal.name}${acct ? ` from ${acct.name}` : ''}. ${peso(goal.current)} of ${peso(goal.target)} saved.`);
+  },
 
   // M5 hub quick actions. Expense bumps the matching budget's spent and can
   // debit a source; income credits the chosen card/e-wallet. Both mirror into

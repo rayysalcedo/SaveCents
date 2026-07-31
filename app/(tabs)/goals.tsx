@@ -23,7 +23,7 @@ const TABS = ['Goals', 'Budgets'] as const;
 export default function GoalsScreen() {
   const t = useTheme();
   const styles = useMemo(() => makeStyles(t), [t]);
-  const { goals, addGoal, removeGoal, categories, addBudget, updateBudget, removeBudget, transactions } = useFinance();
+  const { goals, addGoal, removeGoal, addToGoal, accounts, categories, addBudget, updateBudget, removeBudget, transactions } = useFinance();
   const weeklyRate = useMemo(() => weeklySavingsRate(transactions), [transactions]);
 
   const [tab, setTab] = useState<0 | 1>(0);
@@ -55,6 +55,28 @@ export default function GoalsScreen() {
   const [gAmount, setGAmount] = useState('');
   const [gDate, setGDate] = useState<Date>(new Date(Date.now() + 180 * 86400000));
   const [showPicker, setShowPicker] = useState(false);
+
+  // Session A: contribution sheet state. savingGoalId doubles as visibility.
+  // sourceId null = track only (no account debit).
+  const [savingGoalId, setSavingGoalId] = useState<string | null>(null);
+  const [saveAmount, setSaveAmount] = useState('');
+  const [sourceId, setSourceId] = useState<string | null>(null);
+  const saveDrag = useDragToDismiss(() => setSavingGoalId(null));
+  const savingGoal = goals.find((g) => g.id === savingGoalId);
+  const sourceAcct = sourceId ? accounts.find((a) => a.id === sourceId) : undefined;
+  const saveVal = parseFloat(saveAmount) || 0;
+
+  const openAddSavings = (goalId: string) => {
+    setSaveAmount('');
+    setSourceId(null);
+    setSavingGoalId(goalId);
+  };
+
+  const submitSavings = () => {
+    if (!savingGoalId || !(saveVal > 0)) return;
+    addToGoal(savingGoalId, saveVal, sourceId ?? undefined);
+    setSavingGoalId(null);
+  };
 
   // Budget sheet state: category + custom name + limit + optional due date.
   const [budgetSheet, setBudgetSheet] = useState(false);
@@ -177,11 +199,18 @@ export default function GoalsScreen() {
               {goals.length === 0 && (
                 <GlassCard>
                   <Text style={styles.emptyTitle}>No goals yet</Text>
-                  <Text style={styles.emptySub}>Add a goal and Cents will defend it against impulse purchases.</Text>
+                  <Text style={styles.emptySub}>Name what you are saving for and Cents will defend it against impulse purchases.</Text>
+                  <Pressable onPress={() => setGoalSheet(true)}>
+                    <LinearGradient colors={[t.emerald, t.teal]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.emptyBtn}>
+                      <Ionicons name="flag" size={15} color={t.onEmerald} />
+                      <Text style={styles.emptyBtnText}>Create a goal</Text>
+                    </LinearGradient>
+                  </Pressable>
                 </GlassCard>
               )}
               {goals.map((g) => {
                 const pct = Math.min(g.current / g.target, 1);
+                const reached = g.current >= g.target;
                 // M5.6 truth pass: pace from the real 28-day savings rate.
                 const pace = paceLabel(g.target, g.current, weeklyRate);
                 return (
@@ -191,7 +220,14 @@ export default function GoalsScreen() {
                         <Text style={styles.goalName}>{g.name}</Text>
                         <Text style={styles.goalDate}>Target date · {g.date}</Text>
                       </View>
-                      <Text style={styles.goalPct}>{Math.round(pct * 100)}%</Text>
+                      {reached ? (
+                        <View style={styles.reachedChip}>
+                          <Ionicons name="checkmark-circle" size={13} color={t.emerald} />
+                          <Text style={styles.reachedChipText}>Reached</Text>
+                        </View>
+                      ) : (
+                        <Text style={styles.goalPct}>{Math.round(pct * 100)}%</Text>
+                      )}
                       <Pressable style={styles.trash} onPress={() => removeGoal(g.id)}>
                         <Ionicons name="trash-outline" size={15} color={t.red} />
                       </Pressable>
@@ -211,6 +247,10 @@ export default function GoalsScreen() {
                         <Text style={[styles.statValue, { color: t.mint }]}>{pace}</Text>
                       </View>
                     </View>
+                    <Pressable style={styles.addSavingsBtn} onPress={() => openAddSavings(g.id)}>
+                      <Ionicons name="add-circle" size={16} color={t.emerald} />
+                      <Text style={styles.addSavingsText}>Add savings</Text>
+                    </Pressable>
                   </GlassCard>
                 );
               })}
@@ -221,6 +261,12 @@ export default function GoalsScreen() {
                 <GlassCard>
                   <Text style={styles.emptyTitle}>No budgets yet</Text>
                   <Text style={styles.emptySub}>Pick a category and give every peso a job.</Text>
+                  <Pressable onPress={openNewBudget}>
+                    <LinearGradient colors={[t.emerald, t.teal]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.emptyBtn}>
+                      <Ionicons name="wallet" size={15} color={t.onEmerald} />
+                      <Text style={styles.emptyBtnText}>Create a budget</Text>
+                    </LinearGradient>
+                  </Pressable>
                 </GlassCard>
               )}
               {budgetGroups.map(({ parent, items }) => {
@@ -328,6 +374,67 @@ export default function GoalsScreen() {
             </Pressable>
             </Animated.View>
         </KeyboardAvoidingView>
+        </View>
+      </Modal>
+
+      {/* Session A: Add savings sheet. Amount + optional source account.
+          "Track only" leaves balances alone; picking a source debits it with
+          the app-wide clamp at zero. Drag responder on the grab zone ONLY. */}
+      <Modal visible={!!savingGoal} transparent animationType="slide" onRequestClose={() => setSavingGoalId(null)}>
+        <View style={{ flex: 1 }}>
+          <Pressable style={styles.scrimFill} onPress={() => setSavingGoalId(null)} />
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.kav} pointerEvents="box-none">
+            <Animated.View style={{ transform: [{ translateY: saveDrag.drag }] }}>
+            <Pressable style={styles.sheet} onPress={Keyboard.dismiss}>
+              <View style={styles.grabZone} {...saveDrag.panHandlers}>
+                <View style={styles.handle} />
+              </View>
+              <Text style={styles.sheetTitle}>Add savings</Text>
+              <Text style={styles.sheetSub}>
+                {savingGoal ? `Move money toward ${savingGoal.name}. ${peso(savingGoal.current)} of ${peso(savingGoal.target)} saved so far.` : ''}
+              </Text>
+              <MoneyInput value={saveAmount} onChangeText={setSaveAmount} placeholder="Amount to set aside" autoFocus />
+              <Text style={styles.sourceLabel}>TAKE IT FROM</Text>
+              <View style={styles.sourceGrid}>
+                <Pressable
+                  style={[styles.sourceChip, sourceId === null && styles.sourceChipSel]}
+                  onPress={() => setSourceId(null)}
+                >
+                  <Ionicons name="create-outline" size={14} color={sourceId === null ? t.onEmerald : t.emerald} />
+                  <Text style={[styles.sourceChipText, sourceId === null && { color: t.onEmerald }]}>Track only</Text>
+                </Pressable>
+                {accounts.map((a) => {
+                  const selected = sourceId === a.id;
+                  return (
+                    <Pressable
+                      key={a.id}
+                      style={[styles.sourceChip, selected && styles.sourceChipSel]}
+                      onPress={() => setSourceId(a.id)}
+                    >
+                      <Text style={[styles.sourceChipText, selected && { color: t.onEmerald }]}>{a.name}</Text>
+                      <Text style={[styles.sourceChipBal, selected && { color: t.onEmerald, opacity: 0.85 }]}>{peso(a.balance)}</Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+              {sourceAcct && saveVal > sourceAcct.balance && (
+                <Text style={styles.sourceWarn}>
+                  This is more than {sourceAcct.name} holds. Its balance will stop at zero.
+                </Text>
+              )}
+              {sourceId === null && (
+                <Text style={styles.sourceNote}>
+                  Track only records the savings without touching an account balance.
+                </Text>
+              )}
+              <Pressable onPress={submitSavings}>
+                <LinearGradient colors={[t.emerald, t.teal]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.submit}>
+                  <Text style={styles.submitText}>Add savings</Text>
+                </LinearGradient>
+              </Pressable>
+            </Pressable>
+            </Animated.View>
+          </KeyboardAvoidingView>
         </View>
       </Modal>
 
@@ -463,6 +570,35 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   goalFooter: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 10 },
   statLabel: { color: t.textMuted, fontSize: 11 },
   statValue: { color: t.textPrimary, fontSize: 15, fontWeight: '800', marginTop: 2 },
+  reachedChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    borderRadius: 999, paddingHorizontal: 10, paddingVertical: 6,
+    backgroundColor: t.emeraldTint, borderWidth: 1, borderColor: t.emeraldBorder,
+  },
+  reachedChipText: { color: t.emerald, fontSize: 12, fontWeight: '800' },
+  addSavingsBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7,
+    height: 44, borderRadius: radius.input, marginTop: 14,
+    backgroundColor: t.emeraldTint, borderWidth: 1, borderColor: t.emeraldBorder,
+  },
+  addSavingsText: { color: t.emerald, fontSize: 14, fontWeight: '800' },
+  emptyBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7,
+    height: 46, borderRadius: radius.input, marginTop: 16,
+  },
+  emptyBtnText: { color: t.onEmerald, fontSize: 14, fontWeight: '800' },
+  sourceLabel: { color: t.textFaint, fontSize: 11, fontWeight: '800', letterSpacing: 1.2, marginBottom: 8, paddingHorizontal: 2 },
+  sourceGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 12 },
+  sourceChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 7,
+    backgroundColor: t.inputFill, borderWidth: 1, borderColor: t.borderSoft,
+    borderRadius: 999, paddingHorizontal: 13, paddingVertical: 9,
+  },
+  sourceChipSel: { backgroundColor: t.emerald, borderColor: t.emerald },
+  sourceChipText: { color: t.textPrimary, fontSize: 13, fontWeight: '700' },
+  sourceChipBal: { color: t.textMuted, fontSize: 11.5, fontWeight: '700' },
+  sourceWarn: { color: t.amber, fontSize: 12, lineHeight: 17, marginBottom: 12, paddingHorizontal: 2 },
+  sourceNote: { color: t.textMuted, fontSize: 12, lineHeight: 17, marginBottom: 12, paddingHorizontal: 2 },
   budgetRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 12 },
   budgetIcon: {
     width: 40, height: 40, borderRadius: 13, alignItems: 'center', justifyContent: 'center',
