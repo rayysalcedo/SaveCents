@@ -21,7 +21,15 @@
       "adaptiveIcon": {
         "backgroundColor": "#040906",
         "foregroundImage": "./assets/android-icon-foreground.png"
-      }
+      },
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS"
+      ]
     },
     "plugins": [
       "expo-router",
@@ -40,6 +48,19 @@
     ],
     "web": {
       "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "64c8dc67-aeee-4a71-acbb-2334a111c25a"
+      }
+    },
+    "owner": "rayysalcedo",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/64c8dc67-aeee-4a71-acbb-2334a111c25a"
     }
   }
 }
