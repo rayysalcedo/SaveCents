@@ -1,5 +1,5 @@
 # SaveCents — Project Handoff Document
-**Last updated:** August 4, 2026 · **Current build:** savecents-m5.30-v54 (echo filter, mic cooldown, deterministic balance-answer rescue)
+**Last updated:** August 4, 2026 · **Current build:** savecents-m5.31-v55 (go-live prep: eas.json, dev key gitignored, EAS Update path documented)
 **Owner:** Rayy (rayysalcedo@gmail.com) · **Dev environment:** Windows PC + iPhone (Expo Go)
 
 ---
@@ -224,6 +224,16 @@ Owner transcript exposed two chained failures:
 2. **The mic heard Cents's own voice** ("YOU: I am ready to help you with your money..." = Cents's speech transcribed as the user, then parroted). Fixes: (a) 450ms cooldown before the mic reopens after Cents finishes speaking (VoiceOverlay speech-end handler); (b) `isEchoOfCents()` in sendVoiceClip - a transcript that is essentially the last spoken Cents text (normalized containment, > 12 chars) is DISCARDED silently: no bubble, no brain call, the mic just reopens.
 3. Verified: `npx tsc --noEmit` clean, `npx expo export --platform ios` bundles.
 
+### M5.31 ✅ (v55) — GO-LIVE PREP (owner: "live even when my laptop is off")
+No app-code changes; deployment scaffolding:
+1. **eas.json added** with three profiles: `development` (dev client, internal), `preview` (internal; Android builds an APK - this is the FRIEND-TESTING build), `production` (auto-increment; store/TestFlight). Each profile pins an EAS Update channel of the same name.
+2. **devGeminiKey.ts is now gitignored** (the owner pasted a personal AI Studio key into their local copy - it must NEVER reach GitHub) with `devGeminiKey.example.ts` added, same copy-to-activate pattern as firebaseConfig. Fresh clones: copy BOTH example files before typechecking.
+3. **The three go-live levels (decided with the owner - Windows PC, no Mac, no paid Apple account yet):**
+   - LEVEL A - FREE, TONIGHT, LAPTOP OFF: publish the JS bundle to Expo's CDN via EAS Update; open the project from the Projects tab of Expo Go signed into the same Expo account. Commands (owner's machine, in the project folder): `git init + push to GitHub FIRST`, then `npm i -g eas-cli`, `eas login`, `eas init` (writes projectId into app.json - COMMIT that), `npx expo install expo-updates`, `eas update:configure`, then every release: `eas update --branch production --message "vNN"`. The bundle is compiled LOCALLY so the local firebaseConfig.ts/devGeminiKey.ts are baked in (that is fine - they never touch git). Same Expo Go limits as today (no Google Sign-In, notification warnings).
+   - LEVEL B - FREE, STANDALONE ICON, 7-DAY RESIGN: GitHub Actions macOS runner builds an unsigned .ipa (repo must be on GitHub), Sideloadly on the Windows PC signs it with a free Apple ID onto the iPhone; app runs fully standalone but expires weekly. Keep bundle id com.rxsfin.savecents (Google OAuth §4 depends on it).
+   - LEVEL C - THE REAL ANSWER, $99/yr: Apple Developer account → `eas build --platform ios --profile production` (EAS cloud signs it) → TestFlight. 90-day builds, OTA JS updates via the same `eas update` channels, shareable to testers by email. Android friend NOW: `eas build --profile preview --platform android` → APK link → installs, standalone forever, free.
+4. Verified: `npx tsc --noEmit` clean.
+
 ---
 
 ## 3. CRITICAL RULES — every future session must respect these
@@ -326,7 +336,7 @@ Cloud Function for OTP email; App Check enforced; models via Remote Config; Sent
 
 ## 9. Paste-ready brief for the next session
 
-> "Continuing SaveCents (React Native + Expo SDK 54 — read HANDOFF.md, build savecents-m5.30-v54, ESPECIALLY §3 CRITICAL RULES before writing any UI code — the touch-lag saga made rules 4/5/9/10 blood-earned). Done through M5.8: redesigned auth with OTP + Google plumbing (blocked on §4 account issue), Cents quick dial, truth pass, coaching notifications, drag-dismissable sheets, goal contributions with live 25/50/75/100 milestones (never fired from replaceAll), VOICE IN working in Expo Go (expo-audio recording + Gemini transcription, M5.8), VOICE OUT working (M5.9: Gemini TTS voice with device fallback, services/speech.ts, Profile toggle), and M5.10 turned the overlay into a full CONVERSATION loop (metered waveform, silence auto-send, in-overlay spoken replies, mute/stop, mic-vs-TTS race-proofing via onCentsSpeech floor-holding). Next: Session A remainder — Wallet card list + reorder, Analytics restyle; then Session B — resolve §4 Google Cloud account, then ANDROID dev build first (free; iOS build needs the paid Apple account, see §8). Workflow: DELETE old folder before extracting, re-paste firebaseConfig.ts, npm install --legacy-peer-deps, npx expo start -c."
+> "Continuing SaveCents (React Native + Expo SDK 54 — read HANDOFF.md, build savecents-m5.31-v55, ESPECIALLY §3 CRITICAL RULES before writing any UI code — the touch-lag saga made rules 4/5/9/10 blood-earned). Done through M5.8: redesigned auth with OTP + Google plumbing (blocked on §4 account issue), Cents quick dial, truth pass, coaching notifications, drag-dismissable sheets, goal contributions with live 25/50/75/100 milestones (never fired from replaceAll), VOICE IN working in Expo Go (expo-audio recording + Gemini transcription, M5.8), VOICE OUT working (M5.9: Gemini TTS voice with device fallback, services/speech.ts, Profile toggle), and M5.10 turned the overlay into a full CONVERSATION loop (metered waveform, silence auto-send, in-overlay spoken replies, mute/stop, mic-vs-TTS race-proofing via onCentsSpeech floor-holding). Next: Session A remainder — Wallet card list + reorder, Analytics restyle; then Session B — resolve §4 Google Cloud account, then ANDROID dev build first (free; iOS build needs the paid Apple account, see §8). Workflow: DELETE old folder before extracting, re-paste firebaseConfig.ts, npm install --legacy-peer-deps, npx expo start -c."
 
 ---
 
