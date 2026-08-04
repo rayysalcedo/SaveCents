@@ -561,6 +561,7 @@ export default function AuthScreen() {
 
   // ----- render ------------------------------------------------------------
   return (
+    <>
     <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
       <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <ScrollView
@@ -760,6 +761,7 @@ export default function AuthScreen() {
           </Animated.View>
         </ScrollView>
       </KeyboardAvoidingView>
+    </TouchableWithoutFeedback>
 
       {/* M5.33: no-link password reset - code in, new password, done. */}
       <Modal visible={fpOpen} transparent animationType="fade" onRequestClose={() => setFpOpen(false)}>
@@ -847,7 +849,7 @@ export default function AuthScreen() {
           </Pressable>
         </Pressable>
       </Modal>
-    </TouchableWithoutFeedback>
+    </>
   );
 }
 

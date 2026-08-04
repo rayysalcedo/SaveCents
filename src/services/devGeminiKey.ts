@@ -17,4 +17,4 @@
 // after the Firebase proxy path has failed. Production/TestFlight builds
 // ignore it entirely (and the long-term fix is server-side TTS at M6).
 // ─────────────────────────────────────────────────────────────────────────────
-export const DEV_GEMINI_TTS_KEY = '';
+export const DEV_GEMINI_TTS_KEY = 'AQ.Ab8RN6JDJeMgxyYJXsJ-I1Vsti4Fp-jk52ngRmIbuBLDw8HfNQ';
