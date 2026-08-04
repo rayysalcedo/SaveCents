@@ -16,6 +16,12 @@ export default function SplashIntro() {
 
   useEffect(() => {
     Animated.sequence([
+      // Expo Go keeps its own loading screen up slightly past first render
+      // when running a published bundle; without this hold the whole intro
+      // plays behind it. The overlay is solid green during the wait, so the
+      // user just sees green a beat longer, then the pop. Standalone builds
+      // simply show green a moment before the logo lands, which reads fine.
+      Animated.delay(600),
       Animated.parallel([
         Animated.timing(logoOpacity, {
           toValue: 1,
