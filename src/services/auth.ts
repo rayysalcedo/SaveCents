@@ -8,6 +8,7 @@ import {
   initializeAuth,
   onAuthStateChanged,
   sendEmailVerification,
+  confirmPasswordReset,
   sendPasswordResetEmail,
   signInWithCredential,
   signInWithEmailAndPassword,
@@ -74,6 +75,12 @@ export async function sendVerificationEmail(): Promise<boolean> {
 
 export async function resetPassword(email: string): Promise<void> {
   await sendPasswordResetEmail(getFirebaseAuth(), email.trim());
+}
+
+// M5.33: finish a NO-LINK reset - the oobCode came from the Worker after the
+// user's 6-digit code checked out.
+export async function completePasswordReset(oobCode: string, newPassword: string): Promise<void> {
+  await confirmPasswordReset(getFirebaseAuth(), oobCode, newPassword);
 }
 
 // Change the signed-in user's password (called only after email OTP passes).

@@ -141,9 +141,11 @@ export default function ProfileScreen() {
     }
   };
 
-  const confirmOtp = () => {
+  const confirmOtp = async () => {
     setPwError('');
-    const r = verifyPasswordOtp(pwCode);
+    setPwBusy(true);
+    const r = await verifyPasswordOtp(pwCode);
+    setPwBusy(false);
     if (!r.ok) { setPwError(r.reason ?? 'That code is not right.'); return; }
     setPwStep('new');
   };

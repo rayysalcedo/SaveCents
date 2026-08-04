@@ -1,18 +1,18 @@
-// M5: email OTP for password changes.
+// M5.32: email OTP, now with a REAL delivery channel.
 //
-// Sending email from the client requires a backend. The production path is a
-// tiny Cloud Function (M6, alongside App Check and Remote Config): it receives
-// { email, code } and emails the code. Point OTP_ENDPOINT at it when deployed.
+// Production path (no Blaze needed): a free Cloudflare Worker (see /worker in
+// this repo) generates and stores the code, and sends a SaveCents-branded
+// email through Brevo's free tier. Point OTP_ENDPOINT at the deployed Worker
+// URL to switch it on. The Worker owns the code (hashed, 10-minute TTL,
+// 5 attempts, rate-limited) - the app never sees it.
 //
-// Until then:
+// With OTP_ENDPOINT null (fresh clones, offline dev):
 //  - in development the generated code is returned to the caller so the flow
 //    is fully testable on device (surfaced in a dev-only alert),
-//  - in production without an endpoint the caller falls back to Firebase's
-//    built-in password-reset email (real, secure, zero backend).
-//
-// Codes are 6 digits, expire after 10 minutes, and allow 5 attempts.
+//  - in production the caller falls back to Firebase's built-in
+//    password-reset email (real, secure, zero backend).
 
-const OTP_ENDPOINT: string | null = null; // e.g. 'https://<region>-<project>.cloudfunctions.net/sendOtp'
+const OTP_ENDPOINT: string | null = 'https://savecents-otp.savecents-app.workers.dev';
 
 interface PendingOtp {
   code: string;
@@ -21,7 +21,8 @@ interface PendingOtp {
   attemptsLeft: number;
 }
 
-let pending: PendingOtp | null = null;
+let pending: PendingOtp | null = null; // local fallback only
+let remoteEmail: string | null = null; // which email the Worker is holding a code for
 
 export class OtpUnavailableError extends Error {
   constructor() { super('No OTP delivery channel configured'); }
@@ -33,18 +34,22 @@ export interface OtpRequestResult {
 }
 
 export async function requestPasswordOtp(email: string): Promise<OtpRequestResult> {
-  const code = String(Math.floor(100000 + Math.random() * 900000));
-  pending = { code, email, expiresAt: Date.now() + 10 * 60_000, attemptsLeft: 5 };
+  const clean = email.trim().toLowerCase();
 
   if (OTP_ENDPOINT) {
-    const res = await fetch(OTP_ENDPOINT, {
+    const res = await fetch(`${OTP_ENDPOINT}/send-otp`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, code }),
+      body: JSON.stringify({ email: clean }),
     });
+    if (res.status === 429) throw new Error('Too many codes requested. Wait a bit and try again.');
     if (!res.ok) throw new Error('Could not send the code. Try again.');
+    remoteEmail = clean;
     return { sent: true };
   }
+
+  const code = String(Math.floor(100000 + Math.random() * 900000));
+  pending = { code, email: clean, expiresAt: Date.now() + 10 * 60_000, attemptsLeft: 5 };
 
   if (__DEV__) return { sent: true, devCode: code };
 
@@ -52,12 +57,27 @@ export async function requestPasswordOtp(email: string): Promise<OtpRequestResul
   throw new OtpUnavailableError();
 }
 
-// M5.5: the same code channel now also verifies new sign-ups on the auth
-// screen. Same rules (6 digits, 10 min, 5 tries), same delivery seam, same
-// Cloud Function at M6. Aliased so call sites read correctly.
+// M5.5: the same code channel also verifies new sign-ups on the auth screen.
 export const requestEmailOtp = requestPasswordOtp;
 
-export function verifyPasswordOtp(input: string): { ok: boolean; reason?: string } {
+export async function verifyPasswordOtp(input: string): Promise<{ ok: boolean; reason?: string }> {
+  const code = input.trim();
+
+  if (OTP_ENDPOINT && remoteEmail) {
+    try {
+      const res = await fetch(`${OTP_ENDPOINT}/verify-otp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: remoteEmail, code }),
+      });
+      const data = (await res.json()) as { ok: boolean; reason?: string };
+      if (data.ok) remoteEmail = null;
+      return { ok: data.ok === true, reason: data.reason };
+    } catch {
+      return { ok: false, reason: 'Could not check the code. Are you online?' };
+    }
+  }
+
   if (!pending) return { ok: false, reason: 'Request a new code first.' };
   if (Date.now() > pending.expiresAt) {
     pending = null;
@@ -67,7 +87,7 @@ export function verifyPasswordOtp(input: string): { ok: boolean; reason?: string
     pending = null;
     return { ok: false, reason: 'Too many attempts. Request a new code.' };
   }
-  if (input.trim() !== pending.code) {
+  if (code !== pending.code) {
     pending.attemptsLeft -= 1;
     return { ok: false, reason: `That code is not right. ${pending.attemptsLeft} tries left.` };
   }
@@ -76,3 +96,38 @@ export function verifyPasswordOtp(input: string): { ok: boolean; reason?: string
 }
 
 export const verifyEmailOtp = verifyPasswordOtp;
+
+// M5.33: NO-LINK forgot password. The Worker asks Firebase (admin) for the
+// real single-use reset secret, emails the user a friendly 6-digit code, and
+// releases the secret only when the code checks out; the app then finishes
+// with confirmPasswordReset. Throws OtpUnavailableError when the Worker (or
+// its service account) isn't configured, so callers fall back to the link
+// email.
+export async function requestResetOtp(email: string): Promise<void> {
+  if (!OTP_ENDPOINT) throw new OtpUnavailableError();
+  const res = await fetch(`${OTP_ENDPOINT}/reset-request`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: email.trim().toLowerCase() }),
+  });
+  if (res.status === 501) throw new OtpUnavailableError();
+  if (res.status === 429) throw new Error('Too many codes requested. Wait a bit and try again.');
+  if (!res.ok) throw new Error('Could not send the code. Try again.');
+}
+
+export async function verifyResetOtp(
+  email: string,
+  code: string,
+): Promise<{ ok: boolean; reason?: string; oobCode?: string }> {
+  if (!OTP_ENDPOINT) return { ok: false, reason: 'Reset codes are not set up.' };
+  try {
+    const res = await fetch(`${OTP_ENDPOINT}/reset-verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: email.trim().toLowerCase(), code: code.trim() }),
+    });
+    return (await res.json()) as { ok: boolean; reason?: string; oobCode?: string };
+  } catch {
+    return { ok: false, reason: 'Could not check the code. Are you online?' };
+  }
+}

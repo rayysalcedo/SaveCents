@@ -13,7 +13,7 @@
 // Google accounts skip OTP (their email is already verified).
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ActivityIndicator, Alert, Animated, Image, Keyboard, KeyboardAvoidingView, Platform, Pressable,
+  ActivityIndicator, Alert, Animated, Image, Keyboard, KeyboardAvoidingView, Modal, Platform, Pressable,
   ScrollView, StyleSheet, Text, TextInput, TouchableWithoutFeedback, View,
 } from 'react-native';
 import { useRouter } from 'expo-router';
@@ -26,9 +26,9 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Palette, radius, useTheme } from '../src/theme/colors';
 import { useFinance } from '../src/store/finance';
 import {
-  authAvailable, authErrorMessage, resetPassword, sendVerificationEmail, signIn, signUp, subscribeAuth,
+  authAvailable, authErrorMessage, completePasswordReset, resetPassword, sendVerificationEmail, signIn, signUp, subscribeAuth,
 } from '../src/services/auth';
-import { OtpUnavailableError, requestEmailOtp, verifyEmailOtp } from '../src/services/otp';
+import { OtpUnavailableError, requestEmailOtp, requestResetOtp, verifyEmailOtp, verifyResetOtp } from '../src/services/otp';
 import { IN_EXPO_GO, googleConfigured, useGoogleSignIn } from '../src/services/googleAuth';
 
 const REMEMBER_KEY = 'savecents.rememberedEmail';
@@ -410,7 +410,7 @@ export default function AuthScreen() {
       return;
     }
     setOtpBusy(true);
-    const r = verifyEmailOtp(otp);
+    const r = await verifyEmailOtp(otp);
     setOtpBusy(false);
     if (r.ok) {
       Keyboard.dismiss();
@@ -428,6 +428,16 @@ export default function AuthScreen() {
     await sendSignupCode(pendingUser.email);
   };
 
+  // ----- M5.33: no-link password reset (6-digit code in-app) ---------------
+  const [fpOpen, setFpOpen] = useState(false);
+  const [fpStep, setFpStep] = useState<'code' | 'new'>('code');
+  const [fpCode, setFpCode] = useState('');
+  const [fpNew, setFpNew] = useState('');
+  const [fpNew2, setFpNew2] = useState('');
+  const [fpBusy, setFpBusy] = useState(false);
+  const [fpError, setFpError] = useState('');
+  const fpOob = useRef<string | null>(null);
+
   const forgotPassword = async () => {
     if (!authAvailable()) {
       Alert.alert('Reset password', 'Connect Firebase first (src/services/firebaseConfig.ts).');
@@ -438,10 +448,53 @@ export default function AuthScreen() {
       return;
     }
     try {
-      await resetPassword(email);
-      Alert.alert('Check your inbox', `We sent a password reset link to ${email.trim()}.`);
+      await requestResetOtp(email);
+      setFpCode(''); setFpNew(''); setFpNew2(''); setFpError('');
+      fpOob.current = null;
+      setFpStep('code');
+      setFpOpen(true);
     } catch (e) {
-      Alert.alert('Reset failed', authErrorMessage(e));
+      if (e instanceof OtpUnavailableError) {
+        // Worker not configured: the classic link email still works.
+        try {
+          await resetPassword(email);
+          Alert.alert('Check your inbox', `We sent a password reset link to ${email.trim()}.`);
+        } catch (e2) {
+          Alert.alert('Reset failed', authErrorMessage(e2));
+        }
+        return;
+      }
+      Alert.alert('Reset failed', (e as Error)?.message ?? 'Try again.');
+    }
+  };
+
+  const fpVerify = async () => {
+    if (fpBusy) return;
+    setFpError('');
+    if (fpCode.trim().length < 6) { setFpError('Enter all 6 digits of the code.'); return; }
+    setFpBusy(true);
+    const r = await verifyResetOtp(email, fpCode);
+    setFpBusy(false);
+    if (!r.ok || !r.oobCode) { setFpError(r.reason ?? 'That code is not right.'); return; }
+    fpOob.current = r.oobCode;
+    setFpStep('new');
+  };
+
+  const fpSave = async () => {
+    if (fpBusy || !fpOob.current) return;
+    setFpError('');
+    if (fpNew.length < 8) { setFpError('Use at least 8 characters.'); return; }
+    if (fpNew !== fpNew2) { setFpError('Passwords do not match.'); return; }
+    setFpBusy(true);
+    try {
+      await completePasswordReset(fpOob.current, fpNew);
+      setFpOpen(false);
+      setPassword('');
+      Alert.alert('Password updated', 'Sign in with your new password.');
+    } catch (e) {
+      setFpError(authErrorMessage(e));
+    } finally {
+      setFpBusy(false);
     }
   };
 
@@ -707,6 +760,93 @@ export default function AuthScreen() {
           </Animated.View>
         </ScrollView>
       </KeyboardAvoidingView>
+
+      {/* M5.33: no-link password reset - code in, new password, done. */}
+      <Modal visible={fpOpen} transparent animationType="fade" onRequestClose={() => setFpOpen(false)}>
+        <Pressable
+          style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'center', padding: 24 }}
+          onPress={() => Keyboard.dismiss()}
+        >
+          <Pressable
+            style={{ backgroundColor: t.sheet, borderRadius: 24, borderWidth: 1, borderColor: t.borderSoft, padding: 22 }}
+            onPress={() => Keyboard.dismiss()}
+          >
+            {fpStep === 'code' ? (
+              <>
+                <Text style={{ color: t.textPrimary, fontSize: 19, fontWeight: '800' }}>Enter your reset code</Text>
+                <Text style={{ color: t.textMuted, fontSize: 13.5, lineHeight: 20, marginTop: 6, marginBottom: 16 }}>
+                  We emailed a 6 digit code to {email.trim()}. Type it here to set a new password.
+                </Text>
+                <TextInput
+                  value={fpCode}
+                  onChangeText={(v) => setFpCode(v.replace(/[^0-9]/g, '').slice(0, 6))}
+                  keyboardType="number-pad"
+                  placeholder="000000"
+                  placeholderTextColor={t.textFaint}
+                  style={{
+                    color: t.textPrimary, fontSize: 26, fontWeight: '800', letterSpacing: 10, textAlign: 'center',
+                    backgroundColor: t.inputFill, borderWidth: 1.5, borderColor: fpError ? t.red : t.borderSoft,
+                    borderRadius: 16, paddingVertical: 14,
+                  }}
+                />
+              </>
+            ) : (
+              <>
+                <Text style={{ color: t.textPrimary, fontSize: 19, fontWeight: '800' }}>Set a new password</Text>
+                <Text style={{ color: t.textMuted, fontSize: 13.5, lineHeight: 20, marginTop: 6, marginBottom: 16 }}>
+                  Code confirmed. Choose your new SaveCents password.
+                </Text>
+                <TextInput
+                  value={fpNew}
+                  onChangeText={setFpNew}
+                  secureTextEntry
+                  placeholder="New password (8+ characters)"
+                  placeholderTextColor={t.textFaint}
+                  style={{
+                    color: t.textPrimary, fontSize: 15, backgroundColor: t.inputFill, borderWidth: 1,
+                    borderColor: t.borderSoft, borderRadius: 14, paddingHorizontal: 14, paddingVertical: 12, marginBottom: 10,
+                  }}
+                />
+                <TextInput
+                  value={fpNew2}
+                  onChangeText={setFpNew2}
+                  secureTextEntry
+                  placeholder="Repeat the new password"
+                  placeholderTextColor={t.textFaint}
+                  style={{
+                    color: t.textPrimary, fontSize: 15, backgroundColor: t.inputFill, borderWidth: 1,
+                    borderColor: t.borderSoft, borderRadius: 14, paddingHorizontal: 14, paddingVertical: 12,
+                  }}
+                />
+              </>
+            )}
+
+            {!!fpError && (
+              <Text style={{ color: t.red, fontSize: 12.5, fontWeight: '600', marginTop: 10 }}>{fpError}</Text>
+            )}
+
+            <View style={{ flexDirection: 'row', gap: 10, marginTop: 18 }}>
+              <Pressable
+                style={{ flex: 1, height: 48, borderRadius: 14, alignItems: 'center', justifyContent: 'center', backgroundColor: t.inputFill, borderWidth: 1, borderColor: t.border }}
+                onPress={() => setFpOpen(false)}
+              >
+                <Text style={{ color: t.textMuted, fontSize: 14.5, fontWeight: '700' }}>Cancel</Text>
+              </Pressable>
+              <Pressable style={{ flex: 1 }} onPress={fpStep === 'code' ? fpVerify : fpSave} disabled={fpBusy}>
+                <LinearGradient
+                  colors={[t.emerald, t.teal]}
+                  start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
+                  style={{ height: 48, borderRadius: 14, alignItems: 'center', justifyContent: 'center', opacity: fpBusy ? 0.7 : 1 }}
+                >
+                  {fpBusy
+                    ? <ActivityIndicator size="small" color={t.onEmerald} />
+                    : <Text style={{ color: t.onEmerald, fontSize: 14.5, fontWeight: '800' }}>{fpStep === 'code' ? 'Continue' : 'Save password'}</Text>}
+                </LinearGradient>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </TouchableWithoutFeedback>
   );
 }
