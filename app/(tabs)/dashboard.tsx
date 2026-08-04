@@ -28,7 +28,9 @@ const BANK_CARD_W = SCREEN_W - 48;   // fills the view: no peek of the next card
 const BANK_GAP = 24;
 const BANK_STEP = BANK_CARD_W + BANK_GAP;
 
-const ACCOUNT_COLORS = [C.emerald, C.purple, C.amber, C.teal, C.mint];
+// M5.29 (owner: allocation colors blended): eight strongly distinct hues so
+// neighboring accounts never read as the same slice.
+const ACCOUNT_COLORS = ['#10B981', '#8B5CF6', '#F59E0B', '#3B82F6', '#EC4899', '#F97316', '#6366F1', '#06B6D4'];
 
 // Darken a #RRGGBB color for card gradients.
 function shade(hex: string, amt: number) {
@@ -204,9 +206,13 @@ export default function Dashboard() {
 
   // ── Today strip data ──────────────────────────────────────────────────
   const startOfDay = new Date(); startOfDay.setHours(0, 0, 0, 0);
-  const savedToday = transactions
-    .filter((x) => x.timestamp >= startOfDay.getTime())
-    .reduce((a, x) => a + (x.isIncome ? x.amount : -x.amount), 0);
+  // M5.17 (owner): the old single net number read as nonsense ("Saved today"
+  // in red). The card now shows BOTH sides of the day: what went out, and
+  // what is left of today's money after spending (never negative).
+  const todayTx = transactions.filter((x) => x.timestamp >= startOfDay.getTime());
+  const earnedToday = todayTx.reduce((a, x) => a + (x.isIncome ? x.amount : 0), 0);
+  const spentToday = todayTx.reduce((a, x) => a + (x.isIncome ? 0 : x.amount), 0);
+  const savedToday = Math.max(earnedToday - spentToday, 0);
 
   // Needs attention: nearest due budget first, then maxed, then near-limit.
   const attention = useMemo(() => {
@@ -315,11 +321,25 @@ export default function Dashboard() {
             <View style={[styles.todayIcon, { backgroundColor: t.emeraldTint, borderColor: t.emeraldBorder }]}>
               <Ionicons name="leaf" size={16} color={t.emerald} />
             </View>
-            <Text style={styles.todayLabel}>Saved today</Text>
-            <Text style={[styles.todayValue, savedToday < 0 && { color: t.red }]}>
-              {hideBalance ? '****' : peso(Math.abs(savedToday))}
-            </Text>
-            <Text style={styles.todayCaption}>{savedToday >= 0 ? 'Net of today\u2019s activity' : 'Spent more than earned'}</Text>
+            <Text style={styles.todayLabel}>Today</Text>
+            <View style={styles.todayStatRow}>
+              <View style={styles.todayStatKey}>
+                <View style={[styles.todayStatDot, { backgroundColor: t.emerald }]} />
+                <Text style={styles.todayStatLabel}>Saved</Text>
+              </View>
+              <Text style={[styles.todayStatValue, { color: t.emerald }]} numberOfLines={1}>
+                {hideBalance ? '****' : peso(savedToday)}
+              </Text>
+            </View>
+            <View style={styles.todayStatRow}>
+              <View style={styles.todayStatKey}>
+                <View style={[styles.todayStatDot, { backgroundColor: t.red }]} />
+                <Text style={styles.todayStatLabel}>Spent</Text>
+              </View>
+              <Text style={[styles.todayStatValue, spentToday > 0 && { color: t.red }]} numberOfLines={1}>
+                {hideBalance ? '****' : peso(spentToday)}
+              </Text>
+            </View>
           </View>
 
           <Pressable style={styles.todayCard} onPress={() => router.push({ pathname: '/(tabs)/goals', params: { tab: 'budgets' } })}>
@@ -509,48 +529,46 @@ export default function Dashboard() {
 
         {/* 4 — Budgets */}
         <Section styles={styles} title="Budgets" link="Manage" onLink={() => router.push({ pathname: '/(tabs)/goals', params: { tab: 'budgets' } })} />
+        {/* M5.27 (owner): the dashboard shows ONE compact budgets summary;
+            the full list lives in Goals and Budgets (Manage / tap routes there). */}
         <GlassCard pad={8} style={{ marginBottom: 24 }}>
-          {categories.length === 0 && (
+          {categories.length === 0 ? (
             <Text style={styles.emptyLine}>No budgets yet. Create one from the Goals tab.</Text>
-          )}
-          {categories.map((c, i, arr) => {
-            const pct = Math.min(c.spent / c.limit, 1);
-            const maxed = pct >= 1;
-            const due = c.dueDate ? dueLabel(c.dueDate) : null;
+          ) : (() => {
+            const limit = categories.reduce((a, c) => a + c.limit, 0);
+            const spent = categories.reduce((a, c) => a + c.spent, 0);
+            const maxedCount = categories.filter((c) => c.limit > 0 && c.spent >= c.limit).length;
+            const pct = limit > 0 ? Math.min(spent / limit, 1) : 0;
             return (
               <Pressable
-                key={c.id}
-                style={({ pressed }) => [styles.budgetRow, i < arr.length - 1 && styles.rowDivider, pressed && { backgroundColor: t.inputFill }]}
+                style={({ pressed }) => [styles.budgetRow, pressed && { backgroundColor: t.inputFill }]}
                 onPress={() => router.push({ pathname: '/(tabs)/goals', params: { tab: 'budgets' } })}
               >
-                <View style={[styles.budgetIcon, maxed && { backgroundColor: t.redTint, borderColor: 'rgba(255,77,77,0.35)' }]}>
-                  <Ionicons name={(c.icon as any) || 'pricetag'} size={17} color={maxed ? t.red : t.emerald} />
+                <View style={[styles.budgetIcon, maxedCount > 0 && { backgroundColor: t.redTint, borderColor: 'rgba(255,77,77,0.35)' }]}>
+                  <Ionicons name="pie-chart" size={17} color={maxedCount > 0 ? t.red : t.emerald} />
                 </View>
                 <View style={{ flex: 1, gap: 6 }}>
                   <View style={styles.budgetTop}>
-                    <Text style={styles.budgetName} numberOfLines={1}>{c.name}</Text>
-                    {due && (
-                      <View style={[styles.dueChip, due.urgent && styles.dueChipUrgent]}>
-                        <Ionicons name="time-outline" size={10} color={due.urgent ? t.amber : t.textMuted} />
-                        <Text style={[styles.dueChipText, due.urgent && { color: t.amber }]}>{due.text}</Text>
-                      </View>
-                    )}
-                    <Text style={[styles.budgetLeft, maxed && { color: t.red }]}>
-                      {maxed ? 'Maxed' : `${peso(c.limit - c.spent)} left`}
+                    <Text style={styles.budgetName} numberOfLines={1}>
+                      {categories.length} budget{categories.length === 1 ? '' : 's'}
+                    </Text>
+                    <Text style={[styles.budgetLeft, maxedCount > 0 && { color: t.red }]}>
+                      {maxedCount > 0 ? `${maxedCount} maxed` : 'All healthy'}
                     </Text>
                   </View>
                   <View style={styles.track}>
                     <LinearGradient
-                      colors={maxed ? [t.red, '#FF7A7A'] : [t.forest, t.emerald]}
+                      colors={maxedCount > 0 ? [t.red, '#FF7A7A'] : [t.forest, t.emerald]}
                       start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
                       style={[styles.fill, { width: `${Math.max(pct * 100, 2)}%` }]}
                     />
                   </View>
-                  <Text style={styles.budgetSub}>{peso(c.spent)} of {peso(c.limit)} this month</Text>
+                  <Text style={styles.budgetSub}>{peso(spent)} of {peso(limit)} this month · Tap to manage</Text>
                 </View>
+                <Ionicons name="chevron-forward" size={15} color={t.textFaint} />
               </Pressable>
             );
-          })}
+          })()}
         </GlassCard>
 
         {/* 5 — Recent activity */}
@@ -646,6 +664,14 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   todayLabel: { color: t.textMuted, fontSize: 12, fontWeight: '600' },
   todayValue: { color: t.textPrimary, fontSize: 18, fontWeight: '800', ...type.money },
   todayCaption: { color: t.textFaint, fontSize: 11 },
+  todayStatRow: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    alignSelf: 'stretch', marginTop: 5,
+  },
+  todayStatKey: { flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 0 },
+  todayStatDot: { width: 6, height: 6, borderRadius: 3 },
+  todayStatLabel: { color: t.textMuted, fontSize: 12, fontWeight: '600' },
+  todayStatValue: { color: t.textPrimary, fontSize: 15, fontWeight: '800', flexShrink: 1, ...type.money },
 
   // Sections
   sectionRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 },
@@ -724,7 +750,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     backgroundColor: t.emeraldTint, borderWidth: 1, borderColor: t.emeraldBorder, marginTop: 2,
   },
   budgetTop: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  budgetName: { color: t.textPrimary, fontSize: 14, fontWeight: '700', flexShrink: 1 },
+  budgetName: { color: t.textPrimary, fontSize: 15.5, fontWeight: '700', flexShrink: 1 },
   dueChip: {
     flexDirection: 'row', alignItems: 'center', gap: 3,
     backgroundColor: t.inputFill, borderRadius: 999, paddingHorizontal: 7, paddingVertical: 3,
@@ -734,7 +760,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   budgetLeft: { color: t.emerald, fontSize: 12, fontWeight: '700', marginLeft: 'auto' },
   track: { height: 6, borderRadius: 3, backgroundColor: t.trackBg, overflow: 'hidden' },
   fill: { height: 6, borderRadius: 3 },
-  budgetSub: { color: t.textFaint, fontSize: 11, ...type.money },
+  budgetSub: { color: t.textMuted, fontSize: 12.5, ...type.money },
   emptyLine: { color: t.textMuted, fontSize: 13, padding: 14 },
 
   // Activity
@@ -743,7 +769,8 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     width: 38, height: 38, borderRadius: 13, alignItems: 'center', justifyContent: 'center',
     backgroundColor: t.inputFill, borderWidth: 1, borderColor: t.borderSoft,
   },
-  txName: { color: t.textPrimary, fontSize: 14, fontWeight: '600' },
-  txCat: { color: t.textMuted, fontSize: 12, marginTop: 1 },
-  txAmount: { color: t.textPrimary, fontSize: 14, fontWeight: '700', ...type.money },
+  // M5.27: unified list type scale (matches the Analytics ledger rows).
+  txName: { color: t.textPrimary, fontSize: 15.5, fontWeight: '700' },
+  txCat: { color: t.textMuted, fontSize: 12.5, marginTop: 2 },
+  txAmount: { color: t.textPrimary, fontSize: 15.5, fontWeight: '800', ...type.money },
 });

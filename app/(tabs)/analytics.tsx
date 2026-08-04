@@ -1,9 +1,9 @@
 // M5: Analytics tab — data visualization, transaction search, and CSV/PDF export.
 // Charts here are computed from REAL transactions (first slice of the M5
 // "truth & polish" work — no mocked series on this screen).
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
-  Alert, Animated, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View,
+  Alert, Animated, Keyboard, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -31,9 +31,10 @@ const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', '
 // M5.6: tap a transaction to edit or delete it. Module scope per HANDOFF
 // rule 3.1. The store reverses the old effects and applies the new ones, so
 // account balances and budget spent stay truthful either way.
-function TxEditor({ t, styles, tx, categories, onSave, onDelete, onClose }: {
+function TxEditor({ t, styles, tx, categories, accounts, onSave, onDelete, onClose }: {
   t: Palette; styles: any; tx: Transaction;
   categories: { id: string; name: string }[];
+  accounts: { id: string; name: string }[];
   onSave: (patch: { amount?: number; description?: string; categoryId?: string }) => void;
   onDelete: () => void;
   onClose: () => void;
@@ -63,32 +64,68 @@ function TxEditor({ t, styles, tx, categories, onSave, onDelete, onClose }: {
       <Pressable style={styles.editScrim} onPress={onClose}>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.editKav} pointerEvents="box-none">
           <Animated.View style={{ transform: [{ translateY: sheetDrag.drag }] }}>
-          <Pressable style={styles.editSheet} onPress={() => {}}>
+          <Pressable style={styles.editSheet} onPress={() => Keyboard.dismiss()}>
             <View style={styles.grabZone} {...sheetDrag.panHandlers}>
               <View style={styles.editHandle} />
             </View>
-            <Text style={styles.editTitle}>{tx.isIncome ? 'Edit income' : 'Edit expense'}</Text>
-
-            <Text style={styles.editLabel}>Description</Text>
+            {/* M5.26: receipt format - the transaction's story at a glance,
+                with the name and amount editable in place. */}
+            <Text style={styles.rcptKicker}>
+              {tx.goalId ? 'SAVINGS MOVE' : tx.isIncome ? 'INCOME' : 'EXPENSE'}
+            </Text>
             <TextInput
-              style={styles.editInput}
+              style={styles.rcptName}
               value={description}
               onChangeText={setDescription}
               placeholder="What was this?"
               placeholderTextColor={t.textFaint}
+              textAlign="center"
             />
+            <View style={styles.rcptAmountRow}>
+              <Text style={[styles.rcptAmountSign, { color: tx.isIncome ? t.emerald : t.textPrimary }]}>
+                {tx.isIncome ? '+' : '-'} ₱
+              </Text>
+              <TextInput
+                style={[styles.rcptAmount, tx.isIncome && { color: t.emerald }]}
+                value={amount}
+                onChangeText={setAmount}
+                keyboardType="decimal-pad"
+                placeholder="0"
+                placeholderTextColor={t.textFaint}
+              />
+            </View>
 
-            <Text style={styles.editLabel}>Amount</Text>
-            <TextInput
-              style={styles.editInput}
-              value={amount}
-              onChangeText={setAmount}
-              keyboardType="decimal-pad"
-              placeholder="0"
-              placeholderTextColor={t.textFaint}
-            />
+            <View style={styles.rcptCard}>
+              <View style={styles.rcptRow}>
+                <Text style={styles.rcptRowLabel}>Date</Text>
+                <Text style={styles.rcptRowValue}>
+                  {new Date(tx.timestamp).toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' })}
+                </Text>
+              </View>
+              <View style={styles.rcptRowDivider} />
+              <View style={styles.rcptRow}>
+                <Text style={styles.rcptRowLabel}>Time</Text>
+                <Text style={styles.rcptRowValue}>
+                  {new Date(tx.timestamp).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}
+                </Text>
+              </View>
+              <View style={styles.rcptRowDivider} />
+              <View style={styles.rcptRow}>
+                <Text style={styles.rcptRowLabel}>{tx.isIncome ? 'Paid into' : 'Paid from'}</Text>
+                <Text style={styles.rcptRowValue}>
+                  {accounts.find((a) => a.id === tx.accountId)?.name ?? 'No source set'}
+                </Text>
+              </View>
+              <View style={styles.rcptRowDivider} />
+              <View style={styles.rcptRow}>
+                <Text style={styles.rcptRowLabel}>{tx.goalId ? 'Savings' : 'Budget'}</Text>
+                <Text style={styles.rcptRowValue}>
+                  {tx.goalId ? (tx.isIncome ? 'Out of savings' : 'Into savings') : tx.categoryId}
+                </Text>
+              </View>
+            </View>
 
-            {!tx.isIncome && (
+            {!tx.isIncome && !tx.goalId && (
               <>
                 <Text style={styles.editLabel}>Budget</Text>
                 <View style={styles.editChips}>
@@ -128,12 +165,15 @@ function TxEditor({ t, styles, tx, categories, onSave, onDelete, onClose }: {
 export default function AnalyticsScreen() {
   const t = useTheme();
   const styles = useMemo(() => makeStyles(t), [t]);
-  const { transactions, categories, currency, profile, updateTransaction, removeTransaction } = useFinance();
+  const { transactions, categories, currency, profile, accounts, updateTransaction, removeTransaction } = useFinance();
 
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<Filter>('all');
   const [exporting, setExporting] = useState<null | 'csv' | 'pdf'>(null);
   const [editing, setEditing] = useState<Transaction | null>(null);
+  // M5.27: long ledgers page instead of scrolling forever.
+  const PAGE_SIZE = 15;
+  const [page, setPage] = useState(0);
 
   // ---- Search + filter ----
   const filtered = useMemo(() => {
@@ -200,17 +240,32 @@ export default function AnalyticsScreen() {
   const netSub = { D: 'Last 7 days', W: 'Last 5 weeks', M: 'Last 5 months', Y: 'Last 5 years' }[netPeriod];
   const hasNetData = netSeries.some((m) => m.value > 0);
 
-  // Group visible transactions by day for the list.
+  // M5.27: pagination window over the filtered ledger (15 rows per page).
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const safePage = Math.min(page, totalPages - 1);
+  const pageSlice = useMemo(
+    () => filtered.slice(safePage * PAGE_SIZE, (safePage + 1) * PAGE_SIZE),
+    [filtered, safePage],
+  );
+  useEffect(() => { setPage(0); }, [filter, query]); // new view starts at page 1
+
+  // Group the visible page by day for the list.
   const grouped = useMemo(() => {
     const map = new Map<string, Transaction[]>();
-    for (const tx of filtered) {
+    for (const tx of pageSlice) {
       const key = dayLabel(tx.timestamp);
       const arr = map.get(key) ?? [];
       arr.push(tx);
       map.set(key, arr);
     }
     return Array.from(map.entries());
-  }, [filtered]);
+  }, [pageSlice]);
+
+  // Page numbers: a window of up to five, current centered where possible.
+  const pageNumbers = useMemo(() => {
+    const start = Math.max(0, Math.min(safePage - 2, totalPages - 5));
+    return Array.from({ length: Math.min(5, totalPages) }, (_, i) => start + i);
+  }, [safePage, totalPages]);
 
   // ---- Export ----
   // Files are named SAVECENTS-{REPORT|INCOME|EXPENSES}-DD-MM-YYYY.{ext}
@@ -402,8 +457,12 @@ export default function AnalyticsScreen() {
                       />
                     </View>
                     <View style={{ flex: 1 }}>
-                      <Text style={styles.txName}>{tx.description}</Text>
-                      <Text style={styles.txCat}>{tx.categoryId}</Text>
+                      <Text style={styles.txName} numberOfLines={1}>{tx.description}</Text>
+                      <Text style={styles.txCat} numberOfLines={1}>
+                        {tx.categoryId}
+                        {' · '}
+                        {accounts.find((a) => a.id === tx.accountId)?.name ?? new Date(tx.timestamp).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}
+                      </Text>
                     </View>
                     <Text style={[styles.txAmount, tx.isIncome && { color: t.emerald }]}>
                       {tx.isIncome ? '+' : '-'}{peso(tx.amount)}
@@ -414,6 +473,33 @@ export default function AnalyticsScreen() {
               </GlassCard>
             </View>
           ))
+        )}
+
+        {/* M5.27: pager for long ledgers - ‹ 1 2 3 4 5 › */}
+        {totalPages > 1 && (
+          <View style={styles.pagerRow}>
+            <Pressable
+              style={[styles.pagerBtn, safePage === 0 && { opacity: 0.35 }]}
+              onPress={() => safePage > 0 && setPage(safePage - 1)}
+            >
+              <Ionicons name="chevron-back" size={15} color={t.textMuted} />
+            </Pressable>
+            {pageNumbers.map((n) => (
+              <Pressable
+                key={n}
+                style={[styles.pagerBtn, n === safePage && styles.pagerBtnOn]}
+                onPress={() => setPage(n)}
+              >
+                <Text style={[styles.pagerText, n === safePage && styles.pagerTextOn]}>{n + 1}</Text>
+              </Pressable>
+            ))}
+            <Pressable
+              style={[styles.pagerBtn, safePage === totalPages - 1 && { opacity: 0.35 }]}
+              onPress={() => safePage < totalPages - 1 && setPage(safePage + 1)}
+            >
+              <Ionicons name="chevron-forward" size={15} color={t.textMuted} />
+            </Pressable>
+          </View>
         )}
 
         {/* Export */}
@@ -443,6 +529,7 @@ export default function AnalyticsScreen() {
           styles={styles}
           tx={editing}
           categories={categories}
+          accounts={accounts}
           onSave={(patch) => { updateTransaction(editing.id, patch); setEditing(null); }}
           onDelete={() => { removeTransaction(editing.id); setEditing(null); }}
           onClose={() => setEditing(null)}
@@ -693,9 +780,31 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     width: 38, height: 38, borderRadius: 13, alignItems: 'center', justifyContent: 'center',
     backgroundColor: t.inputFill, borderWidth: 1, borderColor: t.borderSoft,
   },
-  txName: { color: t.textPrimary, fontSize: 14, fontWeight: '600' },
-  txCat: { color: t.textMuted, fontSize: 12, marginTop: 1 },
-  txAmount: { color: t.textPrimary, fontSize: 14, fontWeight: '700', ...type.money },
+  // M5.27 pager
+  pagerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 2, marginBottom: 22 },
+  pagerBtn: {
+    minWidth: 34, height: 34, borderRadius: 12, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: t.surface, borderWidth: 1, borderColor: t.border, paddingHorizontal: 8,
+  },
+  pagerBtnOn: { backgroundColor: t.emerald, borderColor: t.emerald },
+  pagerText: { color: t.textMuted, fontSize: 13.5, fontWeight: '700' },
+  pagerTextOn: { color: t.onEmerald },
+
+  // M5.26 receipt sheet
+  rcptKicker: { color: t.textMuted, fontSize: 11, fontWeight: '800', letterSpacing: 2, textAlign: 'center', marginBottom: 6 },
+  rcptName: { color: t.textPrimary, fontSize: 20, fontWeight: '800', textAlign: 'center', paddingVertical: 4 },
+  rcptAmountRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4, marginTop: 2, marginBottom: 16 },
+  rcptAmountSign: { fontSize: 24, fontWeight: '800', ...type.money },
+  rcptAmount: { color: t.textPrimary, fontSize: 36, fontWeight: '800', minWidth: 80, textAlign: 'center', ...type.money },
+  rcptCard: { backgroundColor: t.inputFill, borderRadius: 16, borderWidth: 1, borderColor: t.border, paddingHorizontal: 16, marginBottom: 16 },
+  rcptRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 12 },
+  rcptRowLabel: { color: t.textMuted, fontSize: 13, fontWeight: '600' },
+  rcptRowValue: { color: t.textPrimary, fontSize: 13.5, fontWeight: '700' },
+  rcptRowDivider: { height: 1, backgroundColor: t.border },
+
+  txName: { color: t.textPrimary, fontSize: 15.5, fontWeight: '700' },
+  txCat: { color: t.textMuted, fontSize: 12.5, marginTop: 2 },
+  txAmount: { color: t.textPrimary, fontSize: 15.5, fontWeight: '800', ...type.money },
   empty: { alignItems: 'center', padding: 18, gap: 10 },
   emptyTitle: { color: t.textPrimary, fontSize: 16, fontWeight: '800', marginTop: 4 },
   emptyText: { color: t.textMuted, fontSize: 13, textAlign: 'center', lineHeight: 18 },

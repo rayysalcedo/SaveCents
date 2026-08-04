@@ -34,19 +34,31 @@ export interface Transaction {
   timestamp: number;
   isIncome: boolean;
   accountId?: string; // M5: which card/e-wallet this routed through
+  // M5.25: set = this is a SAVINGS MOVE (goal contribution when isIncome is
+  // false, withdrawal when true). Moves balances, NEVER budgets.
+  goalId?: string;
 }
 
 export type Sender = 'USER' | 'CENTS';
 
+// M5.22: accountName = the payment source/destination the user mentioned;
+// executeAction resolves it to an account, stamps the transaction, and moves
+// the balance so every log is reflected in the money it came from.
 export type ActionType =
   | { kind: 'UpdateBudget'; categoryName: string; newLimit: number }
-  | { kind: 'LogTransaction'; amount: number; categoryName: string }
+  | { kind: 'LogTransaction'; amount: number; categoryName: string; accountName?: string; item?: string }
   | { kind: 'AddCategory'; name: string; limit: number }
   | { kind: 'RemoveCategory'; name: string }
-  | { kind: 'NegotiatePurchase'; item: string; amount: number; categoryName: string }
-  | { kind: 'CreateAndLog'; item: string; amount: number }
-  | { kind: 'LogToUnassigned'; item: string; amount: number }
-  | { kind: 'LogToOthers'; item: string; amount: number };
+  | { kind: 'NegotiatePurchase'; item: string; amount: number; categoryName: string; accountName?: string }
+  | { kind: 'CreateAndLog'; item: string; amount: number; accountName?: string }
+  | { kind: 'LogToUnassigned'; item: string; amount: number; accountName?: string }
+  | { kind: 'LogToOthers'; item: string; amount: number; accountName?: string }
+  | { kind: 'AddIncome'; amount: number; accountName?: string }
+  | { kind: 'AddGoal'; name: string; target: number; date?: string }
+  | { kind: 'AddToGoal'; goalName: string; amount: number; accountName?: string }
+  | { kind: 'WithdrawFromGoal'; goalName: string; amount: number; accountName?: string }
+  | { kind: 'AddAccount'; name: string; initial: number }
+  | { kind: 'SetAccountBalance'; accountName: string; amount: number };
 
 interface ChatBase {
   id: string;
@@ -55,8 +67,10 @@ interface ChatBase {
 
 export type ChatMessage =
   | (ChatBase & { type: 'text'; text: string; imageUri?: string })
-  | (ChatBase & { type: 'confirmation'; prompt: string; action: ActionType; confirmed: boolean; handled: boolean; lang?: 'en' | 'fil' })
-  | (ChatBase & { type: 'negotiation'; prompt: string; action: ActionType; confirmed: boolean; handled: boolean; lang?: 'en' | 'fil' })
+  // M5.19: coachNote = an insight/recommendation written at ASK time but
+  // delivered only AFTER the user confirms (ask first, coach after).
+  | (ChatBase & { type: 'confirmation'; prompt: string; action: ActionType; confirmed: boolean; handled: boolean; lang?: 'en' | 'fil'; coachNote?: string })
+  | (ChatBase & { type: 'negotiation'; prompt: string; action: ActionType; confirmed: boolean; handled: boolean; lang?: 'en' | 'fil'; coachNote?: string })
   | (ChatBase & { type: 'receiptScan'; amount: number; store: string; confirmed: boolean; handled: boolean })
   | (ChatBase & { type: 'consultItem'; item: string; amount: number; delayWeeks: number; goalName: string; confirmed: boolean; handled: boolean })
   | (ChatBase & { type: 'mismatch'; item: string; amount: number; confirmed: boolean; handled: boolean });

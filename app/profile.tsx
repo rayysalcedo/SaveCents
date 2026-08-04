@@ -9,10 +9,12 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
+import * as Haptics from 'expo-haptics';
 import { GlassCard } from '../src/components/GlassCard';
 import { AVATARS, AvatarBadge } from '../src/components/Avatar';
 import { Palette, radius, type, useTheme } from '../src/theme/colors';
 import { useFinance } from '../src/store/finance';
+import { CENTS_VOICES } from '../src/services/speech';
 import { COUNTRIES } from '../src/data/countries';
 import { authAvailable, authErrorMessage, changePassword, deleteAccount, resetPassword, signOutFirebase, getFirebaseAuth } from '../src/services/auth';
 import { OtpUnavailableError, requestPasswordOtp, verifyPasswordOtp } from '../src/services/otp';
@@ -56,6 +58,8 @@ export default function ProfileScreen() {
     country, setCountry, updateProfile, resetToDefaults,
     biometricsEnabled, setBiometricsEnabled,
     notificationsEnabled, setNotificationsEnabled,
+    voiceRepliesEnabled, setVoiceRepliesEnabled,
+    centsVoiceName, setCentsVoiceName, centsVoiceStyle, setCentsVoiceStyle,
     updatePersona,
   } = useFinance();
   const countryData = COUNTRIES[country];
@@ -276,6 +280,7 @@ export default function ProfileScreen() {
           <Row styles={styles} t={t}
             icon="notifications"
             label="Notifications"
+            divider
             right={
               <Switch
                 value={notificationsEnabled}
@@ -284,6 +289,39 @@ export default function ProfileScreen() {
                 thumbColor="#FFFFFF"
               />
             }
+          />
+          <Row styles={styles} t={t}
+            icon="volume-medium"
+            label="Cents voice"
+            divider
+            right={
+              <Switch
+                value={voiceRepliesEnabled}
+                onValueChange={setVoiceRepliesEnabled}
+                trackColor={{ true: t.emerald, false: t.inputFill }}
+                thumbColor="#FFFFFF"
+              />
+            }
+          />
+          <Row styles={styles} t={t}
+            icon="person"
+            label="Voice"
+            divider
+            value={CENTS_VOICES.find((v) => v.id === centsVoiceName)?.label ?? 'Puck (male)'}
+            onPress={() => {
+              const i = CENTS_VOICES.findIndex((v) => v.id === centsVoiceName);
+              setCentsVoiceName(CENTS_VOICES[(i + 1) % CENTS_VOICES.length].id);
+              Haptics.selectionAsync().catch(() => {});
+            }}
+          />
+          <Row styles={styles} t={t}
+            icon="chatbubble-ellipses"
+            label="Accent"
+            value={centsVoiceStyle === 'taglish' ? 'Taglish' : 'English'}
+            onPress={() => {
+              setCentsVoiceStyle(centsVoiceStyle === 'taglish' ? 'english' : 'taglish');
+              Haptics.selectionAsync().catch(() => {});
+            }}
           />
           <View style={[styles.row, styles.rowDivider]}>
             <View style={styles.rowIcon}>

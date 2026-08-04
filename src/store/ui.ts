@@ -2,6 +2,7 @@
 // Kept separate from the finance store — this is ephemeral UI state and is
 // never persisted or synced.
 import { create } from 'zustand';
+import { stopCentsVoice } from '../services/speech';
 
 export type ScanMode = 'price' | 'receipt';
 
@@ -54,11 +55,11 @@ export const useUI = create<UIState>((set) => ({
       voiceOpen: !!opts?.voice,
       quickOpen: false, quickDragging: false, quickIndex: -1,
     }),
-  closeChat: () => set({ chatOpen: false, voiceOpen: false }),
+  closeChat: () => { stopCentsVoice(); set({ chatOpen: false, voiceOpen: false }); },
   openScan: (mode) => set({ hubOpen: false, scanOpen: true, scanMode: mode ?? 'price', quickOpen: false, quickDragging: false, quickIndex: -1 }),
   closeScan: () => set({ scanOpen: false }),
   openVoice: () => set({ voiceOpen: true }),
-  closeVoice: () => set({ voiceOpen: false }),
+  closeVoice: () => { stopCentsVoice(); set({ voiceOpen: false }); },
   openQuick: () => set({ quickOpen: true, quickDragging: true, quickIndex: -1, hubOpen: false }),
   closeQuick: () => set({ quickOpen: false, quickDragging: false, quickIndex: -1 }),
   setQuickIndex: (i) => set({ quickIndex: i }),

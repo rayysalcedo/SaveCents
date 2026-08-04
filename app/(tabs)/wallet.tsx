@@ -314,9 +314,10 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   emptyText: { color: t.textMuted, fontSize: 13, textAlign: 'center', lineHeight: 18 },
   acctRow: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 12 },
   divider: { borderBottomWidth: 1, borderBottomColor: t.borderSoft },
-  acctName: { color: t.textPrimary, fontSize: 14, fontWeight: '700' },
-  acctHint: { color: t.textFaint, fontSize: 11, marginTop: 1 },
-  acctBalance: { color: t.textPrimary, fontSize: 14, fontWeight: '800', ...type.money },
+  // M5.27: unified list type scale (matches the Analytics ledger rows).
+  acctName: { color: t.textPrimary, fontSize: 15.5, fontWeight: '700' },
+  acctHint: { color: t.textMuted, fontSize: 12.5, marginTop: 2 },
+  acctBalance: { color: t.textPrimary, fontSize: 15.5, fontWeight: '800', ...type.money },
   trash: {
     width: 32, height: 32, borderRadius: 11, alignItems: 'center', justifyContent: 'center',
     backgroundColor: t.redTint,

@@ -31,4 +31,37 @@ if (typeof AbortSignal !== 'undefined' && typeof (AbortSignal as any).timeout !=
   };
 }
 
+// atob / btoa — base64 primitives used by the Cents voice (services/speech.ts).
+// Present on modern Hermes; this covers older runtimes so a missing global
+// never crashes speech synthesis.
+const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+if (typeof (globalThis as any).atob !== 'function') {
+  (globalThis as any).atob = (input: string): string => {
+    const str = String(input).replace(/=+$/, '');
+    let out = '';
+    let bc = 0, bs = 0;
+    for (let i = 0; i < str.length; i++) {
+      const idx = B64.indexOf(str.charAt(i));
+      if (idx === -1) continue;
+      bs = bc % 4 ? bs * 64 + idx : idx;
+      if (bc++ % 4) out += String.fromCharCode(255 & (bs >> ((-2 * bc) & 6)));
+    }
+    return out;
+  };
+}
+if (typeof (globalThis as any).btoa !== 'function') {
+  (globalThis as any).btoa = (input: string): string => {
+    const str = String(input);
+    let out = '';
+    for (let block = 0, charCode: number, i = 0, map = B64;
+      str.charAt(i | 0) || ((map = '='), i % 1);
+      out += map.charAt(63 & (block >> (8 - (i % 1) * 8)))) {
+      charCode = str.charCodeAt((i += 3 / 4));
+      if (charCode > 0xff) throw new Error('btoa: character out of range');
+      block = (block << 8) | charCode;
+    }
+    return out;
+  };
+}
+
 export {};

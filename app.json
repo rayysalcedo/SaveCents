@@ -30,6 +30,12 @@
         {
           "cameraPermission": "SaveCents uses the camera to scan receipts and price tags."
         }
+      ],
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "SaveCents uses the microphone for voice expense logging."
+        }
       ]
     ],
     "web": {

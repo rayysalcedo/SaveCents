@@ -8,7 +8,8 @@ import {
 } from '../models/types';
 import { notifyBudgetCrossings, notifyGoalMilestones } from '../services/notifications';
 import { COUNTRIES } from '../data/countries';
-import { analyzeImage, localParseIntent, parseCentsIntent, CentsResult } from '../services/cents';
+import { analyzeImage, hasTagalog, localParseIntent, parseCentsIntent, parseCentsVoice, transcribeAudio, CentsResult } from '../services/cents';
+import { getSpokenState, speakAsCents, stopCentsVoice, CENTS_VOICES, CentsVoiceStyle } from '../services/speech';
 
 export interface FinanceState {
   accounts: Account[];
@@ -36,6 +37,16 @@ export interface FinanceState {
   setBiometricsEnabled: (v: boolean) => void;
   notificationsEnabled: boolean;
   setNotificationsEnabled: (v: boolean) => void;
+  // M5.9: Cents speaks replies to voice messages aloud (Gemini TTS with a
+  // device-voice fallback, services/speech.ts). Profile toggle.
+  voiceRepliesEnabled: boolean;
+  setVoiceRepliesEnabled: (v: boolean) => void;
+  // M5.16: which prebuilt voice speaks (CENTS_VOICES id) and its delivery
+  // style. Fixed per conversation - the voice never changes mid-chat.
+  centsVoiceName: string;
+  setCentsVoiceName: (v: string) => void;
+  centsVoiceStyle: CentsVoiceStyle;
+  setCentsVoiceStyle: (v: CentsVoiceStyle) => void;
   removeAccount: (id: string) => void;
   setAccountBalance: (id: string, balance: number) => void;
   addBudget: (name: string, limit: number, icon?: string, category?: string, dueDate?: number) => void;
@@ -51,6 +62,10 @@ export interface FinanceState {
   // source account, never touches budgets. The ONLY caller of
   // notifyGoalMilestones (cloud restores via replaceAll must stay silent).
   addToGoal: (goalId: string, amount: number, accountId?: string) => void;
+  // M5.23: the inverse - goal.current down, money back INTO an account so
+  // the spendable total balance stays truthful. Withdrawal clamps at what
+  // the goal actually holds.
+  withdrawFromGoal: (goalId: string, amount: number, accountId?: string) => void;
   // M5 quick actions from the Cents hub — direct logging, no chat round-trip.
   addExpense: (amount: number, categoryName: string, accountId?: string, note?: string) => void;
   addIncome: (amount: number, accountId: string, note?: string) => void;
@@ -58,7 +73,15 @@ export interface FinanceState {
   updateTransaction: (id: string, patch: { amount?: number; description?: string; categoryId?: string }) => void;
   removeTransaction: (id: string) => void;
   rolloverBudgetsIfNeeded: () => void;
-  sendChat: (input: string) => Promise<void>;
+  // M5.22: expense tx ids logged without a source; Cents asked which account
+  // paid and the next message may answer. Session-only, never persisted.
+  pendingSourceTxIds: string[] | null;
+  // M5.24: a goal contribution/withdrawal waiting for its account. Money in
+  // the goal already moved; the balance side moves when the user answers.
+  pendingGoalMove: { goalId: string; amount: number; direction: 'into' | 'outof' } | null;
+  sendChat: (input: string, opts?: { viaVoice?: boolean }) => Promise<void>;
+  // M5.12: one-roundtrip voice turn; resolves to the transcript ('' on failure).
+  sendVoiceClip: (base64: string, mimeType: string) => Promise<string>;
   sendImage: (base64: string, mimeType: string, mode: 'receipt' | 'price', imageUri?: string) => Promise<void>;
   confirmAction: (messageId: string, confirm: boolean) => void;
 }
@@ -80,7 +103,7 @@ function applyTxEffect(s: { accounts: Account[]; categories: Category[] }, tx: T
           : a,
       )
     : s.accounts;
-  const categories = tx.isIncome
+  const categories = tx.isIncome || tx.goalId
     ? s.categories
     : s.categories.map((c) =>
         c.name.toLowerCase() === tx.categoryId.toLowerCase()
@@ -88,6 +111,371 @@ function applyTxEffect(s: { accounts: Account[]; categories: Category[] }, tx: T
           : c,
       );
   return { accounts, categories };
+}
+
+// M5.30: echo filter. If a voice transcript is essentially what Cents JUST
+// said out loud, the mic caught the speaker - discard the turn silently
+// instead of letting Cents talk to itself.
+const normEcho = (t: string) => t.toLowerCase().replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim();
+function isEchoOfCents(transcript: string): boolean {
+  const spoken = normEcho(getSpokenState().text);
+  const heard = normEcho(transcript);
+  if (!spoken || heard.length < 12) return false;
+  return spoken.includes(heard) || heard.includes(spoken);
+}
+
+// M5.30: deterministic rescue for the "add money to BPI, I have 5,000 there"
+// exchange the brain fumbled (claimed an update it never made). When a
+// which-account question is OPEN and the user's answer names an account that
+// CANNOT fund the pending amount plus a number, the app itself builds the
+// SetAccountBalance ask - no trust in the model required.
+function coerceBalanceAnswer(input: string, result: CentsResult, getS: () => FinanceState): CentsResult {
+  const pending = getS().pendingGoalMove ?? (getS().pendingSourceTxIds?.length ? true : null);
+  if (!pending || result.actions.length > 0) return result;
+  if (!/\b(add|added|send|sent|put|deposit|top|topped|update|updated|have|has|meron|may|nilagay|dagdag|nagdagdag)\b/i.test(input)) return result;
+  const acct = matchAccount(input, getS().accounts);
+  const numMatch = input.replace(/,/g, '').match(/(\d+(?:\.\d+)?)/);
+  const amt = numMatch ? parseFloat(numMatch[1]) : 0;
+  if (!acct || !(amt > 0)) return result;
+  const needed = getS().pendingGoalMove?.amount ?? 0;
+  if (needed > 0 && acct.balance >= needed) return result; // could be a funding choice; leave to the brain
+  return {
+    ...result,
+    intent: 'SetAccountBalance',
+    accountName: acct.name,
+    amount: amt,
+    actions: [{ intent: 'SetAccountBalance', amount: amt, categoryName: '', item: acct.name, accountName: acct.name, targetDate: '' }],
+  };
+}
+
+// M5.11/M5.21: frictionless confirmations. A yes/no in natural phrasing
+// ("Yeah, you can do that.", "sige gawin mo na") resolves the latest ask
+// DIRECTLY - no button, no model roundtrip. Guard rails: short (max 7
+// words), no digits (a "yes but make it 300" belongs to the brain), and a
+// message containing BOTH a yes and a no token is ambiguous → brain.
+function classifyDecision(text: string): 'yes' | 'no' | null {
+  const t = text.trim().toLowerCase();
+  if (!t || /\d/.test(t) || t.split(/\s+/).length > 7) return null;
+  const hasNeg = /\b(no|nope|nah|wag|huwag|hindi|cancel|skip|stop|never ?mind|don'?t)\b/.test(t);
+  const hasAff = /^(y(es|ep|up|eah)|oo+|opo|sige|go(ra)?|ok(s|ay)?|sure|tara|tama|correct|right|confirm|please do|go ahead|do it|log it)\b/.test(t);
+  // M5.24 ("No, just log it." got CANCELLED): an affirmative command ANYWHERE
+  // alongside a negation is mixed signal - the brain decides, not the regex.
+  const hasAffAnywhere = /\b(sige|log it|do it|go ahead|proceed|confirm|ituloy|gawin( mo)?( na)?|i-?log( mo)?( na)?)\b/.test(t);
+  if (hasAff && !hasNeg) return 'yes';
+  if (hasNeg && !hasAff && !hasAffAnywhere) return 'no';
+  return null;
+}
+const soundsFilipino = (t: string) => /\b(oo|opo|sige|tama|tara|gora|wag|huwag|hindi)\b/i.test(t);
+
+// M5.22: fuzzy account matching ("gcash" hits "GCash Wallet", "the bpi one"
+// hits "BPI Savings"). Used by executeAction (user named a source up front)
+// and by the which-source follow-up answer.
+function matchAccount(input: string | undefined, accounts: Account[]): Account | undefined {
+  const t = (input ?? '').trim().toLowerCase();
+  if (!t) return undefined;
+  const exact = accounts.find((a) => a.name.toLowerCase() === t);
+  if (exact) return exact;
+  return accounts.find((a) => {
+    const n = a.name.toLowerCase();
+    return t.includes(n) || n.includes(t) || n.split(/\s+/).some((w) => w.length > 2 && t.includes(w));
+  });
+}
+
+// M5.26: > 0 while resolveLatestBatch is confirming a run of cards.
+// Individual confirms hold their which-account question so the batch can
+// ask ONE combined question at the end instead of stacking two.
+let batchDepth = 0;
+let lastAskSignature = '';
+
+// M5.26: the single voice of the which-account follow-up. Composes ONE
+// question for whatever is pending (a goal move, orphan expenses, or BOTH -
+// the combined case is one answer applied to both sides).
+function flushPendingAsk(getS: () => FinanceState, set: Setter) {
+  const move = getS().pendingGoalMove;
+  const ids = getS().pendingSourceTxIds;
+  if (!move && !ids?.length) return;
+  const names = getS().accounts.map((a) => a.name).join(', ');
+  if (!names) return;
+  const signature = `${move ? `${move.goalId}:${move.amount}:${move.direction}` : ''}|${ids?.join(',') ?? ''}`;
+  if (signature === lastAskSignature) return; // already asked this exact question
+  lastAskSignature = signature;
+  // Contribution questions show balances so an empty account is never a
+  // surprise (M5.28, the BPI-at-zero incident).
+  const namesWithBal = getS().accounts.map((a) => `${a.name} (${peso(a.balance)})`).join(', ');
+  let q: string;
+  if (move && ids?.length) {
+    q = `Which account handled that: ${names}?`;
+  } else if (move) {
+    q = move.direction === 'into'
+      ? `Which account should that ${peso(move.amount)} come from: ${namesWithBal}?`
+      : `Where should that ${peso(move.amount)} go: ${names}?`;
+  } else {
+    q = `Which one paid for this: ${names}?`;
+  }
+  pushCents(set, q);
+}
+
+// M5.25: every completed goal move gets a ledger transaction: readable in
+// Analytics ("Moved to Computer" / "From Computer savings"), moves balances,
+// never touches budgets (goalId set → applyTxEffect skips categories).
+function pushGoalTx(
+  set: Setter,
+  goal: { id: string; name: string },
+  amount: number,
+  direction: 'into' | 'outof',
+  accountId: string,
+  timestamp?: number,
+) {
+  const ts = timestamp ?? Date.now();
+  set((s) => {
+    const next = [
+      {
+        id: uid(),
+        amount,
+        description: direction === 'into' ? `Moved to ${goal.name}` : `From ${goal.name} savings`,
+        categoryId: 'Savings',
+        timestamp: ts,
+        isIncome: direction === 'outof',
+        accountId,
+        goalId: goal.id,
+      },
+      ...s.transactions,
+    ];
+    // Keep the ledger newest-first even when a row is backdated.
+    next.sort((a, b) => b.timestamp - a.timestamp);
+    return { transactions: next };
+  });
+}
+
+// M5.23: when a goal move doesn't name a source, default to the healthiest
+// account and SAY so on the ask card - totals always stay truthful.
+const biggestAccount = (accounts: Account[]): Account | undefined =>
+  accounts.slice().sort((a, b) => b.balance - a.balance)[0];
+
+// M5.24: attach pending expense txs to an account (deduct + ack). Shared by
+// the which-source answer AND by AddAccount confirmation (the "I used a new
+// card called GoTyme" flow attaches automatically after creation).
+function applySourceToTxs(acct: Account, getS: () => FinanceState, set: Setter): number {
+  const ids = getS().pendingSourceTxIds;
+  if (!ids?.length) return 0;
+  const txs = getS().transactions.filter((tx) => ids.includes(tx.id));
+  const total = txs.reduce((a, tx) => a + tx.amount, 0);
+  set((s) => ({
+    transactions: s.transactions.map((tx) => (ids.includes(tx.id) ? { ...tx, accountId: acct.id } : tx)),
+    accounts: s.accounts.map((a) => (a.id === acct.id ? { ...a, balance: Math.max(a.balance - total, 0) } : a)),
+    pendingSourceTxIds: null,
+  }));
+  pushCents(set, `Got it. ${peso(total)} deducted from ${acct.name}.`);
+  return total;
+}
+
+// M5.24: complete a goal move's account side.
+function applyGoalMove(acct: Account, getS: () => FinanceState, set: Setter): boolean {
+  const move = getS().pendingGoalMove;
+  if (!move) return false;
+  const goal = getS().goals.find((g) => g.id === move.goalId);
+
+  // M5.28: contributions were HELD until this answer - fund them for real
+  // through addToGoal (goal bump + debit + milestones + ledger row), and
+  // refuse to fund from an account that cannot cover it.
+  if (move.direction === 'into') {
+    if (acct.balance < move.amount) {
+      const others = getS().accounts.filter((a) => a.id !== acct.id && a.balance >= move.amount);
+      pushCents(set, `${acct.name} only has ${peso(acct.balance)}, not enough for the ${peso(move.amount)}. ${others.length ? `Take it from ${others.map((a) => `${a.name} (${peso(a.balance)})`).join(', ')} instead, or add money to ${acct.name} first?` : `Add money to an account first, then tell me where to take it from.`}`);
+      lastAskSignature = `${move.goalId}:${move.amount}:${move.direction}|${getS().pendingSourceTxIds?.join(',') ?? ''}`;
+      return true; // question stays open; this reply is the clarification
+    }
+    set(() => ({ pendingGoalMove: null }));
+    useFinance.getState().addToGoal(move.goalId, move.amount, acct.id);
+    return true;
+  }
+
+  set((s) => ({
+    accounts: s.accounts.map((a) =>
+      a.id === acct.id ? { ...a, balance: a.balance + move.amount } : a,
+    ),
+    pendingGoalMove: null,
+  }));
+  if (goal) {
+    // M5.26 (owner: "why did the grocery come before the withdrawal?"):
+    // when this withdrawal funds expenses answered in the same breath, its
+    // ledger row is backdated to just before them so the story reads in
+    // order - withdrawal first, then the spend it paid for.
+    const ids = getS().pendingSourceTxIds;
+    const funded = ids?.length ? getS().transactions.filter((tx) => ids.includes(tx.id)) : [];
+    const ts = funded.length ? Math.min(...funded.map((tx) => tx.timestamp)) - 1000 : undefined;
+    pushGoalTx(set, goal, move.amount, 'outof', acct.id, ts);
+  }
+  pushCents(set, `Got it. Put the ${peso(move.amount)} from ${goal?.name ?? 'your goal'} back into ${acct.name}.`);
+  return true;
+}
+
+// M5.22/M5.24: the which-account follow-up. When an expense or a goal move
+// is waiting for its account, the user's next message (any channel) is
+// checked against the account names first. A non-answer LEAVES the question
+// open (M5.24: it used to drop it, which broke the new-card flow) - it just
+// isn't re-asked; a later account answer still lands.
+function assignPendingSource(
+  input: string,
+  opts: { viaVoice?: boolean } | undefined,
+  getS: () => FinanceState,
+  set: Setter,
+): boolean {
+  if (!getS().pendingSourceTxIds?.length && !getS().pendingGoalMove) return false;
+  // M5.29 (owner: "I sent money to BPI, I have 5,000 there" got hijacked and
+  // re-fired the insufficient message): any message carrying a NUMBER is more
+  // than an account answer - the brain handles it (e.g. SetAccountBalance),
+  // and the pending move auto-resumes after.
+  if (/\d/.test(input)) return false;
+  const acct = matchAccount(input, getS().accounts);
+  if (!acct) return false; // keep the question open, let the brain handle the message
+  const before = getS().chat.length;
+  const didGoal = applyGoalMove(acct, getS, set);
+  const didTx = applySourceToTxs(acct, getS, set) > 0;
+  if (!didGoal && !didTx) return false;
+  lastAskSignature = ''; // question answered; the next one may ask fresh
+  if (!getS().pendingGoalMove && !getS().pendingSourceTxIds?.length) {
+    pushCents(set, soundsFilipino(input) ? 'May iba ka pa bang kailangan?' : 'Anything else you need?');
+  }
+  set(() => ({ isThinking: false }));
+  maybeSpeakReplies(getS(), opts, getS().chat.slice(before), soundsFilipino(input) ? 'fil' : 'en');
+  return true;
+}
+
+// M5.11/M5.12 shared: resolve a bare yes/no against the newest pending card.
+// Returns true when handled (card confirmed or cancelled, ack ensured,
+// result spoken for voice turns). Used by sendChat AND sendVoiceClip.
+function tryResolvePendingCard(
+  word: string,
+  opts: { viaVoice?: boolean } | undefined,
+  getS: () => FinanceState,
+  set: Setter,
+): boolean {
+  const decision = classifyDecision(word);
+  if (!decision) return false;
+  return resolveLatestBatch(decision === 'yes', opts, getS, set, soundsFilipino(word) ? 'fil' : 'en');
+}
+
+// Executes/cancels the latest ask batch. Called by the word classifier above
+// AND by the brain's confirmGranted/confirmDenied flags (M5.21), so ANY
+// phrasing of consent lands without a re-ask.
+function resolveLatestBatch(
+  yes: boolean,
+  opts: { viaVoice?: boolean } | undefined,
+  getS: () => FinanceState,
+  set: Setter,
+  lang: 'en' | 'fil',
+): boolean {
+  // M5.20 (fixes the owner's "Sure. logged EVERYTHING" incident): a yes/no
+  // answers ONLY the LATEST ask - the contiguous run of CENTS messages right
+  // before the user's reply. Multi-item turns ("cinema 350 and drinks 150")
+  // still land together because their cards share that run; stale unhandled
+  // cards from earlier turns are untouched (their chat buttons still work).
+  const chatNow = getS().chat;
+  let bi = chatNow.length - 1;
+  while (bi >= 0 && chatNow[bi].sender === 'USER') bi--; // skip the just-appended yes/no
+  const batch: ChatMessage[] = [];
+  for (; bi >= 0 && chatNow[bi].sender === 'CENTS'; bi--) batch.push(chatNow[bi]);
+  const pendingCards = batch.filter((m) => 'handled' in m && !m.handled).reverse();
+  if (!pendingCards.length) return false;
+  const before = getS().chat.length;
+  batchDepth += 1;
+  try {
+    pendingCards.forEach((c) => getS().confirmAction(c.id, yes));
+  } finally {
+    batchDepth -= 1;
+  }
+  if (!getS().chat.slice(before).some((m) => m.sender === 'CENTS')) {
+    pushCents(set, yes ? 'Done.' : 'Okay, cancelled that.');
+  }
+  // M5.19: ask first, coach AFTER. The insight the brain wrote at ask time is
+  // delivered now that the user said yes (never on a decline).
+  if (yes) {
+    const notes = Array.from(new Set(
+      pendingCards
+        .map((c) => ('coachNote' in c ? (c.coachNote ?? '').trim() : ''))
+        .filter(Boolean),
+    ));
+    if (notes.length) pushCents(set, notes.join(' '));
+  }
+  // M5.26: ONE follow-up question for the whole batch; when nothing is
+  // pending, check out instead - every exchange closes cleanly.
+  flushPendingAsk(getS, set);
+  if (!getS().pendingGoalMove && !getS().pendingSourceTxIds?.length) {
+    pushCents(set, lang === 'fil' ? 'May iba ka pa bang kailangan?' : 'Anything else you need?');
+  }
+  set(() => ({ isThinking: false }));
+  const fresh = getS().chat.slice(before).filter((m) => m.sender === 'CENTS');
+  maybeSpeakReplies(getS(), opts, fresh, lang);
+  return true;
+}
+
+// M5.12 shared: turn a CentsResult into chat replies (multi-step cards or a
+// single reply), close the thinking state, and speak for voice turns. The
+// exact logic sendChat always had, now also used by sendVoiceClip.
+function deliverResult(
+  result: CentsResult,
+  opts: { viaVoice?: boolean } | undefined,
+  getS: () => FinanceState,
+  set: Setter,
+) {
+  // M5.21: the brain recognized a permission grant/refusal for the previous
+  // ask (any phrasing) - execute/cancel it, never ask again.
+  const granted = result.confirmGranted === true && result.confirmDenied !== true;
+  const denied = result.confirmDenied === true && result.confirmGranted !== true;
+  if ((granted || denied) && resolveLatestBatch(granted, opts, getS, set, result.lang)) return;
+
+  // Multi-step requests produce one card per action, in order. Categories
+  // added earlier in the same batch count as "existing" for later cards
+  // (e.g. "add a Groceries budget 9000 and log that receipt there").
+  const st = getS();
+  if (result.intent !== 'Unknown' && result.actions.length > 1) {
+    const replies: ChatMessage[] = [];
+    if (result.reply) replies.push({ id: uid(), sender: 'CENTS', type: 'text', text: result.reply });
+    const assumed: string[] = [];
+    for (const a of result.actions) {
+      const sub: CentsResult = {
+        ...result,
+        intent: a.intent,
+        amount: a.amount,
+        categoryName: a.categoryName,
+        item: a.item || a.categoryName,
+        reply: '',
+      };
+      replies.push(buildReplyFromResult(sub, st, assumed));
+      if (a.intent === 'AddCategory' && a.categoryName) assumed.push(a.categoryName);
+    }
+    set((s2) => ({ chat: [...s2.chat, ...replies], isThinking: false }));
+    maybeSpeakReplies(getS(), opts, replies, result.lang, result.speechReply);
+    return;
+  }
+
+  const reply = buildReplyFromResult(result, st);
+  set((s2) => ({ chat: [...s2.chat, reply], isThinking: false }));
+  maybeSpeakReplies(getS(), opts, [reply], result.lang, result.speechReply);
+}
+
+// M5.9: what Cents says out loud for a batch of reply messages: the plain
+// text bubbles plus the question on any action card, in order. Speaking only
+// happens for voice-initiated messages (opts.viaVoice) with the Profile
+// "Cents voice" toggle on; speakAsCents itself never throws.
+function maybeSpeakReplies(
+  s: { voiceRepliesEnabled: boolean; centsVoiceName?: string; centsVoiceStyle?: CentsVoiceStyle },
+  opts: { viaVoice?: boolean } | undefined,
+  replies: ChatMessage[],
+  lang: 'en' | 'fil',
+  spokenOverride?: string,
+) {
+  if (!opts?.viaVoice || !(s.voiceRepliesEnabled ?? true)) return;
+  // M5.16: prefer the brain's purpose-written spoken version (clean grammar,
+  // "250 pesos", conversational); fall back to the chat text, which
+  // speakAsCents sanitizes anyway.
+  const spoken = (spokenOverride ?? '').trim() || replies
+    .filter((m) => m.sender === 'CENTS')
+    .map((m) => (m.type === 'text' ? m.text : 'prompt' in m ? m.prompt : ''))
+    .filter(Boolean)
+    .join(' ');
+  if (spoken) speakAsCents(spoken, lang, { voiceName: s.centsVoiceName, style: s.centsVoiceStyle });
 }
 
 // The exact shape synced to Firestore (users/{uid}) and persisted locally.
@@ -104,6 +492,9 @@ export interface CloudSnapshot {
   currency: string;
   biometricsEnabled: boolean;
   notificationsEnabled: boolean;
+  voiceRepliesEnabled: boolean;
+  centsVoiceName: string;
+  centsVoiceStyle: 'english' | 'taglish';
   // M5.6: YYYY-MM key of the last budget month rollover (see
   // rolloverBudgetsIfNeeded). Persisted so a relaunch mid-month is a no-op.
   lastRollover: string;
@@ -142,6 +533,9 @@ const makeDefaults = (): CloudSnapshot & { isThinking: boolean } => ({
   currency: '\u20B1',
   biometricsEnabled: true,
   notificationsEnabled: true,
+  voiceRepliesEnabled: true,
+  centsVoiceName: 'Puck',
+  centsVoiceStyle: 'english',
   lastRollover: monthKey(),
 });
 
@@ -160,6 +554,9 @@ export const buildSnapshot = (s: FinanceState): CloudSnapshot => ({
   currency: s.currency,
   biometricsEnabled: s.biometricsEnabled,
   notificationsEnabled: s.notificationsEnabled ?? true,
+  voiceRepliesEnabled: s.voiceRepliesEnabled ?? true,
+  centsVoiceName: s.centsVoiceName ?? 'Puck',
+  centsVoiceStyle: s.centsVoiceStyle ?? 'english',
   lastRollover: s.lastRollover ?? monthKey(),
 });
 
@@ -168,6 +565,8 @@ export const useFinance = create<FinanceState>()(
     (set, get) => ({
       hasHydrated: false,
       setHasHydrated: (v) => set({ hasHydrated: v }),
+      pendingSourceTxIds: null,
+      pendingGoalMove: null,
   ...makeDefaults(),
 
   selectGoal: (id) => set({ selectedGoalId: id }),
@@ -191,6 +590,9 @@ export const useFinance = create<FinanceState>()(
     set((s) => ({ profile: { ...s.profile, nickname: nickname.trim() || undefined, avatarId: avatarId ?? undefined } })),
   setBiometricsEnabled: (v) => set({ biometricsEnabled: v }),
   setNotificationsEnabled: (v) => set({ notificationsEnabled: v }),
+  setVoiceRepliesEnabled: (v) => { if (!v) stopCentsVoice(); set({ voiceRepliesEnabled: v }); },
+  setCentsVoiceName: (v) => set({ centsVoiceName: CENTS_VOICES.some((c) => c.id === v) ? v : 'Puck' }),
+  setCentsVoiceStyle: (v) => set({ centsVoiceStyle: v === 'taglish' ? 'taglish' : 'english' }),
   removeAccount: (id) => set((s) => ({ accounts: s.accounts.filter((a) => a.id !== id) })),
   setAccountBalance: (id, balance) =>
     set((s) => ({ accounts: s.accounts.map((a) => (a.id === id ? { ...a, balance } : a)) })),
@@ -247,9 +649,30 @@ export const useFinance = create<FinanceState>()(
     }));
     // Wakes the previously dormant milestone notifications (25/50/75/100).
     notifyGoalMilestones(prevGoals, get().goals, get().notificationsEnabled);
+    if (accountId) {
+      const g0 = get().goals.find((g) => g.id === goalId);
+      if (g0) pushGoalTx(set, g0, amount, 'into', accountId);
+    }
     const goal = get().goals.find((g) => g.id === goalId);
     const acct = accountId ? get().accounts.find((a) => a.id === accountId) : undefined;
     if (goal) pushCents(set, `Set aside ${peso(amount)} for ${goal.name}${acct ? ` from ${acct.name}` : ''}. ${peso(goal.current)} of ${peso(goal.target)} saved.`);
+  },
+
+  withdrawFromGoal: (goalId, amount, accountId) => {
+    if (!(amount > 0)) return;
+    const goal = get().goals.find((g) => g.id === goalId);
+    if (!goal) return;
+    const take = Math.min(amount, goal.current);
+    set((s) => ({
+      goals: s.goals.map((g) => (g.id === goalId ? { ...g, current: Math.max(g.current - amount, 0) } : g)),
+      accounts: accountId
+        ? s.accounts.map((a) => (a.id === accountId ? { ...a, balance: a.balance + take } : a))
+        : s.accounts,
+    }));
+    const acct = accountId ? get().accounts.find((a) => a.id === accountId) : undefined;
+    if (accountId) pushGoalTx(set, goal, take, 'outof', accountId);
+    const left = get().goals.find((g) => g.id === goalId)?.current ?? 0;
+    pushCents(set, `Took ${peso(take)} out of ${goal.name}${acct ? ` and put it back in ${acct.name}` : ''}. ${peso(left)} left saved.`);
   },
 
   // M5 hub quick actions. Expense bumps the matching budget's spent and can
@@ -306,12 +729,23 @@ export const useFinance = create<FinanceState>()(
         ...old,
         amount: patch.amount ?? old.amount,
         description: patch.description?.trim() || old.description,
-        categoryId: old.isIncome ? old.categoryId : (patch.categoryId ?? old.categoryId),
+        // Savings moves keep their category; regular income keeps its too.
+        categoryId: old.isIncome || old.goalId ? old.categoryId : (patch.categoryId ?? old.categoryId),
       };
       const reversed = applyTxEffect(s, old, -1);
       const applied = applyTxEffect({ ...s, ...reversed }, next, 1);
+      // M5.25: an amount edit on a savings move shifts the goal by the delta.
+      const delta = next.amount - old.amount;
+      const goals = old.goalId && delta !== 0
+        ? s.goals.map((g) =>
+            g.id === old.goalId
+              ? { ...g, current: Math.max(g.current + (old.isIncome ? -delta : delta), 0) }
+              : g,
+          )
+        : s.goals;
       return {
         ...applied,
+        goals,
         transactions: s.transactions.map((tx) => (tx.id === id ? next : tx)),
       };
     });
@@ -323,8 +757,17 @@ export const useFinance = create<FinanceState>()(
     set((s) => {
       const old = s.transactions.find((tx) => tx.id === id);
       if (!old) return s;
+      // M5.25: deleting a savings move also reverses the goal side.
+      const goals = old.goalId
+        ? s.goals.map((g) =>
+            g.id === old.goalId
+              ? { ...g, current: Math.max(g.current + (old.isIncome ? old.amount : -old.amount), 0) }
+              : g,
+          )
+        : s.goals;
       return {
         ...applyTxEffect(s, old, -1),
+        goals,
         transactions: s.transactions.filter((tx) => tx.id !== id),
       };
     });
@@ -358,11 +801,21 @@ export const useFinance = create<FinanceState>()(
 
   // M2: real Gemini intent parsing via Firebase AI Logic, with the local
   // heuristic as an offline/unconfigured fallback.
-  sendChat: async (input) => {
+  sendChat: async (input, opts) => {
+    stopCentsVoice(); // a new message always interrupts a speaking Cents
     set((st) => ({
       chat: [...st.chat, { id: uid(), sender: 'USER', type: 'text', text: input }],
       isThinking: true,
     }));
+
+    // M5.22: if Cents just asked which account paid, an account-name answer
+    // stamps and deducts right here (any channel).
+    if (assignPendingSource(input, opts, get, set)) return;
+
+    // M5.11: "sige" / "yes" / "wag" against a pending card confirms or
+    // cancels it right here. Works for voice sessions and typed chat alike,
+    // executes instantly, and the result is spoken like any other reply.
+    if (tryResolvePendingCard(input, opts, get, set)) return;
 
     const ctx = buildBrainContext(get());
 
@@ -380,39 +833,96 @@ export const useFinance = create<FinanceState>()(
         result.reply += `\n\n[debug, brain error: ${errMsg.slice(0, 160)}]`;
       }
     }
+    // M5.29: the app decides the language, not the model - English input can
+    // never produce a Filipino reply flag or card.
+    if (!hasTagalog(input)) result = { ...result, lang: 'en' };
+    result = coerceBalanceAnswer(input, result, get);
 
-    // Multi-step requests produce one card per action, in order. Categories
-    // added earlier in the same batch count as "existing" for later cards
-    // (e.g. "add a Groceries budget 9000 and log that receipt there").
-    const st = get();
-    if (result.intent !== 'Unknown' && result.actions.length > 1) {
-      const replies: ChatMessage[] = [];
-      if (result.reply) replies.push({ id: uid(), sender: 'CENTS', type: 'text', text: result.reply });
-      const assumed: string[] = [];
-      for (const a of result.actions) {
-        const sub: CentsResult = {
-          ...result,
-          intent: a.intent,
-          amount: a.amount,
-          categoryName: a.categoryName,
-          item: a.item || a.categoryName,
-          reply: '',
-        };
-        replies.push(buildReplyFromResult(sub, st, assumed));
-        if (a.intent === 'AddCategory' && a.categoryName) assumed.push(a.categoryName);
+    deliverResult(result, opts, get, set);
+  },
+
+  // M5.12: a voice turn in ONE model roundtrip. The audio clip goes straight
+  // to parseCentsVoice (transcription + intent together); the user bubble is
+  // appended once the transcript is known. Returns the transcript for the
+  // overlay's YOU caption ('' when nothing usable came back).
+  sendVoiceClip: async (base64, mimeType) => {
+    stopCentsVoice();
+    set({ isThinking: true });
+
+    // FAST PATH (one roundtrip): audio straight to the structured brain.
+    let result: CentsResult | null = null;
+    let transcript = '';
+    let sawOverload = false;
+    try {
+      result = await parseCentsVoice(base64, mimeType, buildBrainContext(get()));
+      transcript = (result.transcript ?? '').trim();
+      // M5.30: the mic caught Cents's own voice - drop the turn silently.
+      if (transcript && isEchoOfCents(transcript)) {
+        set({ isThinking: false });
+        return '';
       }
-      set((s2) => ({ chat: [...s2.chat, ...replies], isThinking: false }));
-      return;
+      if (transcript && !hasTagalog(transcript)) result = { ...result, lang: 'en' };
+      result = coerceBalanceAnswer(transcript, result, get);
+    } catch (e: any) {
+      const errMsg = String(e?.message ?? e);
+      sawOverload = errMsg.includes('cents-overloaded');
+      console.warn('[Cents voice brain error]', errMsg);
     }
 
-    const reply = buildReplyFromResult(result, st);
-    set((s2) => ({ chat: [...s2.chat, reply], isThinking: false }));
+    // FALLBACK (two roundtrips, the M5.8-proven path): some API versions 400
+    // the audio-plus-schema combo. Transcribe plainly, then think - slower,
+    // but voice keeps working everywhere.
+    if (!result || !transcript) {
+      try {
+        transcript = (await transcribeAudio(base64, mimeType)).trim();
+      } catch (e2: any) {
+        sawOverload = sawOverload || String(e2?.message ?? e2).includes('cents-overloaded');
+        console.warn('[Cents voice transcribe error]', String(e2?.message ?? e2));
+        transcript = '';
+      }
+      if (transcript) {
+        set((st) => ({
+          chat: [...st.chat, { id: uid(), sender: 'USER', type: 'text', text: transcript }],
+        }));
+        if (assignPendingSource(transcript, { viaVoice: true }, get, set)) return transcript;
+        if (tryResolvePendingCard(transcript, { viaVoice: true }, get, set)) return transcript;
+        let r2: CentsResult;
+        try {
+          r2 = await parseCentsIntent(transcript, buildBrainContext(get()));
+        } catch {
+          r2 = localParseIntent(transcript, buildBrainContext(get()));
+        }
+        deliverResult(r2, { viaVoice: true }, get, set);
+        return transcript;
+      }
+      // Both paths came back empty: say so out loud and keep the loop alive.
+      pushCents(set, sawOverload
+        ? "I'm a bit swamped right now. Give me a few seconds and say that again."
+        : 'I could not quite catch that. Say it again?');
+      set({ isThinking: false });
+      maybeSpeakReplies(get(), { viaVoice: true }, get().chat.slice(-1), 'en');
+      return '';
+    }
+
+    // Fast path succeeded: the user's words join the timeline like a typed message.
+    set((st) => ({
+      chat: [...st.chat, { id: uid(), sender: 'USER', type: 'text', text: transcript }],
+    }));
+
+    // Which-source answer, then "sige"/"yes": instant, deterministic.
+    if (assignPendingSource(transcript, { viaVoice: true }, get, set)) return transcript;
+    if (tryResolvePendingCard(transcript, { viaVoice: true }, get, set)) return transcript;
+
+    deliverResult(result, { viaVoice: true }, get, set);
+    return transcript;
   },
 
   confirmAction: (messageId, confirm) => {
     const s = get();
     const msg = s.chat.find((m) => m.id === messageId);
     if (!msg || !('handled' in msg) || msg.handled) return;
+
+    const txCountBefore = s.transactions.length; // new txs PREPEND
 
     if (confirm) {
       const prevCategories = s.categories;
@@ -427,6 +937,17 @@ export const useFinance = create<FinanceState>()(
       }
       // Chat-confirmed spends should trip the 90 percent alert too.
       notifyBudgetCrossings(prevCategories, get().categories, get().notificationsEnabled);
+
+      // M5.22: an expense that landed with NO source doesn't move any balance
+      // - so Cents follows up asking which account paid. Works from every
+      // channel (buttons, typed chat, voice, scanner) because they all
+      // confirm through here; the next message answers it.
+      const after = get().transactions;
+      const fresh = after.slice(0, after.length - txCountBefore);
+      const orphans = fresh.filter((tx) => !tx.isIncome && !tx.accountId).map((tx) => tx.id);
+      if (orphans.length && get().accounts.length) {
+        set((st) => ({ pendingSourceTxIds: [...(st.pendingSourceTxIds ?? []), ...orphans] }));
+      }
     } else if (msg.type === 'receiptScan') {
       pushCents(set, 'Receipt scan cancelled.');
     }
@@ -436,11 +957,15 @@ export const useFinance = create<FinanceState>()(
         m.id === messageId && 'handled' in m ? { ...m, confirmed: confirm, handled: true } : m,
       ),
     }));
+    // M5.26: button confirms (outside a voice/text batch) ask their single
+    // follow-up question here; batches ask once at the end instead.
+    if (batchDepth === 0) flushPendingAsk(get, set);
   },
 
   // M4: vision — a photo is just another way to produce a CentsResult, so it
   // flows into the exact same confirmation/negotiation cards as typed chat.
   sendImage: async (base64, mimeType, mode, imageUri) => {
+    stopCentsVoice();
     set((st) => ({
       chat: [...st.chat, {
         id: uid(), sender: 'USER', type: 'text',
@@ -532,6 +1057,21 @@ function buildBrainContext(s: FinanceState) {
     })
     .filter((x): x is { sender: 'USER' | 'CENTS'; text: string } => !!x);
 
+  // M5.24: surface any open which-account question so the brain treats the
+  // next message as its answer instead of redoing the action.
+  let openQuestion: string | undefined;
+  if (s.pendingSourceTxIds?.length) {
+    const total = s.transactions
+      .filter((tx) => s.pendingSourceTxIds!.includes(tx.id))
+      .reduce((a, tx) => a + tx.amount, 0);
+    openQuestion = `Which account paid for the already-logged expense of ${peso(total)}? The app assigns the answer (including a newly added card) itself.`;
+  } else if (s.pendingGoalMove) {
+    const g = s.goals.find((x) => x.id === s.pendingGoalMove!.goalId);
+    openQuestion = s.pendingGoalMove.direction === 'into'
+      ? `Which account should the ${peso(s.pendingGoalMove.amount)} set aside for ${g?.name ?? 'the goal'} come from? The app applies the answer itself.`
+      : `Where should the ${peso(s.pendingGoalMove.amount)} taken out of ${g?.name ?? 'the goal'} go? The app applies the answer itself.`;
+  }
+
   return {
     categories: s.categories,
     goals: s.goals,
@@ -540,10 +1080,18 @@ function buildBrainContext(s: FinanceState) {
     nickname: s.profile.nickname || s.profile.name,
     history,
     recentTransactions: s.transactions.slice(0, 8),
+    openQuestion,
   };
 }
 
 function buildReplyFromResult(result: CentsResult, st2: FinanceState, assumedCategories: string[] = []): ChatMessage {
+    const withCoach = (m: ChatMessage): ChatMessage => {
+      // M5.19: carry the brain's held-back coaching on confirmable ask cards.
+      if ((m.type === 'confirmation' || m.type === 'negotiation') && (result.coachNote ?? '').trim()) {
+        return { ...m, coachNote: result.coachNote!.trim() };
+      }
+      return m;
+    };
     const { intent, amount, categoryName, lang } = result;
     const fil = lang === 'fil';
     const item = result.item || categoryName;
@@ -562,7 +1110,7 @@ function buildReplyFromResult(result: CentsResult, st2: FinanceState, assumedCat
             prompt: fil
               ? `I-log ang ${peso(amount)} para sa ${item !== name ? `${item} sa ` : ''}${name}?`
               : `Log ${peso(amount)} for ${item !== name ? `${item} under ` : ''}${name}?`,
-            action: { kind: 'LogTransaction', amount, categoryName: name },
+            action: { kind: 'LogTransaction', amount, categoryName: name, accountName: result.accountName || undefined, item: item !== name ? item : undefined },
             confirmed: false, handled: false, lang,
           };
         } else {
@@ -572,7 +1120,7 @@ function buildReplyFromResult(result: CentsResult, st2: FinanceState, assumedCat
             prompt: fil
               ? `Walang budget na bagay sa "${item}" (${peso(amount)}). I-log sa Others?`
               : `"${item}" (${peso(amount)}) doesn't fit your current budgets. Log it under Others?`,
-            action: { kind: 'LogToOthers', item, amount },
+            action: { kind: 'LogToOthers', item, amount, accountName: result.accountName || undefined },
             confirmed: false, handled: false, lang,
           };
         }
@@ -604,7 +1152,7 @@ function buildReplyFromResult(result: CentsResult, st2: FinanceState, assumedCat
           reply = {
             id: uid(), sender: 'CENTS', type: 'negotiation',
             prompt: `${budgetLine}${goalLine}${fil ? ' Ituloy pa rin?' : ' Proceed?'}`,
-            action: { kind: 'NegotiatePurchase', item, amount, categoryName: target.name },
+            action: { kind: 'NegotiatePurchase', item, amount, categoryName: target.name, accountName: result.accountName || undefined },
             confirmed: false, handled: false, lang,
           };
         } else {
@@ -634,6 +1182,133 @@ function buildReplyFromResult(result: CentsResult, st2: FinanceState, assumedCat
           confirmed: false, handled: false,
         };
         break;
+      case 'AddIncome': {
+        const st = result; // clarity: fields off the result
+        const acctBit = st.accountName ? (fil ? ` sa ${st.accountName}` : ` to ${st.accountName}`) : '';
+        reply = {
+          id: uid(), sender: 'CENTS', type: 'confirmation',
+          prompt: fil
+            ? `Idagdag ang ${peso(amount)} na income${acctBit}?`
+            : `Add ${peso(amount)} income${acctBit}?`,
+          action: { kind: 'AddIncome', amount, accountName: st.accountName || undefined },
+          confirmed: false, handled: false, lang,
+        };
+        break;
+      }
+      case 'AddGoal': {
+        const rawDate = (result.targetDate ?? '').trim();
+        const parsedDate = rawDate && !Number.isNaN(Date.parse(rawDate)) ? rawDate : undefined;
+        const dateLabel = parsedDate
+          ? new Date(parsedDate).toLocaleDateString(undefined, { month: 'long', year: 'numeric' })
+          : '';
+        reply = {
+          id: uid(), sender: 'CENTS', type: 'confirmation',
+          prompt: fil
+            ? `Gumawa ng goal na "${item}" na may ${peso(amount)} target${dateLabel ? ` hanggang ${dateLabel}` : ''}?`
+            : `Create a "${item}" goal with a ${peso(amount)} target${dateLabel ? ` by ${dateLabel}` : ''}?`,
+          action: { kind: 'AddGoal', name: item, target: amount, date: parsedDate },
+          confirmed: false, handled: false, lang,
+        };
+        break;
+      }
+      case 'AddToGoal': {
+        const goal = st2.goals.find((g) => {
+          const n = g.name.toLowerCase(); const t2 = item.toLowerCase();
+          return n === t2 || n.includes(t2) || t2.includes(n);
+        });
+        if (!goal) {
+          reply = {
+            id: uid(), sender: 'CENTS', type: 'text',
+            text: st2.goals.length
+              ? `I couldn't find a goal named ${item}. Your goals: ${st2.goals.map((g) => g.name).join(', ')}.`
+              : `You don't have any goals yet. Want to create one first?`,
+          };
+          break;
+        }
+        // M5.24 (owner): only name a source the USER named; otherwise the
+        // follow-up question asks after confirm.
+        const src = matchAccount(result.accountName, st2.accounts);
+        reply = {
+          id: uid(), sender: 'CENTS', type: 'confirmation',
+          prompt: fil
+            ? `Maglagay ng ${peso(amount)} sa ${goal.name} goal mo${src ? ` galing sa ${src.name}` : ''}?`
+            : `Set aside ${peso(amount)} for your ${goal.name} goal${src ? ` from ${src.name}` : ''}?`,
+          action: { kind: 'AddToGoal', goalName: goal.name, amount, accountName: src?.name },
+          confirmed: false, handled: false, lang,
+        };
+        break;
+      }
+      case 'WithdrawFromGoal': {
+        const goal = st2.goals.find((g) => {
+          const n = g.name.toLowerCase(); const t2 = item.toLowerCase();
+          return n === t2 || n.includes(t2) || t2.includes(n);
+        });
+        if (!goal) {
+          reply = {
+            id: uid(), sender: 'CENTS', type: 'text',
+            text: st2.goals.length
+              ? `I couldn't find a goal named ${item}. Your goals: ${st2.goals.map((g) => g.name).join(', ')}.`
+              : `You don't have any goals to withdraw from yet.`,
+          };
+          break;
+        }
+        // M5.28: never offer a nonsense withdrawal - validate what's saved.
+        if (goal.current <= 0) {
+          reply = {
+            id: uid(), sender: 'CENTS', type: 'text',
+            text: fil
+              ? `Wala pang laman ang ${goal.name} goal mo, walang makukuha doon.`
+              : `Your ${goal.name} goal has nothing saved yet, so there's nothing to take out.`,
+          };
+          break;
+        }
+        const take = Math.min(amount, goal.current);
+        const partial = take < amount;
+        const src = matchAccount(result.accountName, st2.accounts);
+        reply = {
+          id: uid(), sender: 'CENTS', type: 'confirmation',
+          prompt: fil
+            ? partial
+              ? `${peso(goal.current)} lang ang naka-ipon sa ${goal.name}. Kunin lahat${src ? ` at ilagay sa ${src.name}` : ''}?`
+              : `Kunin ang ${peso(take)} sa ${goal.name} goal mo${src ? ` at ibalik sa ${src.name}` : ''}?`
+            : partial
+              ? `Only ${peso(goal.current)} is saved in ${goal.name}. Take all of it${src ? `, back into ${src.name}` : ''}?`
+              : `Take ${peso(take)} out of your ${goal.name} goal${src ? `, back into ${src.name}` : ''}?`,
+          action: { kind: 'WithdrawFromGoal', goalName: goal.name, amount: take, accountName: src?.name },
+          confirmed: false, handled: false, lang,
+        };
+        break;
+      }
+      case 'SetAccountBalance': {
+        const acct = matchAccount(result.accountName || item, st2.accounts);
+        if (!acct) {
+          reply = {
+            id: uid(), sender: 'CENTS', type: 'text',
+            text: `I couldn't find that account. Your sources: ${st2.accounts.map((a) => a.name).join(', ')}.`,
+          };
+          break;
+        }
+        reply = {
+          id: uid(), sender: 'CENTS', type: 'confirmation',
+          prompt: fil
+            ? `I-update ang balanse ng ${acct.name} sa ${peso(amount)}?`
+            : `Update ${acct.name}'s balance to ${peso(amount)}?`,
+          action: { kind: 'SetAccountBalance', accountName: acct.name, amount },
+          confirmed: false, handled: false, lang,
+        };
+        break;
+      }
+      case 'AddAccount': {
+        reply = {
+          id: uid(), sender: 'CENTS', type: 'confirmation',
+          prompt: fil
+            ? `Idagdag ang ${item} sa Wallet mo na may ${peso(amount)}?`
+            : `Add ${item} to your Wallet with ${peso(amount)}?`,
+          action: { kind: 'AddAccount', name: item, initial: amount },
+          confirmed: false, handled: false, lang,
+        };
+        break;
+      }
       case 'UpdateBudget':
         reply = {
           id: uid(), sender: 'CENTS', type: 'confirmation',
@@ -648,7 +1323,7 @@ function buildReplyFromResult(result: CentsResult, st2: FinanceState, assumedCat
           text: result.reply || "I'm not sure what you meant. Try 'spent 250 on gas'.",
         };
     }
-    return reply;
+    return withCoach(reply);
 }
 
 type Setter = (fn: (s: FinanceState) => Partial<FinanceState>) => void;
@@ -657,15 +1332,33 @@ function pushCents(set: Setter, text: string) {
   set((s) => ({ chat: [...s.chat, { id: uid(), sender: 'CENTS', type: 'text', text }] }));
 }
 
+// M5.22: shared source resolution for every expense-creating action. When
+// the user named a source, the transaction is stamped with the account and
+// the balance moves; otherwise confirmAction follows up with a which-source
+// question.
+function debitSource(s: { accounts: Account[] }, accountName: string | undefined, amount: number) {
+  const acct = matchAccount(accountName, s.accounts);
+  return {
+    acct,
+    accounts: acct
+      ? s.accounts.map((a) => (a.id === acct.id ? { ...a, balance: Math.max(a.balance - amount, 0) } : a))
+      : s.accounts,
+  };
+}
+
 function executeAction(action: ActionType, set: Setter) {
   switch (action.kind) {
     case 'LogTransaction': {
       // If the category doesn't exist yet (e.g. the log card of a multi-step
       // batch was confirmed before, or instead of, its AddCategory card),
       // create it on the spot so the log always lands somewhere real.
+      let srcName1: string | undefined;
       set((s) => {
         const exists = s.categories.some((c) => c.name.toLowerCase() === action.categoryName.toLowerCase());
+        const src = debitSource(s, action.accountName, action.amount);
+        srcName1 = src.acct?.name;
         return {
+          accounts: src.accounts,
           categories: exists
             ? s.categories.map((c) =>
                 c.name.toLowerCase() === action.categoryName.toLowerCase()
@@ -673,25 +1366,29 @@ function executeAction(action: ActionType, set: Setter) {
               )
             : [...s.categories, { id: uid(), name: action.categoryName, limit: action.amount, spent: action.amount, icon: 'pricetag' }],
           transactions: [
-            { id: uid(), amount: action.amount, description: action.categoryName, categoryId: action.categoryName, timestamp: Date.now(), isIncome: false },
+            { id: uid(), amount: action.amount, description: action.item?.trim() || action.categoryName, categoryId: action.categoryName, timestamp: Date.now(), isIncome: false, accountId: src.acct?.id },
             ...s.transactions,
           ],
         };
       });
-      pushCents(set, `Logged ${peso(action.amount)} under ${action.categoryName}.`);
+      pushCents(set, `Logged ${peso(action.amount)}${action.item ? ` for ${action.item}` : ''} under ${action.categoryName}${srcName1 ? ` from ${srcName1}` : ''}.`);
       break;
     }
     case 'NegotiatePurchase':
-      set((s) => ({
-        categories: s.categories.map((c) =>
-          c.name.toLowerCase() === action.categoryName.toLowerCase()
-            ? { ...c, spent: c.spent + action.amount } : c,
-        ),
-        transactions: [
-          { id: uid(), amount: action.amount, description: action.item, categoryId: action.categoryName, timestamp: Date.now(), isIncome: false },
-          ...s.transactions,
-        ],
-      }));
+      set((s) => {
+        const src = debitSource(s, action.accountName, action.amount);
+        return {
+          accounts: src.accounts,
+          categories: s.categories.map((c) =>
+            c.name.toLowerCase() === action.categoryName.toLowerCase()
+              ? { ...c, spent: c.spent + action.amount } : c,
+          ),
+          transactions: [
+            { id: uid(), amount: action.amount, description: action.item, categoryId: action.categoryName, timestamp: Date.now(), isIncome: false, accountId: src.acct?.id },
+            ...s.transactions,
+          ],
+        };
+      });
       pushCents(set, `Done. ${peso(action.amount)} logged to ${action.categoryName}. Keep an eye on that goal!`);
       break;
     case 'AddCategory':
@@ -713,13 +1410,17 @@ function executeAction(action: ActionType, set: Setter) {
       pushCents(set, `Updated ${action.categoryName} budget to ${peso(action.newLimit)}.`);
       break;
     case 'CreateAndLog':
-      set((s) => ({
-        categories: [...s.categories, { id: uid(), name: action.item, limit: action.amount, spent: action.amount, icon: 'pricetag' }],
-        transactions: [
-          { id: uid(), amount: action.amount, description: action.item, categoryId: action.item, timestamp: Date.now(), isIncome: false },
-          ...s.transactions,
-        ],
-      }));
+      set((s) => {
+        const src = debitSource(s, action.accountName, action.amount);
+        return {
+          accounts: src.accounts,
+          categories: [...s.categories, { id: uid(), name: action.item, limit: action.amount, spent: action.amount, icon: 'pricetag' }],
+          transactions: [
+            { id: uid(), amount: action.amount, description: action.item, categoryId: action.item, timestamp: Date.now(), isIncome: false, accountId: src.acct?.id },
+            ...s.transactions,
+          ],
+        };
+      });
       pushCents(set, `Created a new ${action.item} category and logged ${peso(action.amount)}.`);
       break;
     case 'LogToOthers': {
@@ -735,10 +1436,12 @@ function executeAction(action: ActionType, set: Setter) {
                 limit: Math.ceil((action.amount * 1.5) / 100) * 100,
               },
             ];
+        const src = debitSource(s, action.accountName, action.amount);
         return {
+          accounts: src.accounts,
           categories,
           transactions: [
-            { id: uid(), amount: action.amount, description: action.item, categoryId: 'Others', timestamp: Date.now(), isIncome: false },
+            { id: uid(), amount: action.amount, description: action.item, categoryId: 'Others', timestamp: Date.now(), isIncome: false, accountId: src.acct?.id },
             ...s.transactions,
           ],
         };
@@ -746,13 +1449,121 @@ function executeAction(action: ActionType, set: Setter) {
       pushCents(set, `Logged ${peso(action.amount)} for ${action.item} under Others.`);
       break;
     }
-    case 'LogToUnassigned':
+    case 'AddIncome': {
+      const st = useFinance.getState();
+      if (!st.accounts.length) { pushCents(set, 'Add a money source in Wallet first, then I can file income into it.'); break; }
+      const acct = matchAccount(action.accountName, st.accounts) ?? st.accounts[0];
+      st.addIncome(action.amount, acct.id); // pushes its own ack
+      break;
+    }
+    case 'AddGoal': {
+      const st = useFinance.getState();
+      if (st.goals.some((g) => g.name.toLowerCase() === action.name.toLowerCase())) {
+        pushCents(set, `You already have a goal named ${action.name}.`);
+        break;
+      }
+      // Spoken deadline when given (M5.28); ~4 months default otherwise.
+      const d = action.date ?? new Date(Date.now() + 120 * day).toISOString().slice(0, 10);
+      st.addGoal(action.name, action.target, d);
+      pushCents(set, `Created the ${action.name} goal with a ${peso(action.target)} target${action.date ? ` by ${new Date(d).toLocaleDateString(undefined, { month: 'long', year: 'numeric' })}` : ''}.`);
+      break;
+    }
+    case 'AddToGoal': {
+      const st = useFinance.getState();
+      const goal = st.goals.find((g) => {
+        const n = g.name.toLowerCase();
+        const t = action.goalName.toLowerCase();
+        return n === t || n.includes(t) || t.includes(n);
+      });
+      if (!goal) {
+        pushCents(set, st.goals.length
+          ? `I couldn't find a goal named ${action.goalName}. Your goals: ${st.goals.map((g) => g.name).join(', ')}.`
+          : `You don't have any goals yet. Say something like "create a goal for a new phone, 20,000" first.`);
+        break;
+      }
+      const acct = matchAccount(action.accountName, st.accounts);
+      // M5.28 (owner's BPI-at-zero incident): a contribution only happens
+      // when a real account can FUND it. Insufficient or unnamed source →
+      // the goal is NOT bumped yet; Cents notes the shortfall and asks.
+      if (acct && acct.balance >= action.amount) {
+        st.addToGoal(goal.id, action.amount, acct.id); // ack + milestones + ledger row
+      } else if (st.accounts.length) {
+        if (acct) {
+          pushCents(set, `${acct.name} only has ${peso(acct.balance)}, not enough for the ${peso(action.amount)}.`);
+        }
+        set((s2) => ({ pendingGoalMove: { goalId: goal.id, amount: action.amount, direction: 'into' as const }, pendingSourceTxIds: s2.pendingSourceTxIds }));
+      } else {
+        st.addToGoal(goal.id, action.amount); // no accounts exist at all
+      }
+      break;
+    }
+    case 'WithdrawFromGoal': {
+      const st = useFinance.getState();
+      const goal = st.goals.find((g) => {
+        const n = g.name.toLowerCase();
+        const t = action.goalName.toLowerCase();
+        return n === t || n.includes(t) || t.includes(n);
+      });
+      if (!goal) {
+        pushCents(set, st.goals.length
+          ? `I couldn't find a goal named ${action.goalName}. Your goals: ${st.goals.map((g) => g.name).join(', ')}.`
+          : `You don't have any goals to withdraw from yet.`);
+        break;
+      }
+      const acct = matchAccount(action.accountName, st.accounts);
+      st.withdrawFromGoal(goal.id, action.amount, acct?.id); // pushes its own ack
+      if (!acct && st.accounts.length) {
+        const take = Math.min(action.amount, goal.current);
+        set((s2) => ({ pendingGoalMove: { goalId: goal.id, amount: take, direction: 'outof' as const }, pendingSourceTxIds: s2.pendingSourceTxIds }));
+      }
+      break;
+    }
+    case 'SetAccountBalance': {
+      const st = useFinance.getState();
+      const acct = matchAccount(action.accountName, st.accounts);
+      if (!acct) { pushCents(set, `I couldn't find an account named ${action.accountName}.`); break; }
+      st.setAccountBalance(acct.id, Math.max(action.amount, 0));
+      pushCents(set, `Updated ${acct.name} to ${peso(Math.max(action.amount, 0))}.`);
+      // M5.29: money just arrived - resume whatever was waiting on it (the
+      // pending goal move or orphan expenses), validated as usual.
+      const fresh = useFinance.getState().accounts.find((a) => a.id === acct.id);
+      if (fresh) {
+        applyGoalMove(fresh, useFinance.getState, set);
+        applySourceToTxs(fresh, useFinance.getState, set);
+      }
+      break;
+    }
+    case 'AddAccount': {
+      const st = useFinance.getState();
+      if (st.accounts.some((a) => a.name.toLowerCase() === action.name.toLowerCase())) {
+        pushCents(set, `${action.name} is already in your Wallet.`);
+        break;
+      }
+      const monogram = action.name.split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase();
       set((s) => ({
-        transactions: [
-          { id: uid(), amount: action.amount, description: action.item, categoryId: 'Unassigned', timestamp: Date.now(), isIncome: false },
-          ...s.transactions,
-        ],
+        accounts: [...s.accounts, { id: uid(), name: action.name, balance: Math.max(action.initial, 0), initial: monogram }],
       }));
+      pushCents(set, `Added ${action.name} to your Wallet with ${peso(Math.max(action.initial, 0))}.`);
+      // M5.24: if this card was the ANSWER to "which one paid for this" (or a
+      // goal-move source question), attach it now - never re-log, never drop.
+      const created = useFinance.getState().accounts.find((a) => a.name.toLowerCase() === action.name.toLowerCase());
+      if (created) {
+        applyGoalMove(created, useFinance.getState, set);
+        applySourceToTxs(created, useFinance.getState, set);
+      }
+      break;
+    }
+    case 'LogToUnassigned':
+      set((s) => {
+        const src = debitSource(s, action.accountName, action.amount);
+        return {
+          accounts: src.accounts,
+          transactions: [
+            { id: uid(), amount: action.amount, description: action.item, categoryId: 'Unassigned', timestamp: Date.now(), isIncome: false, accountId: src.acct?.id },
+            ...s.transactions,
+          ],
+        };
+      });
       pushCents(set, `Logged ${peso(action.amount)} for ${action.item} as unassigned.`);
       break;
   }

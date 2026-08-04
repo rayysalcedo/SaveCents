@@ -176,7 +176,24 @@ const Bubble = memo(function Bubble({ msg, styles, t, confirmAction }: BubblePro
       case 'confirmation':
         return (
           <>
-            <CardLabel styles={styles} t={t} icon="create" label={msg.lang === 'fil' ? 'I-log ang gastos' : 'Log expense'} />
+            <CardLabel styles={styles} t={t}
+              icon={
+                msg.action.kind === 'AddAccount' ? 'wallet'
+                : msg.action.kind === 'AddIncome' ? 'trending-up'
+                : msg.action.kind === 'AddGoal' || msg.action.kind === 'AddToGoal' || msg.action.kind === 'WithdrawFromGoal' ? 'flag'
+                : msg.action.kind === 'AddCategory' || msg.action.kind === 'UpdateBudget' || msg.action.kind === 'RemoveCategory' ? 'pie-chart'
+                : 'create'
+              }
+              label={
+                msg.action.kind === 'AddAccount' ? (msg.lang === 'fil' ? 'Bagong wallet' : 'New money source')
+                : msg.action.kind === 'AddIncome' ? (msg.lang === 'fil' ? 'Dagdag na pera' : 'Add income')
+                : msg.action.kind === 'AddGoal' ? (msg.lang === 'fil' ? 'Bagong goal' : 'New goal')
+                : msg.action.kind === 'AddToGoal' ? (msg.lang === 'fil' ? 'Ipon sa goal' : 'Goal savings')
+                : msg.action.kind === 'WithdrawFromGoal' ? (msg.lang === 'fil' ? 'Kuha sa goal' : 'Goal withdrawal')
+                : msg.action.kind === 'AddCategory' || msg.action.kind === 'UpdateBudget' || msg.action.kind === 'RemoveCategory' ? (msg.lang === 'fil' ? 'Budget' : 'Budget')
+                : (msg.lang === 'fil' ? 'I-log ang gastos' : 'Log expense')
+              }
+            />
             <Text style={styles.centsText}>{msg.prompt}</Text>
           </>
         );

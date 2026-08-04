@@ -604,8 +604,9 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     width: 40, height: 40, borderRadius: 13, alignItems: 'center', justifyContent: 'center',
     backgroundColor: t.emeraldTint, borderWidth: 1, borderColor: t.emeraldBorder,
   },
-  budgetName: { color: t.textPrimary, fontSize: 14, fontWeight: '700' },
-  budgetSub: { color: t.textMuted, fontSize: 12, marginTop: 1 },
+  // M5.27: unified list type scale (matches the Analytics ledger rows).
+  budgetName: { color: t.textPrimary, fontSize: 15.5, fontWeight: '700' },
+  budgetSub: { color: t.textMuted, fontSize: 12.5, marginTop: 2 },
   budgetLeft: { color: t.mint, fontSize: 12, fontWeight: '800' },
   track: { height: 7, borderRadius: 4, backgroundColor: t.trackBg, overflow: 'hidden' },
   fill: { height: 7, borderRadius: 4 },
