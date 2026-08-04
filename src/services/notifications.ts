@@ -4,20 +4,33 @@
 // and the dev build; no push backend), all quiet banners, all governed by the
 // single Profile notifications toggle.
 //
-// SCHEDULED (wipe-and-rescheduled by src/hooks/useNotificationSync.ts):
+// SCHEDULED (wipe-and-rescheduled by src/hooks/useNotificationSync.ts).
+// Because there is no push backend, away-time nudges work as a dead man's
+// switch: every app open plants the chain below into the OS, and the next
+// open wipes and replants it from day zero. Keep using the app and the chain
+// silently resets; go quiet and it fires on its own.
 //   1. Bill due tomorrow: 9:00 AM the day before each budget dueDate.
 //   2. Bill due today: 9:00 AM on the day itself.
-//   3. Evening check-in: the NEXT 8:00 PM only. If the user already logged
-//      something today, today's is skipped and tomorrow's is scheduled. Only
-//      one is ever pending, so a user who stops opening the app gets exactly
-//      one nudge and then silence, never a pile.
-//   4. Weekly recap: next Sunday 7:00 PM, anchored to their goal by name.
-//      Copy quotes no numbers, because content is frozen at schedule time and
-//      a stale number would be a lie.
+//   3. Forever check-ins: WEEKLY repeating triggers on Monday, Thursday and
+//      Saturday at 8:00 PM. Registered once with the OS, they fire every
+//      week indefinitely with no app open needed. Repeats cannot be skipped
+//      per-day and their copy is fixed until the next open refreshes it, so
+//      they carry evergreen goal-anchored lines only.
+//   4. Daily log nudge: 8:00 PM one-shots for days 0 through 6, filling the
+//      first week's gaps on days the repeats do not cover, so unlogged
+//      expenses and income never sit longer than a day while the habit is
+//      forming. Tonight's is skipped if something was already logged today.
+//   5. Week-away check-in: day 7 at 10:00 AM, a single warmer goal-anchored
+//      nudge for someone who has not opened the app all week. A morning
+//      slot, so it never stacks on an evening repeat.
+//   6. Weekly recap: WEEKLY repeating trigger, Sunday 7:00 PM, anchored to
+//      their goal by name, forever.
+//      All away copy quotes no numbers, because content is frozen at
+//      schedule time and a stale number would be a lie.
 //
 // EVENT-DRIVEN (fired by the store the moment data changes):
-//   5. Budget at 90 percent / fully used (notifyBudgetCrossings).
-//   6. Goal milestones at 25 / 50 / 75 / 100 percent (notifyGoalMilestones).
+//   7. Budget at 90 percent / fully used (notifyBudgetCrossings).
+//   8. Goal milestones at 25 / 50 / 75 / 100 percent (notifyGoalMilestones).
 //      NOTE: nothing mutates goal.current yet, so this cannot fire until the
 //      Goals redesign adds contributions; wire it there (see HANDOFF).
 //
@@ -62,13 +75,24 @@ const at = (dayTs: number, hour: number): Date => {
   return d;
 };
 
-// Rotating check-in lines so the nudge does not go stale. Deterministic by
-// date, so reschedules on the same day keep the same words.
+// Rotating nudge lines so a week of dailies does not go stale. Deterministic
+// by fire date, so reschedules on the same day keep the same words. No
+// numbers anywhere: content freezes at schedule time (see header).
 const CHECKIN_LINES = [
   'Log today while it is fresh and your picture stays honest.',
   'How did today treat your wallet? A ten second log keeps the math real.',
   'Anything spent or earned today? Tell Cents and your budgets stay true.',
   'One quick log tonight beats guessing at the end of the month.',
+  'Any expenses or income still in your head? Give them to Cents.',
+  'A day unlogged is a day guessed. Ten seconds fixes that.',
+  'Small spends count too. Log them and keep the month honest.',
+];
+
+// Goal-anchored variants, mixed into the rotation when a goal exists.
+const GOAL_CHECKIN_LINES: ((name: string) => string)[] = [
+  (name) => `${name} moves when you log. Even a small entry counts today.`,
+  (name) => `Quick check-in: anything spent or saved for ${name} today?`,
+  (name) => `${name} is built one honest log at a time. Add today's.`,
 ];
 
 interface ScheduleInputs {
@@ -113,29 +137,65 @@ export async function syncScheduledNotifications({ categories, transactions, goa
       }
     }
 
-    // 3. Evening check-in: the next 8 PM, skipping today if already logged.
+    // 3. Forever check-ins: weekly repeats on Monday, Thursday and Saturday
+    // at 8 PM. The OS fires these every week indefinitely; no app open is
+    // ever needed again. Copy is evergreen and refreshed on every open (so
+    // a renamed goal heals on the next launch).
+    const topGoal = goals[0];
+    const scheduleWeekly = (body: string, weekday: number, hour: number, title = 'Evening check-in with Cents') =>
+      Notifications.scheduleNotificationAsync({
+        content: { title, body },
+        trigger: { type: Notifications.SchedulableTriggerInputTypes.WEEKLY, weekday, hour, minute: 0 },
+      });
+    // Expo weekday numbering: 1 = Sunday ... 7 = Saturday.
+    const REPEAT_WEEKDAYS = [2, 5, 7]; // Monday, Thursday, Saturday
+    await scheduleWeekly(
+      topGoal ? GOAL_CHECKIN_LINES[0](topGoal.name) : CHECKIN_LINES[0],
+      2, 20,
+    );
+    await scheduleWeekly(
+      topGoal ? GOAL_CHECKIN_LINES[1](topGoal.name) : CHECKIN_LINES[1],
+      5, 20,
+    );
+    await scheduleWeekly(CHECKIN_LINES[3], 7, 20);
+
+    // 4. Daily log nudges: 8 PM one-shots for days 0 through 6, but only on
+    // days the weekly repeats do not already cover, so no evening ever gets
+    // two banners. Tonight's is skipped if something was already logged.
     const todayStart = at(now, 0).getTime();
     const loggedToday = transactions.some((tx) => tx.timestamp >= todayStart);
-    let checkin = at(now, 20);
-    if (checkin.getTime() <= now || loggedToday) checkin = at(now + DAY, 20);
+    for (let offset = 0; offset <= 6; offset += 1) {
+      const nudge = at(now + offset * DAY, 20);
+      if (nudge.getTime() <= now) continue;
+      if (offset === 0 && loggedToday) continue;
+      if (REPEAT_WEEKDAYS.includes(nudge.getDay() + 1)) continue;
+      const dayIndex = nudge.getDate();
+      const body = topGoal && dayIndex % 3 === 0
+        ? GOAL_CHECKIN_LINES[dayIndex % GOAL_CHECKIN_LINES.length](topGoal.name)
+        : CHECKIN_LINES[dayIndex % CHECKIN_LINES.length];
+      await schedule('Evening check-in with Cents', body, nudge);
+    }
+
+    // 5. Week-away check-in: day 7 at 10 AM. Only reachable by someone who
+    // has not opened the app all week, so the tone is a welcome back, not a
+    // scold. Morning slot keeps it clear of the evening repeats.
+    const winBack = at(now + 7 * DAY, 10);
     await schedule(
-      'Evening check-in with Cents',
-      CHECKIN_LINES[new Date(checkin).getDate() % CHECKIN_LINES.length],
-      checkin,
+      'A quiet week at SaveCents',
+      topGoal
+        ? `${topGoal.name} is still waiting for you. A ten second log picks it right back up.`
+        : 'Your budgets are still here. A ten second log picks things right back up.',
+      winBack,
     );
 
-    // 4. Weekly recap: next Sunday 7 PM, goal-anchored, number-free.
-    const d = new Date(now);
-    const daysToSunday = (7 - d.getDay()) % 7;
-    let recap = at(now + daysToSunday * DAY, 19);
-    if (recap.getTime() <= now) recap = at(recap.getTime() + 7 * DAY, 19);
-    const goal = goals[0];
-    await schedule(
-      'Your week with Cents',
-      goal
-        ? `Week wrapped. Open SaveCents to see how ${goal.name} moved.`
+    // 6. Weekly recap: Sunday 7 PM, repeating forever. Goal-anchored,
+    // number-free, refreshed on every open.
+    await scheduleWeekly(
+      topGoal
+        ? `Week wrapped. Open SaveCents to see how ${topGoal.name} moved.`
         : 'Week wrapped. Your savings chart has this week\u2019s story.',
-      recap,
+      1, 19,
+      'Your week with Cents',
     );
   } catch {
     // Notifications are a courtesy; never let them break a money action.
@@ -148,7 +208,7 @@ const fireNow = (title: string, body: string) =>
     await Notifications.scheduleNotificationAsync({ content: { title, body }, trigger: null });
   })().catch(() => {});
 
-// 5. Immediate alert when a spend pushes a budget across 90 percent (special
+// 7. Immediate alert when a spend pushes a budget across 90 percent (special
 // copy at fully used). Compared by id so renames do not false-positive.
 export function notifyBudgetCrossings(prev: Category[], next: Category[], enabled: boolean): void {
   if (!enabled) return;
@@ -171,7 +231,7 @@ export function notifyBudgetCrossings(prev: Category[], next: Category[], enable
   }
 }
 
-// 6. Goal milestone celebrations. Fires the HIGHEST newly crossed threshold
+// 8. Goal milestone celebrations. Fires the HIGHEST newly crossed threshold
 // so one big contribution produces one notification, not four.
 const MILESTONES: { at: number; title: (g: Goal) => string; body: (g: Goal) => string }[] = [
   { at: 1, title: (g) => `${g.name}: goal reached`, body: (g) => `${peso(g.target)} saved. Time to enjoy what you built.` },

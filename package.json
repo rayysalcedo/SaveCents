@@ -39,16 +39,13 @@
   },
   "devDependencies": {
     "@types/react": "~19.1.0",
-    "typescript": "~5.9.2",
-    "wrangler": "^4.118.0"
+    "typescript": "~5.9.2"
   },
   "scripts": {
     "start": "expo start",
     "android": "expo start --android",
     "ios": "expo start --ios",
-    "web": "expo start --web",
-    "deploy": "npx expo export -p web && wrangler deploy",
-    "preview": "npx expo export -p web && wrangler dev"
+    "web": "expo start --web"
   },
   "private": true
 }

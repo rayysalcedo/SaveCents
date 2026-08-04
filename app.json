@@ -19,7 +19,7 @@
     "android": {
       "package": "com.rxsfin.savecents",
       "adaptiveIcon": {
-        "backgroundColor": "#040906",
+        "backgroundColor": "#00C968",
         "foregroundImage": "./assets/android-icon-foreground.png"
       },
       "permissions": [

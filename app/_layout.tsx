@@ -6,6 +6,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useTheme } from '../src/theme/colors';
 import { useCloudSync } from '../src/services/sync';
 import { useNotificationSync } from '../src/hooks/useNotificationSync';
+import SplashIntro from '../src/components/SplashIntro';
 
 export default function RootLayout() {
   const t = useTheme();
@@ -53,6 +54,7 @@ export default function RootLayout() {
           options={{ animation: 'slide_from_right', gestureEnabled: true, gestureDirection: 'horizontal', animationDuration: 260 }}
         />
       </Stack>
+      <SplashIntro />
     </View>
   );
 }
