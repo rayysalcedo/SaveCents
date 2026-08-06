@@ -15,7 +15,6 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as ImagePicker from 'expo-image-picker';
-import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
@@ -39,8 +38,7 @@ type Styles = ReturnType<typeof makeStyles>;
 const GlassRound = ({ styles, t, icon, onPress, active }: {
   styles: Styles; t: Palette; icon: keyof typeof Ionicons.glyphMap; onPress: () => void; active?: boolean;
 }) => (
-  <Pressable style={[styles.glassRound, active && styles.glassRoundActive]} onPress={onPress}>
-    <BlurView intensity={30} tint="dark" style={StyleSheet.absoluteFill} />
+  <Pressable style={[styles.glassRound, { backgroundColor: 'rgba(14,16,18,0.55)' }, active && styles.glassRoundActive]} onPress={onPress}>
     <Ionicons name={icon} size={20} color={active ? t.mint : '#FFFFFF'} />
   </Pressable>
 );
@@ -69,12 +67,12 @@ const ScanFrame = ({ styles, sweep, frameW, frameH }: {
       ]}
     >
       <LinearGradient
-        colors={['rgba(110,231,183,0)', 'rgba(110,231,183,0.85)', 'rgba(110,231,183,0)']}
+        colors={['rgba(127,184,154,0)', 'rgba(127,184,154,0.7)', 'rgba(127,184,154,0)']}
         start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
         style={styles.scanLine}
       />
       <LinearGradient
-        colors={['rgba(16,185,129,0.28)', 'rgba(16,185,129,0)']}
+        colors={['rgba(46,158,91,0.18)', 'rgba(46,158,91,0)']}
         start={{ x: 0.5, y: 0 }} end={{ x: 0.5, y: 1 }}
         style={styles.scanTrail}
       />
@@ -121,9 +119,9 @@ const ThreadItem = React.memo(function ThreadItem({ msg, styles, t, confirmActio
     if (msg.sender === 'USER') {
       return (
         <View style={styles.userPillRow}>
-          <LinearGradient colors={[t.emerald, t.teal]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.userPill}>
+          <View style={[styles.userPill, { backgroundColor: t.forest }]}>
             <Text style={styles.userPillText}>{msg.text}</Text>
-          </LinearGradient>
+          </View>
         </View>
       );
     }
@@ -145,9 +143,9 @@ const ThreadItem = React.memo(function ThreadItem({ msg, styles, t, confirmActio
             <Text style={styles.miniDeclineText}>{fil ? 'Huwag muna' : isNegotiate ? "Don't buy" : 'Cancel'}</Text>
           </Pressable>
           <Pressable style={{ flex: 1 }} onPress={() => confirmAction(msg.id, true)}>
-            <LinearGradient colors={[t.emerald, t.teal]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.miniConfirm}>
+            <View style={[styles.miniConfirm, { backgroundColor: t.emerald }]}>
               <Text style={styles.miniConfirmText}>{fil ? 'Sige' : isNegotiate ? 'Proceed' : 'Confirm'}</Text>
-            </LinearGradient>
+            </View>
           </Pressable>
         </View>
       ) : (
@@ -325,9 +323,9 @@ export function ScanOverlay() {
             <Text style={styles.permTitle}>Cents needs the camera</Text>
             <Text style={styles.permSub}>Point it at an item or a receipt and Cents reads it for you.</Text>
             <Pressable onPress={() => requestPerm()} style={({ pressed }) => pressed && { transform: [{ scale: 0.97 }] }}>
-              <LinearGradient colors={[t.emerald, t.teal]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.permBtn}>
+              <View style={[styles.permBtn, { backgroundColor: t.emerald }]}>
                 <Text style={styles.permBtnText}>Allow camera</Text>
-              </LinearGradient>
+              </View>
             </Pressable>
             <Pressable onPress={pickFromLibrary}>
               <Text style={styles.permAlt}>Or import from Photos</Text>
@@ -363,8 +361,7 @@ export function ScanOverlay() {
         <View style={styles.frameHost} pointerEvents="none">
           <ScanFrame styles={styles} sweep={sweep} frameW={frameW} frameH={frameH} />
           {phase === 'analyzing' && (
-            <View style={styles.analyzingChip}>
-              <BlurView intensity={36} tint="dark" style={StyleSheet.absoluteFill} />
+            <View style={[styles.analyzingChip, { backgroundColor: 'rgba(14,16,18,0.55)' }]}>
               <View style={styles.analyzingDot} />
               <Text style={styles.analyzingText}>Cents is analyzing</Text>
               <TypingDots styles={styles} />
@@ -376,25 +373,23 @@ export function ScanOverlay() {
       {/* Camera controls */}
       {phase === 'camera' && perm?.granted && (
         <View style={[styles.controls, { paddingBottom: insets.bottom + 22 }]}>
-          <View style={styles.modeSwitch}>
-            <BlurView intensity={30} tint="dark" style={StyleSheet.absoluteFill} />
+          <View style={[styles.modeSwitch, { backgroundColor: 'rgba(14,16,18,0.55)' }]}>
             {(['price', 'receipt'] as ScanMode[]).map((m) => {
               const active = mode === m;
               return (
                 <Pressable key={m} onPress={() => setMode(m)} style={styles.modeSeg}>
-                  {active && <LinearGradient colors={[t.emerald, t.teal]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={StyleSheet.absoluteFill} />}
+                  {active && <View style={[StyleSheet.absoluteFill, { backgroundColor: t.emerald }]} />}
                   <Text style={[styles.modeText, active && { color: '#FFFFFF' }]}>{m === 'price' ? 'Item' : 'Receipt'}</Text>
                 </Pressable>
               );
             })}
           </View>
           <View style={styles.shutterRow}>
-            <Pressable style={styles.sideBtn} onPress={pickFromLibrary}>
-              <BlurView intensity={30} tint="dark" style={StyleSheet.absoluteFill} />
+            <Pressable style={[styles.sideBtn, { backgroundColor: 'rgba(14,16,18,0.55)' }]} onPress={pickFromLibrary}>
               <Ionicons name="images" size={20} color="#FFFFFF" />
             </Pressable>
             <Pressable onPress={capture} style={({ pressed }) => [styles.shutter, pressed && { transform: [{ scale: 0.93 }] }]}>
-              <LinearGradient colors={[t.emerald, t.teal]} style={styles.shutterInner} />
+              <View style={[styles.shutterInner, { backgroundColor: t.emerald }]} />
             </Pressable>
             <View style={{ width: 46, height: 46 }} />
           </View>
@@ -415,15 +410,9 @@ export function ScanOverlay() {
             },
           ]}
         >
-          <View style={styles.panel}>
-            <BlurView intensity={60} tint="dark" style={StyleSheet.absoluteFill} />
-            <LinearGradient
-              colors={['rgba(10,26,18,0.62)', 'rgba(4,14,9,0.78)']}
-              style={StyleSheet.absoluteFill}
-            />
+          <View style={[styles.panel, { backgroundColor: 'rgba(20,23,26,0.94)' }]}>
             <View style={styles.panelHead}>
-                <View style={styles.panelAvatar}>
-                  <LinearGradient colors={[t.emerald, t.teal]} style={StyleSheet.absoluteFill} />
+                <View style={[styles.panelAvatar, { backgroundColor: t.forest }]}>
                   <Image source={require('../../../assets/cents-mark-white.png')} style={{ width: 16, height: 16 }} resizeMode="contain" />
                 </View>
                 <Text style={styles.panelName}>Cents</Text>
@@ -459,9 +448,9 @@ export function ScanOverlay() {
                   <Ionicons name="mic" size={19} color={t.mint} />
                 </Pressable>
                 <Pressable onPress={send} style={({ pressed }) => pressed && { transform: [{ scale: 0.9 }] }}>
-                  <LinearGradient colors={[t.emerald, t.teal]} style={[styles.panelIconBtn, { borderWidth: 0 }]}>
+                  <View style={[styles.panelIconBtn, { borderWidth: 0, backgroundColor: t.emerald }]}>
                     <Ionicons name="arrow-up" size={17} color="#FFFFFF" />
-                  </LinearGradient>
+                  </View>
                 </Pressable>
               </View>
             </View>
@@ -486,7 +475,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     width: 42, height: 42, borderRadius: 21, alignItems: 'center', justifyContent: 'center',
     overflow: 'hidden', borderWidth: 1, borderColor: 'rgba(255,255,255,0.22)',
   },
-  glassRoundActive: { borderColor: 'rgba(110,231,183,0.7)' },
+  glassRoundActive: { borderColor: 'rgba(127,184,154,0.8)' },
 
   frameHost: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center' },
   frame: { position: 'relative' },
@@ -515,7 +504,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     width: 76, height: 76, borderRadius: 38, padding: 5,
     borderWidth: 3, borderColor: 'rgba(255,255,255,0.9)',
     alignItems: 'center', justifyContent: 'center',
-    shadowColor: t.emerald, shadowOpacity: 0.5, shadowRadius: 18, shadowOffset: { width: 0, height: 6 },
+    shadowColor: '#000000', shadowOpacity: 0.3, shadowRadius: 10, shadowOffset: { width: 0, height: 4 },
   },
   shutterInner: { width: 58, height: 58, borderRadius: 29 },
   sideBtn: {

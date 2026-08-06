@@ -1,29 +1,45 @@
-// "Fintech Glassmorphism" v3 — themed: Deep Obsidian (dark) / Misty Mint (light)
+// "Grounded Editorial" v4 — matte surfaces, earthy neutrals, forest-green
+// accents. Design rules:
+//   1. Surfaces over glass: solid matte fills + crisp 1px borders. No blur,
+//      no neon glow. Shadows are reserved for FLOATING elements (modals, FAB).
+//   2. Accent discipline: ~90% of every screen is neutral; forest green marks
+//      primary actions/income, warm amber marks alerts, so numbers lead.
+//   3. Compatibility: token KEYS are unchanged so every screen re-skins
+//      automatically. `teal` === `emerald` on purpose — legacy
+//      [emerald, teal] gradients now render as flat solids.
 import { useMemo } from 'react';
 import { useColorScheme } from 'react-native';
 import { useFinance } from '../store/finance';
 
 const brand = {
-  emerald: '#10B981',
-  mint: '#6EE7B7',
-  teal: '#0D9488',
-  // M5 redesign: soft sage accents for the friendlier green/white/sage look
+  // Primary action / income green — mature forest, not neon emerald.
+  emerald: '#2E9E5B',
+  // Identical to emerald so all legacy [emerald, teal] gradients go FLAT.
+  teal: '#2E9E5B',
+  // Muted sage (was neon mint) — used for subtle held/active states.
+  mint: '#7FB89A',
   sage: '#9DBFA5',
-  centsYellow: '#FFDE59', // sampled from the Cents brand mark
-  centsYellowTint: 'rgba(255,222,89,0.16)',
-  sageTint: 'rgba(157,191,165,0.22)',
-  sageSoft: 'rgba(157,191,165,0.12)',
-  forest: '#047857',
-  deepForest: '#065F46',
-  red: '#FF4D4D',
-  purple: '#8B5CF6',
-  amber: '#F59E0B',
-  heroGradient: ['#065F46', '#059669', '#0D9488'] as const,
-  sheen: 'rgba(255,255,255,0.14)',
-  emeraldTint: 'rgba(16,185,129,0.12)',
-  emeraldBorder: 'rgba(16,185,129,0.35)',
-  redTint: 'rgba(255,77,77,0.12)',
-  emeraldGlow: 'rgba(16,185,129,0.25)',
+  centsYellow: '#E8C547', // brand mark, slightly desaturated
+  centsYellowTint: 'rgba(232,197,71,0.12)',
+  sageTint: 'rgba(157,191,165,0.14)',
+  sageSoft: 'rgba(157,191,165,0.08)',
+  forest: '#165B33',
+  deepForest: '#11492A',
+  // Mature crimson for expenses/destructive — no hot #FF4D4D.
+  red: '#DC2626',
+  // Cyberpunk purple retired -> editorial slate (charts/allocation hues).
+  purple: '#64748B',
+  // Warm amber for alerts/warnings per the editorial palette.
+  amber: '#D97706',
+  // Flat: legacy "hero gradient" call sites now paint a single matte forest.
+  heroGradient: ['#165B33', '#165B33', '#165B33'] as const,
+  // Sheen overlays render invisible — decorative gloss is retired.
+  sheen: 'rgba(255,255,255,0)',
+  emeraldTint: 'rgba(46,158,91,0.10)',
+  emeraldBorder: 'rgba(46,158,91,0.30)',
+  redTint: 'rgba(220,38,38,0.08)',
+  // Glow retired: any legacy glow paint resolves to near-nothing.
+  emeraldGlow: 'rgba(46,158,91,0.10)',
 };
 
 interface ThemeMeta {
@@ -34,47 +50,54 @@ interface ThemeMeta {
 
 export const darkPalette = {
   ...brand,
-  onEmerald: '#FFFFFF', // white on emerald in BOTH modes (owner: no dark icons/text on green)
+  onEmerald: '#FFFFFF',
   ...( { mode: 'dark', blurTint: 'dark', statusBar: 'light' } as ThemeMeta ),
-  bg: '#040906',
-  surface: 'rgba(255,255,255,0.07)',
-  surfaceStrong: 'rgba(255,255,255,0.11)',
-  sheet: '#0A120D',
-  menuBg: 'rgba(10,18,13,0.92)',
-  border: 'rgba(255,255,255,0.14)',
-  borderSoft: 'rgba(255,255,255,0.07)',
-  inputFill: 'rgba(255,255,255,0.06)',
-  trackBg: 'rgba(255,255,255,0.07)',
-  dotIdle: 'rgba(255,255,255,0.2)',
-  insetBg: '#06120C',
-  tabBarBg: 'rgba(4,9,6,0.55)',
-  textPrimary: '#FFFFFF',
-  textMuted: '#94A3B8',
-  textFaint: 'rgba(148,163,184,0.55)',
+  // Deep slate/charcoal — grounded, not pitch-black-with-glow.
+  bg: '#121417',
+  surface: '#1A1D20',           // SOLID matte card (was translucent glass)
+  surfaceStrong: '#212529',
+  sheet: '#1A1D20',
+  menuBg: '#212529',
+  border: 'rgba(255,255,255,0.08)',
+  borderSoft: 'rgba(255,255,255,0.05)',
+  inputFill: '#212529',
+  trackBg: 'rgba(255,255,255,0.06)',
+  dotIdle: 'rgba(255,255,255,0.18)',
+  insetBg: '#16181B',
+  tabBarBg: '#1A1D20',
+  textPrimary: '#F4F3F0',       // warm off-white ink
+  textMuted: '#9AA1A9',
+  textFaint: 'rgba(154,161,169,0.55)',
 };
 
 export type Palette = typeof darkPalette;
 
-// Derived from Color.kt: LightBackground #F8FAFC, LightTextPrimary #022C22, LightTextMuted #0F766E
 export const lightPalette: Palette = {
   ...brand,
+  // Deeper forest reads better on warm off-white.
+  emerald: '#165B33',
+  teal: '#165B33',
+  emeraldTint: 'rgba(22,91,51,0.07)',
+  emeraldBorder: 'rgba(22,91,51,0.22)',
+  emeraldGlow: 'rgba(22,91,51,0.08)',
   onEmerald: '#FFFFFF',
   ...( { mode: 'light', blurTint: 'light', statusBar: 'dark' } as ThemeMeta ),
-  bg: '#F1F6F0',
-  surface: 'rgba(255,255,255,0.78)',
-  surfaceStrong: 'rgba(255,255,255,0.94)',
+  // Warm paper off-white, not clinical mint.
+  bg: '#FAF9F6',
+  surface: '#FFFFFF',
+  surfaceStrong: '#FFFFFF',
   sheet: '#FFFFFF',
-  menuBg: 'rgba(255,255,255,0.97)',
-  border: 'rgba(2,44,34,0.10)',
-  borderSoft: 'rgba(2,44,34,0.06)',
-  inputFill: 'rgba(2,44,34,0.05)',
-  trackBg: 'rgba(2,44,34,0.08)',
-  dotIdle: 'rgba(2,44,34,0.18)',
-  insetBg: '#FFFFFF',
-  tabBarBg: 'rgba(248,252,250,0.65)',
-  textPrimary: '#022C22',
-  textMuted: '#0F766E',
-  textFaint: 'rgba(15,118,110,0.55)',
+  menuBg: '#FFFFFF',
+  border: '#E9ECEF',
+  borderSoft: '#F1F3F5',
+  inputFill: '#F5F4F0',
+  trackBg: '#ECEBE7',
+  dotIdle: '#D8D7D2',
+  insetBg: '#F5F4F0',
+  tabBarBg: '#FFFFFF',
+  textPrimary: '#1A1D20',       // charcoal ink
+  textMuted: '#6C757D',
+  textFaint: 'rgba(108,117,125,0.55)',
 };
 
 export function useTheme(): Palette {
@@ -89,19 +112,20 @@ export function useTheme(): Palette {
 // Static brand constants for chart internals (identical across themes)
 export const C = darkPalette;
 
+// Tighter radii: 16px cards read as editorial print, not bubbles.
 export const radius = {
-  card: 26,
+  card: 16,
   chip: 999,
-  input: 16,
-  tile: 20,
-  sm: 12,
+  input: 12,
+  tile: 12,
+  sm: 10,
 } as const;
 
 export const type = {
   eyebrow: {
     fontSize: 11,
-    letterSpacing: 1.4,
-    fontWeight: '700' as const,
+    letterSpacing: 1.2,
+    fontWeight: '600' as const,
     textTransform: 'uppercase' as const,
   },
   money: { fontVariant: ['tabular-nums'] as any, letterSpacing: -0.5 },

@@ -1,21 +1,24 @@
-// M5 redesign: user-first Home. Structure, top to bottom:
-//   1. Balance card carousel: an ATM-style Total Balance card, then one
-//      branded card per linked source (GCash, BPI, ...), swipeable with a
-//      scale/lift animation and page dots.
-//   2. Today strip: Saved today + Needs attention (bills due / maxed budgets).
-//   3. Insights carousel (goal trajectory, allocation, savings, top spend).
-//   4. Budgets list and Recent activity, restyled.
+// v4.1 "Grounded Editorial" Home. Structure, top to bottom:
+//   1. Header + Cents co-pilot: ranked plain-text insights under the name.
+//   2. Balance card carousel: matte Total card, then one card per linked
+//      source in the institution's EXACT brand color with its issuer mark.
+//   3. Today strip (goal moves count as SAVED) + Needs attention (strict
+//      priority: urgent due -> maxed -> near-limit -> far due).
+//   4. Insights carousel in USER-CHOSEN order (Reorder link): starred-goal
+//      trajectory, flat allocation pie, savings trend, top spend.
+//   5. Budgets summary and Recent activity with PH merchant brand marks.
 import React, { useMemo, useRef, useState } from 'react';
 import {
-  Animated, Dimensions, FlatList, Pressable, ScrollView, StyleSheet, Text, View,
+  Animated, Dimensions, FlatList, Image, Modal, Pressable, ScrollView, StyleSheet, Text, View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
-import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
 import { GlassCard } from '../../src/components/GlassCard';
 import { AvatarBadge } from '../../src/components/Avatar';
-import { MoMBars, SegmentedDonut, SpendBars, TrajectoryCurve } from '../../src/components/Charts';
+import { BankMark, MerchantBadge, NetworkMark } from '../../src/components/BrandBadge';
+import { MoMBars, PieChart, SpendBars, TrajectoryCurve } from '../../src/components/Charts';
 import { C, Palette, radius, type, useTheme } from '../../src/theme/colors';
 import { useFinance } from '../../src/store/finance';
 import { peso } from '../../src/models/types';
@@ -28,9 +31,9 @@ const BANK_CARD_W = SCREEN_W - 48;   // fills the view: no peek of the next card
 const BANK_GAP = 24;
 const BANK_STEP = BANK_CARD_W + BANK_GAP;
 
-// M5.29 (owner: allocation colors blended): eight strongly distinct hues so
-// neighboring accounts never read as the same slice.
-const ACCOUNT_COLORS = ['#10B981', '#8B5CF6', '#F59E0B', '#3B82F6', '#EC4899', '#F97316', '#6366F1', '#06B6D4'];
+// v4 editorial: eight EARTHY, still-distinct hues (forest, amber, slate,
+// clay, moss, ochre, plum, steel) — no neon.
+const ACCOUNT_COLORS = ['#2E9E5B', '#D97706', '#64748B', '#B45309', '#5B8A72', '#A16207', '#6D5A7A', '#4C7A8C'];
 
 // Darken a #RRGGBB color for card gradients.
 function shade(hex: string, amt: number) {
@@ -45,12 +48,11 @@ function shade(hex: string, amt: number) {
 function InsightSlide({ index, scrollX, children }: { index: number; scrollX: Animated.Value; children: React.ReactNode }) {
   const STEP = CARD_W + BANK_GAP;
   const inputRange = [(index - 1) * STEP, index * STEP, (index + 1) * STEP];
-  const scale = scrollX.interpolate({ inputRange, outputRange: [0.8, 1, 0.8], extrapolate: 'clamp' });
-  const lift = scrollX.interpolate({ inputRange, outputRange: [26, 0, 26], extrapolate: 'clamp' });
-  const dim = scrollX.interpolate({ inputRange, outputRange: [0.35, 1, 0.35], extrapolate: 'clamp' });
-  const tilt = scrollX.interpolate({ inputRange, outputRange: ['6deg', '0deg', '-6deg'], extrapolate: 'clamp' });
+  // v4: a calm slide — slight scale + fade only. Tilt/lift theatrics retired.
+  const scale = scrollX.interpolate({ inputRange, outputRange: [0.96, 1, 0.96], extrapolate: 'clamp' });
+  const dim = scrollX.interpolate({ inputRange, outputRange: [0.5, 1, 0.5], extrapolate: 'clamp' });
   return (
-    <Animated.View style={{ width: CARD_W, marginRight: BANK_GAP, opacity: dim, transform: [{ scale }, { translateY: lift }, { rotateZ: tilt }] }}>
+    <Animated.View style={{ width: CARD_W, marginRight: BANK_GAP, opacity: dim, transform: [{ scale }] }}>
       {children}
     </Animated.View>
   );
@@ -68,50 +70,64 @@ function BalanceCard({ item, index, scrollX, styles, country, hideBalance, onTog
   totalLiquid: number; accountCount: number; holder: string;
 }) {
   const inputRange = [(index - 1) * BANK_STEP, index * BANK_STEP, (index + 1) * BANK_STEP];
-  // The card in view scales up and casts a deeper shadow; off-screen cards
-  // shrink and dim so each swipe lands with a clear highlight.
-  const scale = scrollX.interpolate({ inputRange, outputRange: [0.8, 1, 0.8], extrapolate: 'clamp' });
-  const lift = scrollX.interpolate({ inputRange, outputRange: [26, 0, 26], extrapolate: 'clamp' });
-  const dim = scrollX.interpolate({ inputRange, outputRange: [0.35, 1, 0.35], extrapolate: 'clamp' });
-  const tilt = scrollX.interpolate({ inputRange, outputRange: ['6deg', '0deg', '-6deg'], extrapolate: 'clamp' });
+  // v4: calm slide — slight scale + fade. Tilt/lift retired.
+  const scale = scrollX.interpolate({ inputRange, outputRange: [0.96, 1, 0.96], extrapolate: 'clamp' });
+  const dim = scrollX.interpolate({ inputRange, outputRange: [0.5, 1, 0.5], extrapolate: 'clamp' });
 
   const money = (n: number) => (hideBalance ? '****' : peso(n));
   const isTotal = item.kind === 'total';
   const acct = item.kind === 'account' ? item.account : null;
-  const inst = acct ? institutionFor(country, acct.name) : null;
-  const base = isTotal ? '#0C5138' : (acct?.color ?? inst?.color ?? ACCOUNT_COLORS[index % ACCOUNT_COLORS.length]);
-  const gradient: [string, string, string] = [shade(base, -0.55), shade(base, -0.2), base];
-  const kind = inst?.kind === 'wallet' ? 'E-wallet' : inst?.kind === 'bank' ? 'Bank' : inst?.kind === 'cash' ? 'Cash' : 'Account';
+  const inst = acct ? institutionFor(country, acct.name) : undefined;
+  // v4.1: linked-source cards wear the institution's EXACT brand color,
+  // deepened just enough (-30%) that white type passes contrast — the way
+  // the real GCash/BPI/BDO cards read. Total keeps the house forest.
+  const base = isTotal ? '#165B33' : (inst?.color ?? acct?.color ?? ACCOUNT_COLORS[index % ACCOUNT_COLORS.length]);
+  // v4.4: same quiet two-stop brand gradient as the Wallet stack.
+  const gradient: [string, string] = isTotal
+    ? [shade(base, -0.5), shade(base, 0.12)]
+    : [shade(base, -0.55), shade(base, 0.02)];
+  const isCredit = acct?.kind === 'credit';
+  const network = acct?.network ?? inst?.network;
+  const kind = isCredit ? 'Credit'
+    : inst?.kind === 'wallet' ? 'E-wallet'
+    : inst?.kind === 'digital' ? 'Digital bank'
+    : inst?.kind === 'fintech' ? 'Fintech'
+    : inst?.kind === 'bank' ? 'Bank'
+    : inst?.kind === 'cash' ? 'Cash'
+    : 'Account';
 
   return (
-    <Animated.View style={{ width: BANK_CARD_W, marginRight: BANK_GAP, opacity: dim, transform: [{ scale }, { translateY: lift }, { rotateZ: tilt }] }}>
+    <Animated.View style={{ width: BANK_CARD_W, marginRight: BANK_GAP, opacity: dim, transform: [{ scale }] }}>
       <View style={styles.bankShadow}>
-        <LinearGradient colors={gradient} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.bankCard}>
-          {/* decorative arcs */}
-          <View style={[styles.deco, { width: 220, height: 220, borderRadius: 110, top: -110, right: -60 }]} />
-          <View style={[styles.deco, { width: 150, height: 150, borderRadius: 75, bottom: -80, left: -40 }]} />
-          <LinearGradient
-            colors={['rgba(255,255,255,0.22)', 'rgba(255,255,255,0)']}
-            start={{ x: 0, y: 0 }} end={{ x: 0.65, y: 0.85 }}
-            style={StyleSheet.absoluteFill}
-          />
+        <LinearGradient
+          colors={gradient}
+          start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
+          style={[styles.bankCard, { borderWidth: 1, borderColor: 'rgba(255,255,255,0.14)' }]}
+        >
 
           <View style={styles.bankTop}>
-            <Text style={styles.bankLabel}>{isTotal ? 'Total Balance' : acct!.name}</Text>
-            {isTotal ? (
+            <View style={styles.bankIdRow}>
+              {!isTotal && <BankMark inst={inst} name={acct!.name} size={34} />}
+              <View>
+                <Text style={styles.bankLabel}>{isTotal ? 'Total Balance' : acct!.name}</Text>
+                {!isTotal && <Text style={styles.bankKindSub}>{kind}</Text>}
+              </View>
+            </View>
+            {isTotal && (
               <Pressable onPress={onToggleHide} hitSlop={10} style={styles.eyeBtn}>
                 <Ionicons name={hideBalance ? 'eye-off' : 'eye'} size={15} color="rgba(255,255,255,0.9)" />
               </Pressable>
-            ) : (
-              <View style={styles.kindTag}>
-                <Text style={styles.kindTagText}>{kind}</Text>
-              </View>
             )}
           </View>
 
           <Text style={styles.bankAmount}>{money(isTotal ? totalLiquid : acct!.balance)}</Text>
           {isTotal && (
             <Text style={styles.bankCaption}>Across {accountCount} source{accountCount === 1 ? '' : 's'}</Text>
+          )}
+          {isCredit && (acct!.creditLimit ?? 0) > 0 && (
+            <Text style={styles.bankCaption}>
+              owed of {hideBalance ? '****' : peso(acct!.creditLimit!)} limit
+            </Text>
           )}
 
           <View style={styles.bankBottom}>
@@ -121,10 +137,11 @@ function BalanceCard({ item, index, scrollX, styles, country, hideBalance, onTog
                 <View style={[styles.chipLine, { top: 12 }]} />
                 <View style={styles.chipLineV} />
               </View>
-              <Ionicons name="wifi" size={15} color="rgba(255,255,255,0.75)" style={{ transform: [{ rotate: '90deg' }] }} />
             </View>
             <Text style={styles.bankHolder}>{holder.toUpperCase()}</Text>
-            <Text style={styles.bankMask}>****</Text>
+            {!isTotal && network && network !== 'none'
+              ? <View style={{ marginLeft: 12 }}><NetworkMark network={network} height={13} /></View>
+              : <Text style={styles.bankMask}>****</Text>}
           </View>
         </LinearGradient>
       </View>
@@ -150,12 +167,23 @@ const Section = ({ styles, title, link, onLink }: { styles: any; title: string; 
   <View style={styles.sectionRow}>
     <Text style={styles.sectionTitle}>{title}</Text>
     {link ? (
-      <Pressable onPress={onLink} hitSlop={8}>
+      <Pressable
+        onPress={onLink}
+        hitSlop={10}
+        style={({ pressed }) => [styles.sectionLinkHit, pressed && { opacity: 0.6 }]}
+      >
         <Text style={styles.sectionLink}>{link}</Text>
       </Pressable>
     ) : null}
   </View>
 );
+
+// Weeks from now until a goal date like "Nov 2026" (>=0; 0 if unparseable).
+function weeksUntil(dateLabel: string): number {
+  const parsed = Date.parse(dateLabel.length <= 8 ? `1 ${dateLabel}` : dateLabel);
+  if (Number.isNaN(parsed)) return 0;
+  return Math.max(Math.round((parsed - Date.now()) / (7 * 86_400_000)), 0);
+}
 
 function greetingFor() {
   const h = new Date().getHours();
@@ -192,15 +220,32 @@ export default function Dashboard() {
   const rolloverBudgetsIfNeeded = useFinance((st) => st.rolloverBudgetsIfNeeded);
   React.useEffect(() => { rolloverBudgetsIfNeeded(); }, [rolloverBudgetsIfNeeded]);
 
+  // v4.1: the goal shown in Insights is the STARRED goal (set with the star
+  // in Goals → Manage); falls back to the first goal.
   const goal = useMemo(
     () => goals.find((g) => g.id === selectedGoalId) ?? goals[0],
     [goals, selectedGoalId],
   );
-  const [goalMenu, setGoalMenu] = useState(false);
+  const [reorderOpen, setReorderOpen] = useState(false);
   const [hideBalance, setHideBalance] = useState(false);
+
+  // v4.2: the Cents note pops in like an incoming message — a beat after
+  // mount (opacity + rise + settle spring), origin at the avatar corner.
+  const centsAnim = useRef(new Animated.Value(0)).current;
+  React.useEffect(() => {
+    const id = setTimeout(() => {
+      Animated.spring(centsAnim, {
+        toValue: 1, useNativeDriver: true, friction: 7, tension: 90,
+      }).start();
+    }, 450);
+    return () => clearTimeout(id);
+  }, [centsAnim]);
   const toggleHide = React.useCallback(() => setHideBalance((v) => !v), []);
 
-  const totalLiquid = accounts.reduce((a, x) => a + x.balance, 0);
+  // v4.3: credit-card balances are money OWED — they never count as liquid
+  // and stay out of the allocation pie.
+  const liquidAccounts = useMemo(() => accounts.filter((x) => x.kind !== 'credit'), [accounts]);
+  const totalLiquid = liquidAccounts.reduce((a, x) => a + x.balance, 0);
   const totalLimit = categories.reduce((a, c) => a + c.limit, 0);
   const totalSpent = categories.reduce((a, c) => a + c.spent, 0);
 
@@ -210,24 +255,40 @@ export default function Dashboard() {
   // in red). The card now shows BOTH sides of the day: what went out, and
   // what is left of today's money after spending (never negative).
   const todayTx = transactions.filter((x) => x.timestamp >= startOfDay.getTime());
-  const earnedToday = todayTx.reduce((a, x) => a + (x.isIncome ? x.amount : 0), 0);
-  const spentToday = todayTx.reduce((a, x) => a + (x.isIncome ? 0 : x.amount), 0);
-  const savedToday = Math.max(earnedToday - spentToday, 0);
+  // v4.1 accuracy pass: a transaction with goalId is a SAVINGS MOVE — money
+  // set aside (or pulled back), never spending. So:
+  //   Spent = real outflows only (no goal moves)
+  //   Saved = net moved into goals today + whatever income outlasted spending
+  const earnedToday = todayTx.reduce((a, x) => a + (x.isIncome && !x.goalId ? x.amount : 0), 0);
+  const spentToday = todayTx.reduce((a, x) => a + (!x.isIncome && !x.goalId ? x.amount : 0), 0);
+  const goalMovesToday = todayTx.reduce(
+    (a, x) => a + (x.goalId ? (x.isIncome ? -x.amount : x.amount) : 0), 0);
+  const savedToday = Math.max(goalMovesToday, 0) + Math.max(earnedToday - spentToday, 0);
 
-  // Needs attention: nearest due budget first, then maxed, then near-limit.
+  // v4.1 accuracy pass — strict priority so the card always surfaces the
+  // MOST pressing thing: ① overdue / due-soon bill → ② maxed budget →
+  // ③ near-limit budget (≥85%) → ④ a far-off due date, else all clear.
   const attention = useMemo(() => {
-    const due = categories
-      .filter((c) => c.dueDate)
-      .sort((a, b) => (a.dueDate! - b.dueDate!))[0];
-    if (due) {
-      const remaining = Math.max(due.limit - due.spent, 0);
-      const d = dueLabel(due.dueDate!);
-      return { kind: 'due' as const, name: due.name, line: d.text, amount: remaining, urgent: d.urgent, icon: due.icon };
+    const dues = categories.filter((c) => c.dueDate).sort((a, b) => a.dueDate! - b.dueDate!);
+    const urgentDue = dues.find((c) => dueLabel(c.dueDate!).urgent);
+    if (urgentDue) {
+      const d = dueLabel(urgentDue.dueDate!);
+      const remaining = Math.max(urgentDue.limit - urgentDue.spent, 0);
+      return { kind: 'due' as const, name: urgentDue.name, line: `${d.text} · ${peso(remaining)} left`, amount: remaining, urgent: true, icon: urgentDue.icon };
     }
-    const maxed = categories.find((c) => c.spent >= c.limit);
-    if (maxed) return { kind: 'maxed' as const, name: maxed.name, line: 'Budget fully used', amount: 0, urgent: true, icon: maxed.icon };
-    const near = categories.find((c) => c.limit > 0 && c.spent / c.limit >= 0.85);
-    if (near) return { kind: 'near' as const, name: near.name, line: `${Math.round((near.spent / near.limit) * 100)}% of budget used`, amount: near.limit - near.spent, urgent: false, icon: near.icon };
+    const maxed = categories.find((c) => c.limit > 0 && c.spent >= c.limit);
+    if (maxed) {
+      const over = maxed.spent - maxed.limit;
+      return { kind: 'maxed' as const, name: maxed.name, line: over > 0 ? `Over budget by ${peso(over)}` : 'Budget fully used', amount: 0, urgent: true, icon: maxed.icon };
+    }
+    const near = categories
+      .filter((c) => c.limit > 0 && c.spent / c.limit >= 0.85 && c.spent < c.limit)
+      .sort((a, b) => b.spent / b.limit - a.spent / a.limit)[0];
+    if (near) return { kind: 'near' as const, name: near.name, line: `${Math.round((near.spent / near.limit) * 100)}% used · ${peso(near.limit - near.spent)} left`, amount: near.limit - near.spent, urgent: false, icon: near.icon };
+    if (dues[0]) {
+      const d = dueLabel(dues[0].dueDate!);
+      return { kind: 'due' as const, name: dues[0].name, line: d.text, amount: Math.max(dues[0].limit - dues[0].spent, 0), urgent: false, icon: dues[0].icon };
+    }
     return null;
   }, [categories]);
 
@@ -245,13 +306,73 @@ export default function Dashboard() {
   // ── Insights carousel (unchanged data, restyled shell) ────────────────
   const insightScrollX = useRef(new Animated.Value(0)).current;
   const STEP = CARD_W + BANK_GAP; // identical step to the balance carousel
-  const insights = [{ key: 'goal' }, { key: 'alloc' }, { key: 'mom' }, { key: 'topspend' }];
+  // v4.1: user-ordered insight cards (Reorder link beside the section title).
+  const insightOrder = useFinance((st) => st.insightOrder);
+  const setInsightOrder = useFinance((st) => st.setInsightOrder);
+  const INSIGHT_META: Record<string, { label: string; icon: keyof typeof Ionicons.glyphMap }> = {
+    goal: { label: 'Goal trajectory', icon: 'flag' },
+    alloc: { label: 'Allocation', icon: 'pie-chart' },
+    mom: { label: 'Savings trend', icon: 'stats-chart' },
+    topspend: { label: 'Top spend', icon: 'flame' },
+  };
+  const DEFAULT_ORDER = ['goal', 'alloc', 'mom', 'topspend'];
+  const order = useMemo(() => {
+    const saved = (insightOrder ?? []).filter((k) => DEFAULT_ORDER.includes(k));
+    return [...saved, ...DEFAULT_ORDER.filter((k) => !saved.includes(k))];
+  }, [insightOrder]);
+  const insights = useMemo(() => order.map((key) => ({ key })), [order]);
+  const moveInsight = (key: string, dir: -1 | 1) => {
+    const i = order.indexOf(key);
+    const j = i + dir;
+    if (j < 0 || j >= order.length) return;
+    const next = [...order];
+    [next[i], next[j]] = [next[j], next[i]];
+    setInsightOrder(next);
+  };
   const [savingsPeriod, setSavingsPeriod] = useState<'D' | 'W' | 'M' | 'Y'>('M');
   // M5.6 truth pass: the chart and its note are computed from real
   // transactions (src/utils/stats.ts), no more sample numbers.
   const savingsData = useMemo(() => savingsSeries(transactions, savingsPeriod), [transactions, savingsPeriod]);
   const savingsSub = { D: 'Last 7 days', W: 'Last 5 weeks', M: 'Last 5 months', Y: 'Last 5 years' }[savingsPeriod];
   const savingsNote = useMemo(() => buildSavingsNote(savingsData, savingsPeriod), [savingsData, savingsPeriod]);
+
+  // v4.1: Cents speaks in ranked, ACTIONABLE observations — a warning first
+  // if something needs a decision, then a concrete suggestion. Max two lines
+  // so the co-pilot stays quiet.
+  const centsNotes = useMemo(() => {
+    const notes: { icon: keyof typeof Ionicons.glyphMap; tone: 'warn' | 'ok'; text: string }[] = [];
+    const maxed = categories.filter((c) => c.limit > 0 && c.spent >= c.limit);
+    if (maxed.length > 0) {
+      const worst = maxed.sort((a, b) => (b.spent - b.limit) - (a.spent - a.limit))[0];
+      const over = worst.spent - worst.limit;
+      notes.push({
+        icon: 'alert-circle-outline', tone: 'warn',
+        text: over > 0
+          ? `Your ${worst.name} budget is ${peso(over)} over its limit. Maybe ease up there, or bump the limit in Goals.`
+          : `Your ${worst.name} budget just hit its limit. Anything more spills into next month.`,
+      });
+    }
+    const dueSoon = categories
+      .filter((c) => c.dueDate && dueLabel(c.dueDate!).urgent)
+      .sort((a, b) => a.dueDate! - b.dueDate!)[0];
+    if (dueSoon) {
+      const remaining = Math.max(dueSoon.limit - dueSoon.spent, 0);
+      notes.push({
+        icon: 'calendar-outline', tone: 'warn',
+        text: `Your ${dueSoon.name} bill is ${dueLabel(dueSoon.dueDate!).text.toLowerCase()}. Keep ${peso(remaining)} ready for it.`,
+      });
+    }
+    if (goal && goal.target > goal.current) {
+      const weeks = Math.max(weeksUntil(goal.date), 1);
+      const perWeek = Math.ceil((goal.target - goal.current) / weeks / 50) * 50;
+      notes.push({
+        icon: 'flag-outline', tone: 'ok',
+        text: `Tucking away ${peso(perWeek)} a week keeps ${goal.name} on track for ${goal.date}.`,
+      });
+    }
+    if (savingsNote) notes.push({ icon: 'trending-up-outline', tone: 'ok', text: savingsNote });
+    return notes.slice(0, 2);
+  }, [categories, goal, savingsNote]);
 
   const txIconFor = (categoryId: string, isIncome: boolean): keyof typeof Ionicons.glyphMap => {
     if (isIncome) return 'trending-up';
@@ -262,18 +383,24 @@ export default function Dashboard() {
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
       <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
-        {/* Header */}
+        {/* Header — zIndex keeps it ABOVE the carousel's padded touch area
+            (the old overlap swallowed the first taps on the avatar). */}
         <View style={styles.header}>
-          <View>
+          <View style={{ flex: 1 }}>
             <Text style={styles.greeting}>{greetingFor()}</Text>
             <Text style={styles.username}>{profile.nickname?.trim() || profile.name}</Text>
           </View>
-          <Pressable onPress={() => router.push('/profile')} hitSlop={8}>
-            <LinearGradient colors={[t.emerald, t.teal]} style={styles.avatarRing}>
+          <Pressable
+            onPress={() => router.push('/profile')}
+            hitSlop={12}
+            style={({ pressed }) => [styles.avatarHit, pressed && { opacity: 0.7 }]}
+            accessibilityLabel="Open profile"
+          >
+            <View style={[styles.avatarRing, { borderWidth: 1, borderColor: t.border, backgroundColor: t.surface }]}>
               <View style={styles.avatarInner}>
                 <AvatarBadge avatarId={profile.avatarId} name={profile.name} size={40} />
               </View>
-            </LinearGradient>
+            </View>
           </Pressable>
         </View>
 
@@ -287,13 +414,13 @@ export default function Dashboard() {
           showsHorizontalScrollIndicator={false}
           onScroll={Animated.event([{ nativeEvent: { contentOffset: { x: bankScrollX } } }], { useNativeDriver: true })}
           scrollEventThrottle={16}
-          style={{ marginHorizontal: -24, marginVertical: -44 }}
-          contentContainerStyle={{ paddingHorizontal: 24, paddingVertical: 44 }}
+          style={{ marginHorizontal: -24, marginVertical: -14 }}
+          contentContainerStyle={{ paddingHorizontal: 24, paddingVertical: 14 }}
           renderItem={({ item, index }) => (
             <BalanceCard
               item={item} index={index} scrollX={bankScrollX} styles={styles}
               country={country} hideBalance={hideBalance} onToggleHide={toggleHide}
-              totalLiquid={totalLiquid} accountCount={accounts.length} holder={profile.name}
+              totalLiquid={totalLiquid} accountCount={liquidAccounts.length} holder={profile.name}
             />
           )}
         />
@@ -314,6 +441,30 @@ export default function Dashboard() {
             return <Animated.View key={i} style={[styles.dot, { opacity, transform: [{ scaleX }] }]} />;
           })}
         </View>
+
+        {/* Cents co-pilot: one compact chat-style note, popping in above
+            the Today strip. Never more than two lines. */}
+        {centsNotes.length > 0 && (
+          <Animated.View
+            style={[
+              styles.centsPing,
+              {
+                opacity: centsAnim,
+                transform: [
+                  { translateY: centsAnim.interpolate({ inputRange: [0, 1], outputRange: [12, 0] }) },
+                  { scale: centsAnim.interpolate({ inputRange: [0, 1], outputRange: [0.94, 1] }) },
+                ],
+              },
+            ]}
+          >
+            <View style={styles.centsAvatar}>
+              <Image source={require('../../assets/cents-mark.png')} style={{ width: 15, height: 15 }} resizeMode="contain" />
+            </View>
+            <View style={styles.centsBubble}>
+              <Text style={styles.centsMsg} numberOfLines={2}>{centsNotes[0].text}</Text>
+            </View>
+          </Animated.View>
+        )}
 
         {/* 2 — Today strip */}
         <View style={styles.todayRow}>
@@ -373,7 +524,7 @@ export default function Dashboard() {
         </View>
 
         {/* 3 — Insights */}
-        <Section styles={styles} title="Insights" />
+        <Section styles={styles} title="Insights" link="Reorder" onLink={() => setReorderOpen(true)} />
         <Animated.FlatList
           data={insights}
           keyExtractor={(i) => i.key}
@@ -383,8 +534,8 @@ export default function Dashboard() {
           showsHorizontalScrollIndicator={false}
           onScroll={Animated.event([{ nativeEvent: { contentOffset: { x: insightScrollX } } }], { useNativeDriver: true })}
           scrollEventThrottle={16}
-          style={{ marginHorizontal: -24, marginVertical: -30 }}
-          contentContainerStyle={{ paddingHorizontal: 24, paddingVertical: 30 }}
+          style={{ marginHorizontal: -24, marginVertical: -14 }}
+          contentContainerStyle={{ paddingHorizontal: 24, paddingVertical: 14 }}
           renderItem={({ item, index }) => (
             <InsightSlide index={index} scrollX={insightScrollX}>
               {/* M5.6 empty state: the slide used to render blank with no goals */}
@@ -398,54 +549,25 @@ export default function Dashboard() {
               )}
               {item.key === 'goal' && goal && (
                 <GlassCard style={styles.insightCard}>
-                  <View style={{ position: 'relative', zIndex: 20 }}>
-                    <View style={styles.goalHeader}>
-                      <Pressable
-                        style={[styles.goalSelector, goalMenu && styles.goalSelectorOpen]}
-                        onPress={() => setGoalMenu((v) => !v)}
-                      >
-                        <View style={styles.goalSelectorIcon}>
-                          <Ionicons name="flag" size={13} color={t.emerald} />
-                        </View>
-                        <Text style={styles.goalSelectorText} numberOfLines={1}>{goal.name}</Text>
-                        <View style={styles.goalChevron}>
-                          <Ionicons name={goalMenu ? 'chevron-up' : 'chevron-down'} size={13} color={t.emerald} />
-                        </View>
-                      </Pressable>
+                  {/* v4.1: the dropdown is gone — this card always shows the
+                      STARRED goal; picking a different one lives in Goals. */}
+                  <View style={styles.goalHeader}>
+                    <View style={styles.goalTitleWrap}>
+                      <Ionicons name="star" size={13} color={t.amber} />
+                      <Text style={styles.goalTitleText} numberOfLines={1}>{goal.name}</Text>
                       <View style={styles.goalPctBadge}>
                         <Text style={styles.goalPctText}>{Math.round((goal.current / goal.target) * 100)}%</Text>
                       </View>
                     </View>
-                    <Text style={styles.goalTarget}>Target {peso(goal.target)} by {goal.date}</Text>
-
-                    {goalMenu && (
-                      <View style={styles.goalMenu}>
-                        {goals.map((g, gi) => {
-                          const active = g.id === goal.id;
-                          return (
-                            <Pressable
-                              key={g.id}
-                              style={({ pressed }) => [
-                                styles.goalMenuItem,
-                                gi < goals.length - 1 && styles.goalMenuDivider,
-                                pressed && { backgroundColor: t.inputFill },
-                              ]}
-                              onPress={() => { selectGoal(g.id); setGoalMenu(false); }}
-                            >
-                              <View style={[styles.goalMenuIcon, active && { backgroundColor: t.emeraldTint, borderColor: t.emeraldBorder }]}>
-                                <Ionicons name="flag" size={12} color={active ? t.emerald : t.textMuted} />
-                              </View>
-                              <View style={{ flex: 1 }}>
-                                <Text style={[styles.goalMenuText, active && { color: t.emerald }]} numberOfLines={1}>{g.name}</Text>
-                                <Text style={styles.goalMenuSub}>{peso(g.current)} of {peso(g.target)}</Text>
-                              </View>
-                              {active && <Ionicons name="checkmark-circle" size={17} color={t.emerald} />}
-                            </Pressable>
-                          );
-                        })}
-                      </View>
-                    )}
+                    <Pressable
+                      hitSlop={8}
+                      onPress={() => router.push({ pathname: '/(tabs)/goals', params: { tab: 'goals' } })}
+                      style={({ pressed }) => pressed && { opacity: 0.6 }}
+                    >
+                      <Text style={styles.manageLink}>Manage goals</Text>
+                    </Pressable>
                   </View>
+                  <Text style={styles.goalTarget}>Target {peso(goal.target)} by {goal.date}</Text>
 
                   <View style={{ marginTop: 14 }}>
                     <TrajectoryCurve width={CARD_W - 40} progress={goal.current / goal.target} />
@@ -460,21 +582,32 @@ export default function Dashboard() {
               {item.key === 'alloc' && (
                 <GlassCard style={styles.insightCard}>
                   <CardHeader styles={styles} t={t} icon="wallet" title="Allocation" sub="Across your money sources" />
+                  {/* v4.1: simple flat pie — solid wedges, hairline seams —
+                      with amount + share in the legend. */}
                   <View style={styles.donutRow}>
-                    <SegmentedDonut
-                      size={124}
-                      segments={accounts.map((a, i) => ({ value: a.balance, color: a.color ?? ACCOUNT_COLORS[i % ACCOUNT_COLORS.length] }))}
+                    <PieChart
+                      size={116}
+                      seam={t.surface}
+                      segments={liquidAccounts.map((a, i) => ({ value: a.balance, color: a.color ?? ACCOUNT_COLORS[i % ACCOUNT_COLORS.length] }))}
                     />
-                    <View style={{ flex: 1, gap: 10 }}>
-                      {accounts.map((a, i) => (
-                        <View key={a.id} style={styles.legendRow}>
-                          <View style={[styles.legendDot, { backgroundColor: a.color ?? ACCOUNT_COLORS[i % ACCOUNT_COLORS.length] }]} />
-                          <Text style={styles.legendName}>{a.name}</Text>
-                          <Text style={styles.legendVal}>
-                            {totalLiquid > 0 ? Math.round((a.balance / totalLiquid) * 100) : 0}%
-                          </Text>
-                        </View>
-                      ))}
+                    <View style={{ flex: 1, gap: 9 }}>
+                      {[...liquidAccounts]
+                        .map((a, i) => ({ a, color: a.color ?? ACCOUNT_COLORS[i % ACCOUNT_COLORS.length] }))
+                        .sort((x, y) => y.a.balance - x.a.balance)
+                        .slice(0, 5)
+                        .map(({ a, color }) => (
+                          <View key={a.id} style={styles.legendRow}>
+                            <View style={[styles.legendDot, { backgroundColor: color }]} />
+                            <Text style={styles.legendName} numberOfLines={1}>{a.name}</Text>
+                            <Text style={styles.legendAmt}>{hideBalance ? '****' : peso(a.balance)}</Text>
+                            <Text style={styles.legendVal}>
+                              {totalLiquid > 0 ? Math.round((a.balance / totalLiquid) * 100) : 0}%
+                            </Text>
+                          </View>
+                        ))}
+                      {liquidAccounts.length > 5 && (
+                        <Text style={styles.legendMore}>+{liquidAccounts.length - 5} more in Wallet</Text>
+                      )}
                     </View>
                   </View>
                 </GlassCard>
@@ -557,10 +690,8 @@ export default function Dashboard() {
                     </Text>
                   </View>
                   <View style={styles.track}>
-                    <LinearGradient
-                      colors={maxedCount > 0 ? [t.red, '#FF7A7A'] : [t.forest, t.emerald]}
-                      start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
-                      style={[styles.fill, { width: `${Math.max(pct * 100, 2)}%` }]}
+                    <View
+                      style={[styles.fill, { width: `${Math.max(pct * 100, 2)}%`, backgroundColor: maxedCount > 0 ? t.red : t.emerald }]}
                     />
                   </View>
                   <Text style={styles.budgetSub}>{peso(spent)} of {peso(limit)} this month · Tap to manage</Text>
@@ -584,9 +715,14 @@ export default function Dashboard() {
               onPress={() => router.push('/(tabs)/analytics')}
               style={({ pressed }) => [styles.txRow, i < arr.length - 1 && styles.rowDivider, pressed && { backgroundColor: t.inputFill }]}
             >
-              <View style={[styles.txIcon, tx.isIncome && { backgroundColor: t.emeraldTint, borderColor: t.emeraldBorder }]}>
-                <Ionicons name={txIconFor(tx.categoryId, tx.isIncome)} size={16} color={tx.isIncome ? t.emerald : t.textMuted} />
-              </View>
+              {/* v4.1: known PH merchants wear their brand mark; unknown
+                  ones keep the category icon; goal moves get a green flag. */}
+              <MerchantBadge
+                description={tx.description}
+                fallbackIcon={txIconFor(tx.categoryId, tx.isIncome)}
+                isIncome={tx.isIncome}
+                isGoalMove={!!tx.goalId}
+              />
               <View style={{ flex: 1 }}>
                 <Text style={styles.txName} numberOfLines={1}>{tx.description}</Text>
                 <Text style={styles.txCat}>{tx.categoryId} · {relDate(tx.timestamp)}</Text>
@@ -598,6 +734,42 @@ export default function Dashboard() {
           ))}
         </GlassCard>
       </ScrollView>
+
+      {/* Insight reorder sheet */}
+      <Modal visible={reorderOpen} transparent animationType="fade" onRequestClose={() => setReorderOpen(false)}>
+        <Pressable style={styles.reorderScrim} onPress={() => setReorderOpen(false)}>
+          <Pressable style={styles.reorderSheet} onPress={() => {}}>
+            <Text style={styles.reorderTitle}>Insight order</Text>
+            <Text style={styles.reorderSub}>The first card is what you see when the dashboard opens.</Text>
+            {order.map((key, i) => (
+              <View key={key} style={[styles.reorderRow, i < order.length - 1 && styles.rowDivider]}>
+                <Text style={styles.reorderIndex}>{i + 1}</Text>
+                <Ionicons name={INSIGHT_META[key].icon} size={16} color={t.textMuted} />
+                <Text style={styles.reorderLabel}>{INSIGHT_META[key].label}</Text>
+                <Pressable
+                  hitSlop={6}
+                  disabled={i === 0}
+                  onPress={() => moveInsight(key, -1)}
+                  style={({ pressed }) => [styles.reorderBtn, i === 0 && { opacity: 0.25 }, pressed && { backgroundColor: t.emeraldTint }]}
+                >
+                  <Ionicons name="chevron-up" size={16} color={t.textPrimary} />
+                </Pressable>
+                <Pressable
+                  hitSlop={6}
+                  disabled={i === order.length - 1}
+                  onPress={() => moveInsight(key, 1)}
+                  style={({ pressed }) => [styles.reorderBtn, i === order.length - 1 && { opacity: 0.25 }, pressed && { backgroundColor: t.emeraldTint }]}
+                >
+                  <Ionicons name="chevron-down" size={16} color={t.textPrimary} />
+                </Pressable>
+              </View>
+            ))}
+            <Pressable style={[styles.reorderDone, { backgroundColor: t.emerald }]} onPress={() => setReorderOpen(false)}>
+              <Text style={styles.reorderDoneText}>Done</Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -605,7 +777,25 @@ export default function Dashboard() {
 const makeStyles = (t: Palette) => StyleSheet.create({
   safe: { flex: 1 },
   scroll: { padding: 24, paddingBottom: 0 },
-  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
+  // zIndex lifts the header above the carousel's padded touch plane so the
+  // avatar always takes the FIRST tap (the old 44px overlap ate taps).
+  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, zIndex: 10 },
+  avatarHit: { padding: 4, margin: -4 },
+
+  // Cents chat-ping: a compact incoming-message row — small forest avatar
+  // wearing the yellow mark, matte bubble with a tucked tail corner.
+  centsPing: { flexDirection: 'row', alignItems: 'flex-end', gap: 8, marginBottom: 16 },
+  centsAvatar: {
+    width: 28, height: 28, borderRadius: 14, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: t.forest, marginBottom: 1,
+  },
+  // Open bubble: no fill, just the same 1px border the cards wear.
+  centsBubble: {
+    flex: 1, backgroundColor: 'transparent', borderWidth: 1, borderColor: t.border,
+    borderRadius: 14, borderBottomLeftRadius: 4,
+    paddingHorizontal: 12, paddingVertical: 9,
+  },
+  centsMsg: { color: t.textMuted, fontSize: 12.5, lineHeight: 17 },
   avatarRing: { width: 48, height: 48, borderRadius: 24, padding: 2 },
   avatarInner: {
     flex: 1, borderRadius: 22, backgroundColor: t.insetBg,
@@ -614,27 +804,24 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   greeting: { color: t.textMuted, fontSize: 13 },
   username: { color: t.textPrimary, fontSize: 20, fontWeight: '700' },
 
-  // Balance carousel
+  // Balance carousel — v4: matte card, whisper of a neutral shadow only
   bankShadow: {
-    borderRadius: 28,
-    shadowColor: t.mode === 'dark' ? '#03130C' : '#0B3A2E',
-    shadowOpacity: t.mode === 'dark' ? 0.5 : 0.22,
-    shadowRadius: t.mode === 'dark' ? 28 : 22,
-    shadowOffset: { width: 0, height: t.mode === 'dark' ? 16 : 12 },
-    elevation: 16,
+    borderRadius: 18,
+    shadowColor: '#000000',
+    shadowOpacity: t.mode === 'dark' ? 0.20 : 0.08,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 4,
   },
-  bankCard: { borderRadius: 28, padding: 24, height: 204, overflow: 'hidden', justifyContent: 'space-between' },
-  deco: { position: 'absolute', backgroundColor: 'rgba(255,255,255,0.06)' },
+  bankCard: { borderRadius: 18, padding: 24, height: 204, overflow: 'hidden', justifyContent: 'space-between' },
   bankTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   bankLabel: { color: 'rgba(255,255,255,0.85)', fontSize: 13.5, fontWeight: '600' },
   eyeBtn: {
     width: 30, height: 30, borderRadius: 11, alignItems: 'center', justifyContent: 'center',
     backgroundColor: 'rgba(255,255,255,0.14)',
   },
-  kindTag: {
-    backgroundColor: 'rgba(255,255,255,0.16)', borderRadius: 999, paddingHorizontal: 10, paddingVertical: 4,
-  },
-  kindTagText: { color: 'rgba(255,255,255,0.9)', fontSize: 10.5, fontWeight: '700', letterSpacing: 0.4 },
+  bankIdRow: { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 },
+  bankKindSub: { color: 'rgba(255,255,255,0.65)', fontSize: 11, marginTop: 1 },
   bankAmount: { color: '#FFFFFF', fontSize: 36, fontWeight: '800', ...type.money },
   bankCaption: { color: 'rgba(255,255,255,0.6)', fontSize: 11.5, marginTop: -6 },
   bankBottom: { flexDirection: 'row', alignItems: 'center' },
@@ -674,49 +861,25 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   todayStatValue: { color: t.textPrimary, fontSize: 15, fontWeight: '800', flexShrink: 1, ...type.money },
 
   // Sections
-  sectionRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 },
+  // zIndex keeps section links above the carousels' padded touch planes
+  // (same fix as the header avatar: overlap was eating first taps).
+  sectionRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12, zIndex: 10 },
+  sectionLinkHit: { paddingVertical: 8, paddingHorizontal: 8, marginVertical: -8, marginRight: -8 },
   sectionTitle: { color: t.textPrimary, fontSize: 17, fontWeight: '700' },
   sectionLink: { color: t.emerald, fontSize: 13, fontWeight: '700' },
 
   // Insight cards
   insightCard: { minHeight: 264 },
-  goalHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  goalSelector: {
-    flexDirection: 'row', alignItems: 'center', gap: 8, flexShrink: 1,
-    backgroundColor: t.inputFill, borderWidth: 1, borderColor: t.border,
-    borderRadius: radius.chip, paddingLeft: 6, paddingRight: 8, paddingVertical: 6,
-  },
-  goalSelectorOpen: { borderColor: t.emeraldBorder, backgroundColor: t.emeraldTint },
-  goalChevron: {
-    width: 20, height: 20, borderRadius: 10, alignItems: 'center', justifyContent: 'center',
-    backgroundColor: t.emeraldTint,
-  },
+  goalHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
+  goalTitleWrap: { flexDirection: 'row', alignItems: 'center', gap: 7, flexShrink: 1 },
+  goalTitleText: { color: t.textPrimary, fontSize: 15.5, fontWeight: '700', flexShrink: 1 },
   goalPctBadge: {
-    borderRadius: 999, paddingHorizontal: 10, paddingVertical: 5, marginLeft: 10,
+    borderRadius: 999, paddingHorizontal: 9, paddingVertical: 4,
     backgroundColor: t.emeraldTint, borderWidth: 1, borderColor: t.emeraldBorder,
   },
-  goalPctText: { color: t.emerald, fontSize: 13, fontWeight: '800' },
-  goalSelectorIcon: {
-    width: 24, height: 24, borderRadius: 12, alignItems: 'center', justifyContent: 'center',
-    backgroundColor: t.emeraldTint,
-  },
-  goalSelectorText: { color: t.textPrimary, fontSize: 14, fontWeight: '700', flexShrink: 1 },
+  goalPctText: { color: t.emerald, fontSize: 12.5, fontWeight: '800' },
+  manageLink: { color: t.emerald, fontSize: 13, fontWeight: '700' },
   goalTarget: { color: t.textMuted, fontSize: 12, marginTop: 8 },
-  goalMenu: {
-    position: 'absolute', top: 46, left: 0, right: 0, zIndex: 30,
-    borderRadius: 18, borderWidth: 1, borderColor: t.border,
-    backgroundColor: t.menuBg, overflow: 'hidden',
-    shadowColor: '#000', shadowOpacity: 0.35, shadowRadius: 24, shadowOffset: { width: 0, height: 12 },
-    elevation: 16,
-  },
-  goalMenuItem: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14, paddingVertical: 12 },
-  goalMenuDivider: { borderBottomWidth: 1, borderBottomColor: t.borderSoft },
-  goalMenuIcon: {
-    width: 30, height: 30, borderRadius: 11, alignItems: 'center', justifyContent: 'center',
-    backgroundColor: t.inputFill, borderWidth: 1, borderColor: t.borderSoft,
-  },
-  goalMenuText: { color: t.textPrimary, fontSize: 14, fontWeight: '700' },
-  goalMenuSub: { color: t.textMuted, fontSize: 11, marginTop: 1 },
   trajFooter: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 8 },
   trajNow: { color: t.textPrimary, fontSize: 13, fontWeight: '600' },
   trajPct: { color: t.emerald, fontSize: 13, fontWeight: '600' },
@@ -740,7 +903,9 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   legendRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   legendDot: { width: 8, height: 8, borderRadius: 4 },
   legendName: { color: t.textMuted, fontSize: 13, flex: 1 },
-  legendVal: { color: t.textPrimary, fontSize: 13, fontWeight: '700' },
+  legendAmt: { color: t.textPrimary, fontSize: 12.5, fontWeight: '700', ...type.money },
+  legendVal: { color: t.textFaint, fontSize: 12, fontWeight: '600', width: 34, textAlign: 'right' },
+  legendMore: { color: t.textFaint, fontSize: 11.5, marginTop: 2 },
 
   // Budgets list
   budgetRow: { flexDirection: 'row', gap: 12, padding: 12, alignItems: 'flex-start' },
@@ -765,12 +930,28 @@ const makeStyles = (t: Palette) => StyleSheet.create({
 
   // Activity
   txRow: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 12 },
-  txIcon: {
-    width: 38, height: 38, borderRadius: 13, alignItems: 'center', justifyContent: 'center',
-    backgroundColor: t.inputFill, borderWidth: 1, borderColor: t.borderSoft,
-  },
   // M5.27: unified list type scale (matches the Analytics ledger rows).
   txName: { color: t.textPrimary, fontSize: 15.5, fontWeight: '700' },
   txCat: { color: t.textMuted, fontSize: 12.5, marginTop: 2 },
   txAmount: { color: t.textPrimary, fontSize: 15.5, fontWeight: '800', ...type.money },
+
+  // Reorder sheet
+  reorderScrim: { flex: 1, backgroundColor: 'rgba(10,12,14,0.45)', justifyContent: 'center', padding: 28 },
+  reorderSheet: {
+    backgroundColor: t.sheet, borderRadius: radius.card, borderWidth: 1, borderColor: t.border,
+    padding: 20,
+    shadowColor: '#000000', shadowOpacity: 0.2, shadowRadius: 18, shadowOffset: { width: 0, height: 8 },
+    elevation: 12,
+  },
+  reorderTitle: { color: t.textPrimary, fontSize: 17, fontWeight: '700' },
+  reorderSub: { color: t.textMuted, fontSize: 12.5, marginTop: 3, marginBottom: 10 },
+  reorderRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 12 },
+  reorderIndex: { color: t.textFaint, fontSize: 12, fontWeight: '700', width: 14, ...type.money },
+  reorderLabel: { color: t.textPrimary, fontSize: 14.5, fontWeight: '600', flex: 1 },
+  reorderBtn: {
+    width: 32, height: 32, borderRadius: 10, alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, borderColor: t.border,
+  },
+  reorderDone: { height: 46, borderRadius: radius.input, alignItems: 'center', justifyContent: 'center', marginTop: 14 },
+  reorderDoneText: { color: t.onEmerald, fontSize: 14.5, fontWeight: '800' },
 });

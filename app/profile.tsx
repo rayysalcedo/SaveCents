@@ -7,7 +7,6 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
-import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { GlassCard } from '../src/components/GlassCard';
@@ -238,11 +237,11 @@ export default function ProfileScreen() {
         {/* Identity */}
         <View style={styles.identity}>
           <View>
-            <LinearGradient colors={[t.emerald, t.teal]} style={styles.avatarRing}>
+            <View style={[styles.avatarRing, { borderWidth: 1, borderColor: t.border, backgroundColor: t.surface }]}>
               <View style={styles.avatar}>
                 <AvatarBadge avatarId={profile.avatarId} name={profile.name} size={74} />
               </View>
-            </LinearGradient>
+            </View>
             <Pressable onPress={openPersona} style={styles.avatarEdit} hitSlop={6}>
               <Ionicons name="pencil" size={13} color={t.onEmerald} />
             </Pressable>
@@ -337,7 +336,7 @@ export default function ProfileScreen() {
                   { transform: [{ translateX: segAnim.interpolate({ inputRange: [0, 2], outputRange: [0, 76] }) }] },
                 ]}
               >
-                <LinearGradient colors={[t.emerald, t.teal]} style={{ flex: 1, borderRadius: 999 }} />
+                <View style={{ flex: 1, borderRadius: 999, backgroundColor: t.emerald }} />
               </Animated.View>
               {THEME_OPTS.map((m) => (
                 <Pressable key={m} style={styles.segment} onPress={() => setThemeMode(m)}>
@@ -353,7 +352,7 @@ export default function ProfileScreen() {
           <Row styles={styles} t={t}
             icon="globe"
             label="Country & currency"
-            value={`${countryData.flag} ${countryData.symbol}`}
+            value={`${countryData.code} · ${countryData.symbol}`}
             divider
             onPress={() => setCountrySheet(true)}
           />
@@ -380,10 +379,10 @@ export default function ProfileScreen() {
 
         {/* Log out */}
         <Pressable onPress={doLogout} style={({ pressed }) => pressed && { transform: [{ scale: 0.985 }] }}>
-          <LinearGradient colors={[t.emerald, t.teal]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.logout}>
+          <View style={[styles.logout, { backgroundColor: t.emerald }]}>
             <Ionicons name="log-out-outline" size={19} color={t.onEmerald} />
             <Text style={styles.logoutText}>Log out</Text>
-          </LinearGradient>
+          </View>
         </Pressable>
 
         <Text style={styles.version}>SaveCents v1.0</Text>
@@ -411,9 +410,9 @@ export default function ProfileScreen() {
                   </View>
                   {pwError ? <Text style={styles.pwError}>{pwError}</Text> : null}
                   <Pressable onPress={sendOtp} disabled={pwBusy}>
-                    <LinearGradient colors={[t.emerald, t.teal]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={[styles.submit, pwBusy && { opacity: 0.6 }]}>
+                    <View style={[styles.submit, { backgroundColor: t.emerald }, pwBusy && { opacity: 0.6 }]}>
                       <Text style={styles.submitText}>{pwBusy ? 'Sending' : 'Send code'}</Text>
-                    </LinearGradient>
+                    </View>
                   </Pressable>
                 </>
               )}
@@ -433,12 +432,9 @@ export default function ProfileScreen() {
                   />
                   {pwError ? <Text style={styles.pwError}>{pwError}</Text> : null}
                   <Pressable onPress={confirmOtp} disabled={pwCode.length !== 6}>
-                    <LinearGradient
-                      colors={pwCode.length === 6 ? [t.emerald, t.teal] : [t.inputFill, t.inputFill]}
-                      start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.submit}
-                    >
+                    <View style={[styles.submit, { backgroundColor: pwCode.length === 6 ? t.emerald : t.inputFill }]}>
                       <Text style={[styles.submitText, pwCode.length !== 6 && { color: t.textMuted }]}>Verify</Text>
-                    </LinearGradient>
+                    </View>
                   </Pressable>
                   <Pressable onPress={sendOtp} disabled={pwBusy} style={styles.resend}>
                     <Text style={styles.resendText}>{pwBusy ? 'Sending' : 'Resend code'}</Text>
@@ -469,9 +465,9 @@ export default function ProfileScreen() {
                   />
                   {pwError ? <Text style={styles.pwError}>{pwError}</Text> : null}
                   <Pressable onPress={savePassword} disabled={pwBusy}>
-                    <LinearGradient colors={[t.emerald, t.teal]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={[styles.submit, pwBusy && { opacity: 0.6 }]}>
+                    <View style={[styles.submit, { backgroundColor: t.emerald }, pwBusy && { opacity: 0.6 }]}>
                       <Text style={styles.submitText}>{pwBusy ? 'Saving' : 'Save password'}</Text>
-                    </LinearGradient>
+                    </View>
                   </Pressable>
                 </>
               )}
@@ -516,9 +512,9 @@ export default function ProfileScreen() {
                 ))}
               </View>
               <Pressable onPress={savePersona}>
-                <LinearGradient colors={[t.emerald, t.teal]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.submit}>
+                <View style={[styles.submit, { backgroundColor: t.emerald }]}>
                   <Text style={styles.submitText}>Save</Text>
-                </LinearGradient>
+                </View>
               </Pressable>
             </Pressable>
           </KeyboardAvoidingView>
@@ -542,9 +538,9 @@ export default function ProfileScreen() {
                 value={editEmail} onChangeText={setEditEmail} autoCapitalize="none" keyboardType="email-address" returnKeyType="done"
               />
               <Pressable onPress={() => { if (editName.trim() && editEmail.trim()) { updateProfile(editName.trim(), editEmail.trim()); setAccountSheet(false); } }}>
-                <LinearGradient colors={[t.emerald, t.teal]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.submit}>
+                <View style={[styles.submit, { backgroundColor: t.emerald }]}>
                   <Text style={styles.submitText}>Save changes</Text>
-                </LinearGradient>
+                </View>
               </Pressable>
             </Pressable>
           </KeyboardAvoidingView>
@@ -564,7 +560,10 @@ export default function ProfileScreen() {
                 style={[styles.countryRow, i < arr.length - 1 && styles.rowDivider]}
                 onPress={() => { setCountry(c.code); setCountrySheet(false); }}
               >
-                <Text style={styles.flag}>{c.flag}</Text>
+                {/* v4.3: no emoji — a bordered country-code chip instead */}
+                <View style={styles.codeChip}>
+                  <Text style={styles.codeChipText}>{c.code}</Text>
+                </View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.countryName}>{c.name}</Text>
                   <Text style={styles.countrySub}>{c.institutions.length} banks and wallets · {c.symbol}</Text>
@@ -643,7 +642,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
 
   logout: {
     height: 54, borderRadius: 18, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 9,
-    shadowColor: t.emerald, shadowOpacity: 0.35, shadowRadius: 16, shadowOffset: { width: 0, height: 8 }, elevation: 8,
+    
     marginTop: 4,
   },
   logoutText: { color: t.onEmerald, fontSize: 15.5, fontWeight: '800' },
@@ -679,7 +678,11 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   sheetTitle: { color: t.textPrimary, fontSize: 18, fontWeight: '800', marginBottom: 12 },
   sheetSub: { color: t.textMuted, fontSize: 12, marginBottom: 12, lineHeight: 17 },
   countryRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12 },
-  flag: { fontSize: 26 },
+  codeChip: {
+    width: 40, height: 30, borderRadius: 9, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: t.inputFill, borderWidth: 1, borderColor: t.border,
+  },
+  codeChipText: { color: t.textPrimary, fontSize: 12, fontWeight: '800', letterSpacing: 0.5 },
   countryName: { color: t.textPrimary, fontSize: 15, fontWeight: '700' },
   countrySub: { color: t.textMuted, fontSize: 12, marginTop: 1 },
   input: {

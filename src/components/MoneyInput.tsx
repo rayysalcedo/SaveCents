@@ -1,7 +1,13 @@
+// v4 "Jeepney Fare" speed pass — the money field is now the loudest thing on
+// any form: oversized editorial numerals (28px, tabular), a quiet muted
+// currency mark, and 1-tap quick-increment chips (+50 / +100 / +500 / +1000)
+// so a fare or merienda run is logged in under three seconds without ever
+// opening the keyboard.
 import React from 'react';
 import {
-  InputAccessoryView, Platform, StyleSheet, Text, TextInput, View, ViewStyle,
+  InputAccessoryView, Platform, Pressable, StyleSheet, Text, TextInput, View, ViewStyle,
 } from 'react-native';
+import * as Haptics from 'expo-haptics';
 import { radius, type, useTheme } from '../theme/colors';
 import { useFinance } from '../store/finance';
 
@@ -26,41 +32,68 @@ export function cleanMoneyInput(text: string): string {
 }
 
 const ACCESSORY_ID = 'savecents-money-done';
+const QUICK_STEPS = [50, 100, 500, 1000] as const;
 
 export function MoneyInput({
-  value, onChangeText, placeholder = '0.00', autoFocus, style,
+  value, onChangeText, placeholder = '0.00', autoFocus, style, quickChips = true,
 }: {
   value: string;
   onChangeText: (raw: string) => void;
   placeholder?: string;
   autoFocus?: boolean;
   style?: ViewStyle;
+  /** 1-tap increment chips beneath the field. On by default for speed. */
+  quickChips?: boolean;
 }) {
   const t = useTheme();
   const currency = useFinance((s) => s.currency);
+
+  const bump = (step: number) => {
+    const current = parseFloat(value) || 0;
+    const next = current + step;
+    // Preserve cents only if the user had typed them.
+    onChangeText(Number.isInteger(next) ? String(next) : next.toFixed(2));
+    Haptics.selectionAsync().catch(() => {});
+  };
+
   return (
-    <View
-      style={[
-        styles.wrap,
-        { backgroundColor: t.inputFill, borderColor: t.borderSoft },
-        style,
-      ]}
-    >
-      <Text style={[styles.symbol, { color: t.emerald }]}>{currency}</Text>
-      <TextInput
-        style={[styles.input, { color: t.textPrimary }, type.money as any]}
-        value={formatMoneyRaw(value)}
-        onChangeText={(txt) => onChangeText(cleanMoneyInput(txt))}
-        placeholder={placeholder}
-        placeholderTextColor={t.textMuted}
-        keyboardType="decimal-pad"
-        returnKeyType="done"
-        autoFocus={autoFocus}
-        inputAccessoryViewID={Platform.OS === 'ios' ? ACCESSORY_ID : undefined}
-      />
+    <View style={[styles.block, style]}>
+      <View style={[styles.wrap, { backgroundColor: t.inputFill, borderColor: t.border }]}>
+        <Text style={[styles.symbol, { color: t.textMuted }]}>{currency}</Text>
+        <TextInput
+          style={[styles.input, { color: t.textPrimary }, type.money as any]}
+          value={formatMoneyRaw(value)}
+          onChangeText={(txt) => onChangeText(cleanMoneyInput(txt))}
+          placeholder={placeholder}
+          placeholderTextColor={t.textFaint}
+          keyboardType="decimal-pad"
+          returnKeyType="done"
+          autoFocus={autoFocus}
+          inputAccessoryViewID={Platform.OS === 'ios' ? ACCESSORY_ID : undefined}
+        />
+      </View>
+
+      {quickChips && (
+        <View style={styles.chipRow}>
+          {QUICK_STEPS.map((step) => (
+            <Pressable
+              key={step}
+              onPress={() => bump(step)}
+              style={({ pressed }) => [
+                styles.chip,
+                { borderColor: t.border, backgroundColor: pressed ? t.emeraldTint : 'transparent' },
+              ]}
+              hitSlop={4}
+            >
+              <Text style={[styles.chipText, { color: t.emerald }, type.money as any]}>+{step}</Text>
+            </Pressable>
+          ))}
+        </View>
+      )}
+
       {Platform.OS === 'ios' && (
         <InputAccessoryView nativeID={ACCESSORY_ID} backgroundColor={t.sheet}>
-          {/* Slim seam: fills the strip iOS reserves above number pads (prevents the see-through gap) */}
+          {/* Slim seam: fills the strip iOS reserves above number pads */}
           <View style={[styles.accessory, { borderTopColor: t.borderSoft }]} />
         </InputAccessoryView>
       )}
@@ -69,12 +102,21 @@ export function MoneyInput({
 }
 
 const styles = StyleSheet.create({
+  block: { marginBottom: 12 },
   wrap: {
-    flexDirection: 'row', alignItems: 'center', gap: 8,
-    height: 52, borderRadius: radius.input, paddingHorizontal: 14,
-    borderWidth: 1, marginBottom: 12,
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    height: 60, borderRadius: radius.input, paddingHorizontal: 16,
+    borderWidth: 1,
   },
-  symbol: { fontSize: 17, fontWeight: '800' },
+  // Currency mark recedes; the amount leads.
+  symbol: { fontSize: 15, fontWeight: '600' },
   accessory: { height: 8, borderTopWidth: 1 },
-  input: { flex: 1, fontSize: 17, fontWeight: '700' },
+  // Editorial numerals: large, bold, tabular — instantly legible.
+  input: { flex: 1, fontSize: 28, fontWeight: '700' },
+  chipRow: { flexDirection: 'row', gap: 8, marginTop: 10 },
+  chip: {
+    flex: 1, height: 36, borderRadius: 999, borderWidth: 1,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  chipText: { fontSize: 13, fontWeight: '700' },
 });

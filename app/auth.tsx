@@ -17,7 +17,6 @@ import {
   ScrollView, StyleSheet, Text, TextInput, TouchableWithoutFeedback, View,
 } from 'react-native';
 import { useRouter } from 'expo-router';
-import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import * as LocalAuthentication from 'expo-local-authentication';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -118,15 +117,11 @@ const PrimaryButton = (props: {
     disabled={props.busy}
     style={({ pressed }) => [props.styles.buttonWrap, (pressed || props.busy) && { opacity: 0.9 }]}
   >
-    <LinearGradient
-      colors={[props.t.emerald, props.t.teal]}
-      start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
-      style={props.styles.button}
-    >
+    <View style={[props.styles.button, { backgroundColor: props.t.emerald }]}>
       {props.busy
         ? <ActivityIndicator color={props.t.onEmerald} />
         : <Text style={props.styles.buttonText}>{props.label}</Text>}
-    </LinearGradient>
+    </View>
   </Pressable>
 );
 
@@ -152,11 +147,7 @@ const ModeSwitch = (props: {
             { width: thumbW, transform: [{ translateX: x.interpolate({ inputRange: [0, 1], outputRange: [0, thumbW] }) }] },
           ]}
         >
-          <LinearGradient
-            colors={[props.t.emerald, props.t.teal]}
-            start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
-            style={props.styles.segmentThumb}
-          />
+          <View style={[props.styles.segmentThumb, { backgroundColor: props.t.emerald }]} />
         </Animated.View>
       )}
       {(['LOGIN', 'SIGNUP'] as Mode[]).map((m) => {
@@ -736,11 +727,7 @@ export default function AuthScreen() {
             {step === 'SUCCESS' && pendingUser && (
               <View style={styles.successWrap}>
                 <View style={styles.successShadow}>
-                  <LinearGradient
-                    colors={[t.emerald, t.teal]}
-                    start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
-                    style={styles.successCard}
-                  >
+                  <View style={[styles.successCard, { backgroundColor: t.forest }]}>
                     <View style={styles.successCheckRing}>
                       <Ionicons name="checkmark" size={40} color={t.emerald} />
                     </View>
@@ -754,7 +741,7 @@ export default function AuthScreen() {
                     >
                       <Text style={styles.successBtnText}>Home Page</Text>
                     </Pressable>
-                  </LinearGradient>
+                  </View>
                 </View>
               </View>
             )}
@@ -835,15 +822,11 @@ export default function AuthScreen() {
                 <Text style={{ color: t.textMuted, fontSize: 14.5, fontWeight: '700' }}>Cancel</Text>
               </Pressable>
               <Pressable style={{ flex: 1 }} onPress={fpStep === 'code' ? fpVerify : fpSave} disabled={fpBusy}>
-                <LinearGradient
-                  colors={[t.emerald, t.teal]}
-                  start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
-                  style={{ height: 48, borderRadius: 14, alignItems: 'center', justifyContent: 'center', opacity: fpBusy ? 0.7 : 1 }}
-                >
+                <View style={{ height: 48, borderRadius: 12, alignItems: 'center', justifyContent: 'center', opacity: fpBusy ? 0.7 : 1, backgroundColor: t.emerald }}>
                   {fpBusy
                     ? <ActivityIndicator size="small" color={t.onEmerald} />
                     : <Text style={{ color: t.onEmerald, fontSize: 14.5, fontWeight: '800' }}>{fpStep === 'code' ? 'Continue' : 'Save password'}</Text>}
-                </LinearGradient>
+                </View>
               </Pressable>
             </View>
           </Pressable>
@@ -899,7 +882,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   },
   segmentThumbWrap: {
     position: 'absolute', top: 4, bottom: 4, left: 4, borderRadius: radius.chip,
-    shadowColor: t.emerald, shadowOpacity: 0.3, shadowRadius: 8, shadowOffset: { width: 0, height: 2 },
+    
   },
   segmentThumb: { flex: 1, borderRadius: radius.chip },
   segmentBtn: { flex: 1, height: 38, alignItems: 'center', justifyContent: 'center' },
@@ -937,7 +920,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
 
   buttonWrap: {
     borderRadius: radius.chip, marginTop: 10,
-    shadowColor: t.emerald, shadowOpacity: 0.35, shadowRadius: 12, shadowOffset: { width: 0, height: 4 },
+    
   },
   button: { height: 50, borderRadius: radius.chip, alignItems: 'center', justifyContent: 'center' },
   buttonText: { color: t.onEmerald, fontSize: 16, fontWeight: '800' },
@@ -976,7 +959,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   successWrap: { paddingHorizontal: 6 },
   successShadow: {
     borderRadius: radius.card,
-    shadowColor: t.emerald, shadowOpacity: 0.45, shadowRadius: 26, shadowOffset: { width: 0, height: 10 },
+    shadowColor: '#000000', shadowOpacity: 0.18, shadowRadius: 14, shadowOffset: { width: 0, height: 6 },
     elevation: 10,
   },
   successCard: {

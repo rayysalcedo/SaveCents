@@ -9,8 +9,6 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useDragToDismiss } from '../../hooks/useDragToDismiss';
-import { BlurView } from 'expo-blur';
-import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { MoneyInput } from '../MoneyInput';
@@ -147,11 +145,9 @@ export function CentsHub() {
   return (
     <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
       {/* Backdrop: darkened + blurred so the user stays in context */}
+      {/* v4: plain neutral scrim — no backdrop blur. */}
       <Animated.View style={[StyleSheet.absoluteFill, { opacity: anim }]}>
-        <Pressable style={StyleSheet.absoluteFill} onPress={dismiss}>
-          <BlurView intensity={26} tint={t.mode === 'dark' ? 'dark' : 'default'} style={StyleSheet.absoluteFill} />
-          <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(4,15,9,0.42)' }]} />
-        </Pressable>
+        <Pressable style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(10,12,14,0.45)' }]} onPress={dismiss} />
       </Animated.View>
 
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.kav} pointerEvents="box-none">
@@ -163,16 +159,7 @@ export function CentsHub() {
         >
           {/* Glass sheet */}
           <Animated.View style={[styles.sheetShadow, { transform: [{ translateY: sheetDrag.drag }] }]}>
-            <View style={styles.sheetClip}>
-              <BlurView intensity={60} tint={t.blurTint} style={StyleSheet.absoluteFill} />
-              <LinearGradient
-                colors={
-                  t.mode === 'dark'
-                    ? ['rgba(16,30,22,0.90)', 'rgba(7,16,11,0.95)']
-                    : ['rgba(255,255,255,0.95)', 'rgba(255,255,255,0.85)']
-                }
-                style={StyleSheet.absoluteFill}
-              />
+            <View style={[styles.sheetClip, { backgroundColor: t.sheet }]}>
               <View style={[styles.sheetInner, { paddingBottom: 20 + insets.bottom }]}>
                 <View style={styles.grabZone} {...sheetDrag.panHandlers}>
                   <View style={styles.handle} />
@@ -181,9 +168,9 @@ export function CentsHub() {
                 {mode === 'menu' && (
                   <>
                     <View style={styles.headRow}>
-                      <LinearGradient colors={[t.emerald, t.teal]} style={styles.headBadge}>
+                      <View style={[styles.headBadge, { backgroundColor: t.forest }]}>
                         <Image source={require('../../../assets/cents-mark.png')} style={{ width: 26, height: 26 }} resizeMode="contain" />
-                      </LinearGradient>
+                      </View>
                       <View style={{ flex: 1 }}>
                         <Text style={styles.headTitle}>Hi, I'm Cents</Text>
                         <Text style={styles.headSub}>What should we do with your money?</Text>
@@ -201,23 +188,23 @@ export function CentsHub() {
                     </View>
 
                     {/* Chat + voice entries */}
-                    <Pressable onPress={() => openChat()} style={({ pressed }) => pressed && { transform: [{ scale: 0.985 }] }}>
-                      <LinearGradient colors={[t.emerald, t.teal]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.chatBtn}>
-                        <View style={styles.chatBtnIcon}>
-                          <Ionicons name="chatbubbles" size={19} color={t.onEmerald} />
-                        </View>
-                        <View style={{ flex: 1 }}>
-                          <Text style={styles.chatBtnTitle}>Chat with Cents</Text>
-                          <Text style={styles.chatBtnSub}>Log, ask, or check anything in English or Tagalog</Text>
-                        </View>
-                        <Pressable
-                          onPress={() => openChat({ voice: true })}
-                          style={({ pressed }) => [styles.micBtn, pressed && { transform: [{ scale: 0.9 }] }]}
-                          hitSlop={6}
-                        >
-                          <Ionicons name="mic" size={20} color={t.emerald} />
-                        </Pressable>
-                      </LinearGradient>
+                    {/* v4: quiet co-pilot entry — outlined matte row with
+                        monochrome icons, not a glowing gradient banner. */}
+                    <Pressable onPress={() => openChat()} style={({ pressed }) => [styles.chatBtn, pressed && { backgroundColor: t.inputFill }]}>
+                      <View style={styles.chatBtnIcon}>
+                        <Ionicons name="chatbubbles-outline" size={19} color={t.textPrimary} />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.chatBtnTitle}>Ask Cents</Text>
+                        <Text style={styles.chatBtnSub}>Log, ask, or check anything in English or Tagalog</Text>
+                      </View>
+                      <Pressable
+                        onPress={() => openChat({ voice: true })}
+                        style={({ pressed }) => [styles.micBtn, pressed && { transform: [{ scale: 0.9 }] }]}
+                        hitSlop={6}
+                      >
+                        <Ionicons name="mic-outline" size={20} color={t.textPrimary} />
+                      </Pressable>
                     </Pressable>
                   </>
                 )}
@@ -275,14 +262,11 @@ export function CentsHub() {
                       onPress={mode === 'expense' ? submitExpense : submitIncome}
                       style={({ pressed }) => pressed && { transform: [{ scale: 0.985 }] }}
                     >
-                      <LinearGradient
-                        colors={
-                          (mode === 'expense' ? validAmount && pickedCat : validAmount && pickedAcct)
-                            ? [t.emerald, t.teal]
-                            : [t.inputFill, t.inputFill]
-                        }
-                        start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
-                        style={styles.submit}
+                      <View
+                        style={[
+                          styles.submit,
+                          { backgroundColor: (mode === 'expense' ? validAmount && pickedCat : validAmount && pickedAcct) ? t.emerald : t.inputFill },
+                        ]}
                       >
                         <Text style={[
                           styles.submitText,
@@ -290,7 +274,7 @@ export function CentsHub() {
                         ]}>
                           {mode === 'expense' ? 'Log expense' : 'Add income'}
                         </Text>
-                      </LinearGradient>
+                      </View>
                     </Pressable>
                   </>
                 )}
@@ -306,7 +290,8 @@ export function CentsHub() {
 function QuickTile({ styles, t, icon, tint, label, onPress }: any) {
   return (
     <Pressable style={({ pressed }) => [styles.tile, pressed && { transform: [{ scale: 0.96 }] }]} onPress={onPress}>
-      <View style={[styles.tileIcon, { backgroundColor: tint + '1E', borderColor: tint + '45' }]}>
+      {/* v4: neutral chip, colored glyph only — accents stay scarce. */}
+      <View style={[styles.tileIcon, { backgroundColor: 'transparent', borderColor: t.border }]}>
         <Ionicons name={icon} size={22} color={tint} />
       </View>
       <Text style={styles.tileLabel}>{label}</Text>
@@ -316,14 +301,15 @@ function QuickTile({ styles, t, icon, tint, label, onPress }: any) {
 
 const makeStyles = (t: Palette) => StyleSheet.create({
   kav: { flex: 1, justifyContent: 'flex-end' },
+  // Floating modal: a soft neutral shadow is allowed here (v4 rule).
   sheetShadow: {
     marginHorizontal: 10,
-    shadowColor: '#02170D', shadowOpacity: 0.35, shadowRadius: 30, shadowOffset: { width: 0, height: -6 },
-    elevation: 20,
+    shadowColor: '#000000', shadowOpacity: 0.20, shadowRadius: 18, shadowOffset: { width: 0, height: -4 },
+    elevation: 12,
   },
   sheetClip: {
-    borderTopLeftRadius: 32, borderTopRightRadius: 32, overflow: 'hidden',
-    borderWidth: 1, borderColor: t.mode === 'dark' ? 'rgba(255,255,255,0.14)' : 'rgba(255,255,255,0.95)',
+    borderTopLeftRadius: 20, borderTopRightRadius: 20, overflow: 'hidden',
+    borderWidth: 1, borderColor: t.border,
     borderBottomWidth: 0,
   },
   sheetInner: { padding: 22, paddingTop: 12 },
@@ -332,8 +318,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   headRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 18 },
   headTitle: { color: t.textPrimary, fontSize: 19, fontWeight: '800' },
   headBadge: {
-    width: 46, height: 46, borderRadius: 17, alignItems: 'center', justifyContent: 'center',
-    shadowColor: t.emerald, shadowOpacity: 0.35, shadowRadius: 10, shadowOffset: { width: 0, height: 5 },
+    width: 46, height: 46, borderRadius: 14, alignItems: 'center', justifyContent: 'center',
   },
   headIconBadge: {
     width: 42, height: 42, borderRadius: 15, alignItems: 'center', justifyContent: 'center',
@@ -347,27 +332,26 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   },
   tileRow: { flexDirection: 'row', gap: 10, marginBottom: 16 },
   tile: {
-    flex: 1, alignItems: 'center', gap: 8, paddingVertical: 16, borderRadius: 20,
-    backgroundColor: t.mode === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.85)',
-    borderWidth: 1, borderColor: t.mode === 'dark' ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.95)',
+    flex: 1, alignItems: 'center', gap: 8, paddingVertical: 16, borderRadius: radius.tile,
+    backgroundColor: t.inputFill,
+    borderWidth: 1, borderColor: t.border,
   },
   tileIcon: { width: 46, height: 46, borderRadius: 16, alignItems: 'center', justifyContent: 'center', borderWidth: 1 },
   tileLabel: { color: t.textPrimary, fontSize: 12, fontWeight: '700' },
   chatBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 12,
-    borderRadius: 22, padding: 14, overflow: 'hidden',
-    shadowColor: t.emerald, shadowOpacity: 0.4, shadowRadius: 16, shadowOffset: { width: 0, height: 8 }, elevation: 8,
+    borderRadius: radius.card, padding: 14,
+    backgroundColor: 'transparent', borderWidth: 1, borderColor: t.border,
   },
   chatBtnIcon: {
-    width: 42, height: 42, borderRadius: 15, alignItems: 'center', justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.2)',
+    width: 42, height: 42, borderRadius: 12, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: t.inputFill, borderWidth: 1, borderColor: t.borderSoft,
   },
-  chatBtnTitle: { color: t.onEmerald, fontSize: 15.5, fontWeight: '800' },
-  chatBtnSub: { color: 'rgba(255,255,255,0.88)', fontSize: 11.5, marginTop: 1 },
+  chatBtnTitle: { color: t.textPrimary, fontSize: 15.5, fontWeight: '700' },
+  chatBtnSub: { color: t.textMuted, fontSize: 11.5, marginTop: 1 },
   micBtn: {
     width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center',
-    backgroundColor: '#FFFFFF',
-    shadowColor: '#02170D', shadowOpacity: 0.25, shadowRadius: 8, shadowOffset: { width: 0, height: 4 },
+    backgroundColor: t.inputFill, borderWidth: 1, borderColor: t.border,
   },
   fieldLabel: { ...type.eyebrow, color: t.textFaint, marginTop: 12, marginBottom: 8 },
   chipScroll: { gap: 8, paddingRight: 8 },

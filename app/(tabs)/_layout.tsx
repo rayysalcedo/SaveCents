@@ -2,10 +2,8 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Animated, Easing, Image, PanResponder, Pressable, StyleSheet, View } from 'react-native';
 import { Tabs } from 'expo-router';
 import { BottomTabBarProps } from '@react-navigation/bottom-tabs';
-import { BlurView } from 'expo-blur';
 import MaskedView from '@react-native-masked-view/masked-view';
 import Svg, { Path } from 'react-native-svg';
-import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useTheme } from '../../src/theme/colors';
@@ -45,11 +43,9 @@ function TabHighlight({ focused, dark }: { focused: boolean; dark: boolean }) {
       <View
         style={[
           styles.circle,
-          {
-            backgroundColor: dark ? 'rgba(110,231,183,0.16)' : 'rgba(16,185,129,0.14)',
-            borderWidth: 1,
-            borderColor: dark ? 'rgba(110,231,183,0.35)' : 'rgba(16,185,129,0.3)',
-          },
+          // v4: a quiet neutral fill — the focused state is carried by the
+          // filled glyph + green ink, not a glowing capsule.
+          { backgroundColor: dark ? 'rgba(255,255,255,0.05)' : 'rgba(26,29,32,0.05)' },
         ]}
       />
     </Animated.View>
@@ -195,18 +191,14 @@ function CentsButton({ active, onPress }: { active: boolean; onPress: () => void
     <View style={styles.centerFloat} accessibilityLabel="Cents" {...pan.panHandlers}>
       <Animated.View style={[styles.centerShadow, { transform: [{ scale }] }]}>
         <View style={styles.centerClip}>
-          {/* Glow ring: brightens while held */}
-          <Animated.View style={[StyleSheet.absoluteFill, { opacity: glow }]}>
-            <View style={[StyleSheet.absoluteFill, { borderRadius: 28, borderWidth: 2, borderColor: t.mint, backgroundColor: 'rgba(16,185,129,0.14)' }]} />
+          {/* v4: solid matte forest button. The held state is a quiet inner
+              ring, not a neon glow. */}
+          <View style={[styles.centerBtn, { backgroundColor: active ? t.emerald : t.forest }]}>
+            <Image source={require('../../assets/cents-mark.png')} style={{ width: 32, height: 32 }} resizeMode="contain" />
+          </View>
+          <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, { opacity: glow }]}>
+            <View style={[StyleSheet.absoluteFill, { borderRadius: 28, borderWidth: 2, borderColor: 'rgba(255,255,255,0.35)' }]} />
           </Animated.View>
-          {/* Top-lit vertical gradient, matching the reference button */}
-          <LinearGradient
-            colors={active ? [t.mint, t.emerald] : [t.emerald, t.teal]}
-            start={{ x: 0.5, y: 0 }} end={{ x: 0.5, y: 1 }}
-            style={styles.centerBtn}
-          >
-            <Image source={require('../../assets/cents-mark.png')} style={{ width: 30, height: 30 }} resizeMode="contain" />
-          </LinearGradient>
         </View>
       </Animated.View>
     </View>
@@ -214,7 +206,7 @@ function CentsButton({ active, onPress }: { active: boolean; onPress: () => void
 }
 
 // Capsule path with a concave notch carved into the top center. The blur is
-// MASKED to this path (BlurView cannot be path-clipped any other way), and
+// MASKED to this path (the solid fill is clipped via the SVG mask), and
 // the same path is stroked on top as the border.
 //
 // Cradle geometry (docked-FAB style, like the reference):
@@ -296,13 +288,16 @@ function LiquidTabBar({ state, navigation }: BottomTabBarProps) {
       style={[
         styles.bar,
         {
-          shadowColor: dark ? '#000000' : '#0B3A2E',
-          shadowOpacity: dark ? 0.35 : 0.16,
+          // v4: the docked bar floats — a single soft neutral shadow is
+          // permitted here, tuned way down from the old glow.
+          shadowColor: '#000000',
+          shadowOpacity: dark ? 0.25 : 0.08,
         },
       ]}
       onLayout={(e) => setBarW(Math.round(e.nativeEvent.layout.width))}
     >
-      {/* Notched liquid-glass shell: blur masked to the carved path */}
+      {/* v4: notched MATTE shell — solid fill masked to the carved path,
+          finished with a crisp 1px stroke. No blur, no gloss. */}
       {barW > 0 && (
         <>
           <MaskedView
@@ -313,20 +308,14 @@ function LiquidTabBar({ state, navigation }: BottomTabBarProps) {
               </Svg>
             }
           >
-            <BlurView intensity={85} tint={t.blurTint} style={StyleSheet.absoluteFill} />
-            <View
-              style={[
-                StyleSheet.absoluteFill,
-                { backgroundColor: dark ? 'rgba(10,20,14,0.42)' : 'rgba(255,255,255,0.5)' },
-              ]}
-            />
+            <View style={[StyleSheet.absoluteFill, { backgroundColor: t.tabBarBg }]} />
           </MaskedView>
           <Svg width={barW} height={BAR_H} style={StyleSheet.absoluteFill} pointerEvents="none">
             <Path
               d={d}
               fill="none"
-              stroke={dark ? 'rgba(255,255,255,0.16)' : 'rgba(255,255,255,0.92)'}
-              strokeWidth={1.2}
+              stroke={dark ? 'rgba(255,255,255,0.10)' : '#E9ECEF'}
+              strokeWidth={1}
             />
           </Svg>
         </>
@@ -375,7 +364,7 @@ const styles = StyleSheet.create({
     height: BAR_H,
     flexDirection: 'row',
     alignItems: 'center',
-    shadowRadius: 26,
+    shadowRadius: 16,
     shadowOffset: { width: 0, height: 12 },
     elevation: 16,
     // overflow stays visible: the Cents button floats above the notch
@@ -393,9 +382,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  // Floating action button: the ONE nav element allowed a shadow — soft,
+  // neutral, grounded (no green glow).
   centerShadow: {
-    shadowColor: '#10B981', shadowOpacity: 0.45, shadowRadius: 14, shadowOffset: { width: 0, height: 6 },
-    elevation: 14,
+    shadowColor: '#000000', shadowOpacity: 0.22, shadowRadius: 10, shadowOffset: { width: 0, height: 4 },
+    elevation: 8,
   },
   centerClip: {
     width: BTN_SIZE, height: BTN_SIZE, borderRadius: BTN_SIZE / 2, overflow: 'hidden',

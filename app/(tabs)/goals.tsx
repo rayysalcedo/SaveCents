@@ -4,7 +4,6 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams } from 'expo-router';
-import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { GlassCard } from '../../src/components/GlassCard';
@@ -23,7 +22,10 @@ const TABS = ['Goals', 'Budgets'] as const;
 export default function GoalsScreen() {
   const t = useTheme();
   const styles = useMemo(() => makeStyles(t), [t]);
-  const { goals, addGoal, removeGoal, addToGoal, accounts, categories, addBudget, updateBudget, removeBudget, transactions } = useFinance();
+  const { goals, addGoal, removeGoal, addToGoal, accounts, categories, addBudget, updateBudget, removeBudget, transactions, selectGoal, selectedGoalId } = useFinance();
+  // The dashboard's Goal insight follows the starred goal; with nothing
+  // starred yet it falls back to the first goal — mirror that here.
+  const starredId = selectedGoalId ?? goals[0]?.id ?? null;
   const weeklyRate = useMemo(() => weeklySavingsRate(transactions), [transactions]);
 
   const [tab, setTab] = useState<0 | 1>(0);
@@ -163,9 +165,9 @@ export default function GoalsScreen() {
             <Text style={styles.subtitle}>Set your financial targets</Text>
           </View>
           <Pressable onPress={() => (tab === 0 ? setGoalSheet(true) : openNewBudget())}>
-            <LinearGradient colors={[t.emerald, t.teal]} style={styles.addBtn}>
+            <View style={[styles.addBtn, { backgroundColor: t.emerald }]}>
               <Ionicons name="add" size={20} color={t.onEmerald} />
-            </LinearGradient>
+            </View>
           </Pressable>
         </View>
 
@@ -183,7 +185,7 @@ export default function GoalsScreen() {
                 },
               ]}
             >
-              <LinearGradient colors={[t.emerald, t.teal]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={{ flex: 1, borderRadius: 999 }} />
+              <View style={{ flex: 1, borderRadius: 999, backgroundColor: t.emerald }} />
             </Animated.View>
           )}
           {TABS.map((label, i) => (
@@ -201,10 +203,10 @@ export default function GoalsScreen() {
                   <Text style={styles.emptyTitle}>No goals yet</Text>
                   <Text style={styles.emptySub}>Name what you are saving for and Cents will defend it against impulse purchases.</Text>
                   <Pressable onPress={() => setGoalSheet(true)}>
-                    <LinearGradient colors={[t.emerald, t.teal]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.emptyBtn}>
+                    <View style={[styles.emptyBtn, { backgroundColor: t.emerald }]}>
                       <Ionicons name="flag" size={15} color={t.onEmerald} />
                       <Text style={styles.emptyBtnText}>Create a goal</Text>
-                    </LinearGradient>
+                    </View>
                   </Pressable>
                 </GlassCard>
               )}
@@ -216,9 +218,25 @@ export default function GoalsScreen() {
                 return (
                   <GlassCard key={g.id} glow={pct >= 0.8}>
                     <View style={styles.goalHeader}>
+                      {/* v4.1: star = "show this goal on my dashboard".
+                          Exactly one goal is starred at a time. */}
+                      <Pressable
+                        hitSlop={8}
+                        onPress={() => selectGoal(g.id)}
+                        style={({ pressed }) => [styles.starBtn, pressed && { opacity: 0.6 }]}
+                        accessibilityLabel={starredId === g.id ? 'Featured on dashboard' : 'Feature on dashboard'}
+                      >
+                        <Ionicons
+                          name={starredId === g.id ? 'star' : 'star-outline'}
+                          size={18}
+                          color={starredId === g.id ? t.amber : t.textFaint}
+                        />
+                      </Pressable>
                       <View style={{ flex: 1 }}>
                         <Text style={styles.goalName}>{g.name}</Text>
-                        <Text style={styles.goalDate}>Target date · {g.date}</Text>
+                        <Text style={styles.goalDate}>
+                          {starredId === g.id ? 'On your dashboard · ' : ''}Target date · {g.date}
+                        </Text>
                       </View>
                       {reached ? (
                         <View style={styles.reachedChip}>
@@ -262,10 +280,10 @@ export default function GoalsScreen() {
                   <Text style={styles.emptyTitle}>No budgets yet</Text>
                   <Text style={styles.emptySub}>Pick a category and give every peso a job.</Text>
                   <Pressable onPress={openNewBudget}>
-                    <LinearGradient colors={[t.emerald, t.teal]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.emptyBtn}>
+                    <View style={[styles.emptyBtn, { backgroundColor: t.emerald }]}>
                       <Ionicons name="wallet" size={15} color={t.onEmerald} />
                       <Text style={styles.emptyBtnText}>Create a budget</Text>
-                    </LinearGradient>
+                    </View>
                   </Pressable>
                 </GlassCard>
               )}
@@ -310,10 +328,8 @@ export default function GoalsScreen() {
                               </Pressable>
                             </View>
                             <View style={styles.track}>
-                              <LinearGradient
-                                colors={maxed ? [t.red, '#FF8A8A'] : [t.forest, t.emerald]}
-                                start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
-                                style={[styles.fill, { width: `${Math.max(pct * 100, 2)}%` }]}
+                              <View
+                                style={[styles.fill, { width: `${Math.max(pct * 100, 2)}%`, backgroundColor: maxed ? t.red : t.emerald }]}
                               />
                             </View>
                           </GlassCard>
@@ -367,9 +383,9 @@ export default function GoalsScreen() {
                 </View>
               )}
               <Pressable onPress={submitGoal}>
-                <LinearGradient colors={[t.emerald, t.teal]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.submit}>
+                <View style={[styles.submit, { backgroundColor: t.emerald }]}>
                   <Text style={styles.submitText}>Create goal</Text>
-                </LinearGradient>
+                </View>
               </Pressable>
             </Pressable>
             </Animated.View>
@@ -428,9 +444,9 @@ export default function GoalsScreen() {
                 </Text>
               )}
               <Pressable onPress={submitSavings}>
-                <LinearGradient colors={[t.emerald, t.teal]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.submit}>
+                <View style={[styles.submit, { backgroundColor: t.emerald }]}>
                   <Text style={styles.submitText}>Add savings</Text>
-                </LinearGradient>
+                </View>
               </Pressable>
             </Pressable>
             </Animated.View>
@@ -511,9 +527,9 @@ export default function GoalsScreen() {
                 </View>
               )}
               <Pressable onPress={submitBudget}>
-                <LinearGradient colors={[t.emerald, t.teal]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.submit}>
+                <View style={[styles.submit, { backgroundColor: t.emerald }]}>
                   <Text style={styles.submitText}>{editingId ? 'Save changes' : 'Create budget'}</Text>
-                </LinearGradient>
+                </View>
               </Pressable>
             </Pressable>
             </Animated.View>
@@ -552,7 +568,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   groupTotals: { color: t.textMuted, fontSize: 11, fontWeight: '700' },
   addBtn: {
     width: 42, height: 42, borderRadius: 14, alignItems: 'center', justifyContent: 'center',
-    shadowColor: t.emerald, shadowOpacity: 0.5, shadowRadius: 14, shadowOffset: { width: 0, height: 4 },
+    
   },
   segWrap: {
     flexDirection: 'row', padding: 4, borderRadius: 999, marginBottom: 20,
@@ -610,6 +626,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   budgetLeft: { color: t.mint, fontSize: 12, fontWeight: '800' },
   track: { height: 7, borderRadius: 4, backgroundColor: t.trackBg, overflow: 'hidden' },
   fill: { height: 7, borderRadius: 4 },
+  starBtn: { width: 30, height: 30, alignItems: 'center', justifyContent: 'center', marginRight: 2 },
   trash: {
     width: 30, height: 30, borderRadius: 10, alignItems: 'center', justifyContent: 'center',
     backgroundColor: t.redTint,

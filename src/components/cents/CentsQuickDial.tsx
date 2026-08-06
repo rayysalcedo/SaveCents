@@ -16,7 +16,6 @@
 // this overlay renders state from the ui store so the two never disagree.
 import React, { useEffect, useRef } from 'react';
 import { Animated, Image, Pressable, StyleSheet, Text, View } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { Palette, useTheme } from '../../theme/colors';
@@ -109,19 +108,15 @@ function DialButton({ t, styles, index, label, open, highlighted, pinned, onPick
           to 0 height (the v21 "chips render as lines" bug). */}
       <Pressable onPress={onPick} disabled={!pinned} style={styles.press} accessibilityLabel={label}>
         <View style={styles.clip}>
-          {/* Same top-lit vertical gradient as the Cents button */}
-          <LinearGradient
-            colors={[t.emerald, t.teal]}
-            start={{ x: 0.5, y: 0 }} end={{ x: 0.5, y: 1 }}
-            style={styles.grad}
-          >
+          {/* v4: same flat matte forest as the Cents button */}
+          <View style={[styles.grad, { backgroundColor: t.forest }]}>
             {/* Cents AI gets a chat bubble, NOT the cent mark: the main
                 button already wears the mark, and a twin directly above it
                 read as the button "showing up again" (owner feedback). */}
             {opt.key === 'ai' && <Ionicons name="chatbubble" size={24} color={t.centsYellow} />}
             {opt.key === 'scan' && <Image source={require('../../../assets/cents-scan-mark.png')} style={styles.icon} resizeMode="contain" />}
             {opt.key === 'voice' && <Ionicons name="mic" size={24} color={t.centsYellow} />}
-          </LinearGradient>
+          </View>
           {/* Yellow glow ring ON TOP, mirrors the Cents button's hold ring */}
           <Animated.View style={[StyleSheet.absoluteFill, { opacity: pop }]} pointerEvents="none">
             <View style={styles.hotRing} />
@@ -186,14 +181,14 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     alignSelf: 'center',
     width: QUICK_BTN,
     height: QUICK_BTN,
-    shadowColor: '#10B981', shadowOpacity: 0.45, shadowRadius: 14, shadowOffset: { width: 0, height: 6 },
+    shadowColor: '#000000', shadowOpacity: 0.25, shadowRadius: 10, shadowOffset: { width: 0, height: 4 },
     elevation: 14,
   },
   // Highlighted button jumps the sibling stack (zIndex for iOS, elevation
   // for Android) so its name pill renders OVER the neighboring buttons —
   // without this the Scanner pill slid under the AI button.
   btnShadowHot: {
-    shadowColor: t.centsYellow,
+    shadowColor: '#000000',
     shadowOpacity: 0.6,
     shadowRadius: 16,
     zIndex: 10,

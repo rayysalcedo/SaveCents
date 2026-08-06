@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useRef } from 'react';
 import { Animated, Easing, StyleSheet, Text, View } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
 import Svg, {
   Circle, Defs, Line, LinearGradient as SvgGradient, Path, Stop,
 } from 'react-native-svg';
@@ -47,6 +46,49 @@ function describeArc(cx: number, cy: number, r: number, start: number, end: numb
   const e = polar(cx, cy, r, end);
   const large = end - start > 180 ? 1 : 0;
   return `M ${s.x} ${s.y} A ${r} ${r} 0 ${large} 1 ${e.x} ${e.y}`;
+}
+
+// ---------------- Flat editorial pie ----------------
+// v4.1: replaces the segmented donut on the Allocation card. Solid wedges,
+// hairline background-colored seams between slices, no gloss. A lone slice
+// renders as a clean full disc.
+
+export function PieChart({
+  segments, size = 132, seam = '#FAF9F6',
+}: { segments: DonutSegment[]; size?: number; seam?: string }) {
+  const cx = size / 2, cy = size / 2;
+  const r = size / 2 - 2;
+  const total = segments.reduce((a, s) => a + s.value, 0);
+  const visible = segments.filter((s) => s.value > 0);
+
+  if (total <= 0 || visible.length === 0) {
+    return (
+      <Svg width={size} height={size}>
+        <Circle cx={cx} cy={cy} r={r} fill="rgba(127,184,154,0.18)" />
+      </Svg>
+    );
+  }
+  if (visible.length === 1) {
+    return (
+      <Svg width={size} height={size}>
+        <Circle cx={cx} cy={cy} r={r} fill={visible[0].color} />
+      </Svg>
+    );
+  }
+
+  let angle = -90;
+  const wedges = visible.map((seg, i) => {
+    const sweep = (seg.value / total) * 360;
+    const s = polar(cx, cy, r, angle);
+    const e = polar(cx, cy, r, angle + sweep);
+    const large = sweep > 180 ? 1 : 0;
+    const d = `M ${cx} ${cy} L ${s.x} ${s.y} A ${r} ${r} 0 ${large} 1 ${e.x} ${e.y} Z`;
+    angle += sweep;
+    // The seam stroke (background color) draws crisp hairlines between slices.
+    return <Path key={i} d={d} fill={seg.color} stroke={seam} strokeWidth={1.5} />;
+  });
+
+  return <Svg width={size} height={size}>{wedges}</Svg>;
 }
 
 // ---------------- Animated goal trajectory ----------------
@@ -194,13 +236,7 @@ export function MoMBars({
                   overflow: 'hidden',
                 }}
               >
-                <LinearGradient
-                  colors={active ? [C.mint, C.emerald] : t.mode === 'dark'
-                    ? ['rgba(16,185,129,0.45)', 'rgba(13,148,136,0.25)']
-                    : ['rgba(16,185,129,0.55)', 'rgba(13,148,136,0.35)']}
-                  start={{ x: 0, y: 0 }} end={{ x: 0, y: 1 }}
-                  style={{ flex: 1 }}
-                />
+                <View style={{ flex: 1, backgroundColor: active ? t.emerald : (t.mode === 'dark' ? 'rgba(46,158,91,0.35)' : 'rgba(22,91,51,0.30)') }} />
               </Animated.View>
             </View>
             <Text style={[styles.momLabel, { color: active ? t.textPrimary : t.textMuted }, active && { fontWeight: '800' }]}>
@@ -262,11 +298,7 @@ export function SpendBars({ data }: { data: SpendRow[] }) {
                   overflow: 'hidden',
                 }}
               >
-                <LinearGradient
-                  colors={maxed ? [C.red, '#FF8A8A'] : [C.forest, C.emerald, C.mint]}
-                  start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
-                  style={{ flex: 1 }}
-                />
+                <View style={{ flex: 1, backgroundColor: maxed ? C.red : t.emerald }} />
               </Animated.View>
             </View>
           </View>

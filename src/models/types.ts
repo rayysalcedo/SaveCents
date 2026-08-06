@@ -3,9 +3,16 @@
 export interface Account {
   id: string;
   name: string;
+  // Debit/wallet/cash: money available. Credit: current amount OWED.
   balance: number;
   color?: string;
   initial?: string;
+  // v4.3 Wallet: card type (default 'debit' when absent, so every account
+  // from an older snapshot keeps working unchanged).
+  kind?: 'debit' | 'credit';
+  creditLimit?: number; // credit only
+  billingDay?: number;  // credit only: statement day of month (1..31)
+  network?: 'visa' | 'mastercard' | 'none'; // card mark; defaults from the institution
 }
 
 export interface Category {

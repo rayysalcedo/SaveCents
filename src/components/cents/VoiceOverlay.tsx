@@ -19,8 +19,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Animated, Easing, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { BlurView } from 'expo-blur';
-import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { Palette, useTheme } from '../../theme/colors';
@@ -384,18 +382,13 @@ export function VoiceOverlay() {
     : phase === 'error' ? 'refresh'
     : 'mic-off';
 
-  const waveColor = phase === 'speaking' ? t.centsYellow : '#6EE7B7';
+  const waveColor = phase === 'speaking' ? t.centsYellow : t.mint;
   const waveDim = phase === 'muted' || phase === 'error';
 
   return (
     <Animated.View style={[StyleSheet.absoluteFill, { opacity: fade }]}>
-      <BlurView intensity={60} tint="dark" style={StyleSheet.absoluteFill} />
-      <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(3,12,8,0.72)' }]} />
-      <LinearGradient
-        colors={['rgba(16,185,129,0.22)', 'rgba(16,185,129,0)', 'rgba(13,148,136,0.16)']}
-        locations={[0, 0.5, 1]}
-        style={StyleSheet.absoluteFill}
-      />
+      {/* v4: solid matte charcoal canvas — no blur veil, no aurora wash. */}
+      <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(18,20,23,0.97)' }]} />
 
       <View style={[styles.wrap, { paddingTop: insets.top + 18, paddingBottom: insets.bottom + 22 }]}>
         {/* Header */}
@@ -469,14 +462,11 @@ export function VoiceOverlay() {
             onPress={onPrimaryPress}
             style={({ pressed }) => [pressed && phase !== 'thinking' && { transform: [{ scale: 0.92 }] }]}
           >
-            <LinearGradient
-              colors={phase === 'speaking' ? [t.centsYellow, '#F5C400'] : [t.mint, t.emerald]}
-              style={styles.bigBtn}
-            >
+            <View style={[styles.bigBtn, { backgroundColor: phase === 'speaking' ? t.centsYellow : t.emerald }]}>
               {phase === 'thinking'
-                ? <ActivityIndicator size="small" color="#04140D" />
-                : <Ionicons name={primaryIcon} size={26} color="#04140D" />}
-            </LinearGradient>
+                ? <ActivityIndicator size="small" color="#FFFFFF" />
+                : <Ionicons name={primaryIcon} size={26} color={phase === 'speaking' ? '#1A1D20' : '#FFFFFF'} />}
+            </View>
           </Pressable>
 
           <View style={styles.sideBtn} />
@@ -574,7 +564,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.1)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)',
     borderRadius: 999, paddingHorizontal: 13, paddingVertical: 7,
   },
-  liveDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: '#6EE7B7' },
+  liveDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: '#7FB89A' },
   topPillText: { color: 'rgba(255,255,255,0.92)', fontSize: 12.5, fontWeight: '700' },
   xBtn: {
     width: 38, height: 38, borderRadius: 14, alignItems: 'center', justifyContent: 'center',

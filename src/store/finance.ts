@@ -27,10 +27,18 @@ export interface FinanceState {
   currency: string;
   lastRollover: string; // M5.6: YYYY-MM of the last budget month rollover
 
+  // v4.1 Dashboard: user-chosen order of the Insights carousel cards.
+  // Optional: old persisted snapshots predate it (dashboard falls back).
+  insightOrder?: string[];
+  setInsightOrder: (order: string[]) => void;
   selectGoal: (id: string) => void;
   setThemeMode: (m: 'light' | 'dark' | 'system') => void;
   setCountry: (code: string) => void;
-  addAccount: (name: string, color?: string, initial?: string) => void;
+  addAccount: (
+    name: string, color?: string, initial?: string,
+    opts?: { kind?: 'debit' | 'credit'; creditLimit?: number; billingDay?: number; balance?: number; network?: 'visa' | 'mastercard' | 'none' },
+  ) => void;
+  updateAccount: (id: string, patch: Partial<Pick<Account, 'name' | 'color' | 'initial' | 'kind' | 'creditLimit' | 'billingDay' | 'network'>>) => void;
   updateProfile: (name: string, email: string) => void;
   updatePersona: (nickname: string, avatarId: string | null) => void;
   biometricsEnabled: boolean;
@@ -487,6 +495,7 @@ export interface CloudSnapshot {
   chat: ChatMessage[];
   profile: UserProfile;
   selectedGoalId: string | null;
+  insightOrder?: string[]; // v4.1: optional for old snapshots
   themeMode: 'light' | 'dark' | 'system';
   country: string;
   currency: string;
@@ -528,6 +537,7 @@ const makeDefaults = (): CloudSnapshot & { isThinking: boolean } => ({
   isThinking: false,
   profile: { name: 'Rayy', email: 'rayysalcedo@gmail.com', isLoggedIn: false },
   selectedGoalId: null,
+  insightOrder: ['goal', 'alloc', 'mom', 'topspend'],
   themeMode: 'light' as const, // M5: friendly light/sage is the new default
   country: 'PH',
   currency: '\u20B1',
@@ -549,6 +559,7 @@ export const buildSnapshot = (s: FinanceState): CloudSnapshot => ({
   chat: s.chat.slice(-30),
   profile: s.profile,
   selectedGoalId: s.selectedGoalId,
+  insightOrder: s.insightOrder ?? ['goal', 'alloc', 'mom', 'topspend'],
   themeMode: s.themeMode,
   country: s.country,
   currency: s.currency,
@@ -570,6 +581,7 @@ export const useFinance = create<FinanceState>()(
   ...makeDefaults(),
 
   selectGoal: (id) => set({ selectedGoalId: id }),
+  setInsightOrder: (order) => set({ insightOrder: order }),
   setThemeMode: (m) => set({ themeMode: m }),
 
   setCountry: (code) => {
@@ -580,11 +592,23 @@ export const useFinance = create<FinanceState>()(
     set({ country: code, currency: c.symbol });
   },
 
-  addAccount: (name, color, initial) => {
+  addAccount: (name, color, initial, opts) => {
     const s = get();
     if (s.accounts.some((a) => a.name.toLowerCase() === name.toLowerCase())) return;
-    set({ accounts: [...s.accounts, { id: uid(), name, balance: 0, color, initial }] });
+    set({
+      accounts: [...s.accounts, {
+        id: uid(), name, balance: Math.max(opts?.balance ?? 0, 0), color, initial,
+        kind: opts?.kind ?? 'debit',
+        creditLimit: opts?.kind === 'credit' ? Math.max(opts?.creditLimit ?? 0, 0) : undefined,
+        billingDay: opts?.kind === 'credit' && opts?.billingDay
+          ? Math.min(Math.max(Math.round(opts.billingDay), 1), 31)
+          : undefined,
+        network: opts?.network,
+      }],
+    });
   },
+  updateAccount: (id, patch) =>
+    set((s) => ({ accounts: s.accounts.map((a) => (a.id === id ? { ...a, ...patch } : a)) })),
   updateProfile: (name, email) => set((s) => ({ profile: { ...s.profile, name, email } })),
   updatePersona: (nickname, avatarId) =>
     set((s) => ({ profile: { ...s.profile, nickname: nickname.trim() || undefined, avatarId: avatarId ?? undefined } })),

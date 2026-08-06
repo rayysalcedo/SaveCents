@@ -16,8 +16,6 @@ import {
   Pressable, ScrollView, StyleSheet, Text, TextInput, View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { BlurView } from 'expo-blur';
-import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { Palette, useTheme } from '../../theme/colors';
 import { useFinance } from '../../store/finance';
@@ -110,21 +108,10 @@ const CardLabel = ({ styles, t, icon, label }: { styles: Styles; t: Palette; ico
   </View>
 );
 
-// Frosted MATTE glass shell. v25 PERF: the per-bubble BlurView is replaced by
-// the translucent fill rule 3.3 sanctions — one UIVisualEffectView PER BUBBLE
-// over the blur-80 backdrop made long threads drop frames while scrolling.
-// The fill is tuned up slightly (esp. dark) so the matte look is unchanged;
-// the full-screen backdrop blur still supplies the liquid-glass depth.
+// v4: the "glass" bubble is now a matte surface — solid fill, 1px border.
+// (Also a perf win: zero UIVisualEffectViews in the thread.)
 const Glass = ({ styles, t, children, strong }: { styles: Styles; t: Palette; children: React.ReactNode; strong?: boolean }) => (
-  <View style={[styles.glassBubble, strong && styles.glassBubbleStrong]}>
-    <LinearGradient
-      colors={
-        t.mode === 'dark'
-          ? ['rgba(30,48,39,0.92)', 'rgba(22,38,30,0.88)']
-          : ['rgba(255,255,255,0.96)', 'rgba(255,255,255,0.86)']
-      }
-      style={StyleSheet.absoluteFill}
-    />
+  <View style={[styles.glassBubble, { backgroundColor: t.surface }, strong && styles.glassBubbleStrong]}>
     <View style={styles.glassInner}>{children}</View>
   </View>
 );
@@ -153,10 +140,10 @@ const Bubble = memo(function Bubble({ msg, styles, t, confirmAction }: BubblePro
     if (isUser) {
       return (
         <View style={[styles.bubbleRow, { justifyContent: 'flex-end' }]}>
-          <LinearGradient colors={[t.emerald, t.teal]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.userBubble}>
+          <View style={[styles.userBubble, { backgroundColor: t.forest }]}>
             {msg.imageUri ? <Image source={{ uri: msg.imageUri }} style={styles.bubbleImage} resizeMode="cover" /> : null}
             <Text style={styles.userText}>{msg.text}</Text>
-          </LinearGradient>
+          </View>
         </View>
       );
     }
@@ -255,9 +242,9 @@ const Bubble = memo(function Bubble({ msg, styles, t, confirmAction }: BubblePro
               style={({ pressed }) => [{ flex: 1 }, pressed && { transform: [{ scale: 0.97 }] }]}
               onPress={() => confirmAction(msg.id, true)}
             >
-              <LinearGradient colors={[t.emerald, t.teal]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.actionBtn}>
+              <View style={[styles.actionBtn, { backgroundColor: t.emerald }]}>
                 <Text style={styles.confirmText}>{yesLabel}</Text>
-              </LinearGradient>
+              </View>
             </Pressable>
           </View>
         ) : (
@@ -374,28 +361,12 @@ export function CentsChatModal() {
         },
       ]}
     >
-      {/* Liquid-glass veil over the screen the user was on */}
-      <BlurView intensity={80} tint={t.blurTint} style={StyleSheet.absoluteFill} />
-      <LinearGradient
-        colors={
-          t.mode === 'dark'
-            ? ['rgba(4,16,10,0.66)', 'rgba(3,12,8,0.44)', 'rgba(2,10,6,0.82)']
-            : ['rgba(238,246,240,0.7)', 'rgba(255,255,255,0.38)', 'rgba(228,240,232,0.86)']
-        }
-        style={StyleSheet.absoluteFill}
-      />
-      {/* Soft emerald glow for depth */}
-      <LinearGradient
-        colors={[t.emeraldGlow, 'rgba(16,185,129,0)']}
-        start={{ x: 0.5, y: 0 }} end={{ x: 0.5, y: 1 }}
-        style={styles.glowTop}
-        pointerEvents="none"
-      />
+      {/* v4: solid matte canvas — the chat is its own grounded surface. */}
+      <View style={[StyleSheet.absoluteFill, { backgroundColor: t.bg }]} />
 
       {/* Header */}
       <View style={[styles.header, { paddingTop: insets.top + 8 }]}>
         <Pressable style={styles.glassBtn} onPress={dismiss}>
-          <BlurView intensity={32} tint={t.blurTint} style={StyleSheet.absoluteFill} />
           <Ionicons name="chevron-down" size={20} color={t.textPrimary} />
         </Pressable>
         <View style={styles.headerCenter}>
@@ -418,16 +389,7 @@ export function CentsChatModal() {
           <View style={styles.suggestions}>
             {SUGGESTIONS.map((sug) => (
               <Pressable key={sug.title} onPress={() => sendChat(sug.prompt)} style={({ pressed }) => pressed && { transform: [{ scale: 0.985 }] }}>
-                <View style={styles.suggestCard}>
-                  <BlurView intensity={28} tint={t.blurTint} style={StyleSheet.absoluteFill} />
-                  <LinearGradient
-                    colors={
-                      t.mode === 'dark'
-                        ? ['rgba(255,255,255,0.1)', 'rgba(255,255,255,0.03)']
-                        : ['rgba(255,255,255,0.94)', 'rgba(255,255,255,0.66)']
-                    }
-                    style={StyleSheet.absoluteFill}
-                  />
+                <View style={[styles.suggestCard, { backgroundColor: t.surface }]}>
                   <View style={styles.suggestIcon}>
                     <Ionicons name={sug.icon} size={16} color={t.emerald} />
                   </View>
@@ -495,26 +457,16 @@ export function CentsChatModal() {
           keyboardShouldPersistTaps="always"
         >
           {QUICK_PROMPTS.map((p) => (
-            <Pressable key={p} style={styles.chip} onPress={() => sendChat(p)}>
-              <BlurView intensity={24} tint={t.blurTint} style={StyleSheet.absoluteFill} />
+            <Pressable key={p} style={[styles.chip, { backgroundColor: t.surface }]} onPress={() => sendChat(p)}>
               <Text style={styles.chipText}>{p}</Text>
             </Pressable>
           ))}
         </ScrollView>
 
         <View style={[styles.composerWrap, { paddingBottom: 10 }]}>
-          <View style={styles.composer}>
-            <BlurView intensity={46} tint={t.blurTint} style={StyleSheet.absoluteFill} />
-            <LinearGradient
-              colors={
-                t.mode === 'dark'
-                  ? ['rgba(255,255,255,0.13)', 'rgba(255,255,255,0.05)']
-                  : ['rgba(255,255,255,0.97)', 'rgba(255,255,255,0.76)']
-              }
-              style={StyleSheet.absoluteFill}
-            />
+          <View style={[styles.composer, { backgroundColor: t.surface }]}>
             <Pressable style={styles.iconBtn} onPress={() => setScanSheet(true)}>
-              <Ionicons name="camera" size={20} color={t.emerald} />
+              <Ionicons name="camera-outline" size={20} color={t.textMuted} />
             </Pressable>
             <TextInput
               style={styles.input}
@@ -526,12 +478,12 @@ export function CentsChatModal() {
               returnKeyType="send"
             />
             <Pressable style={styles.iconBtn} onPress={openVoice}>
-              <Ionicons name="mic" size={20} color={t.emerald} />
+              <Ionicons name="mic-outline" size={20} color={t.textMuted} />
             </Pressable>
             <Pressable onPress={send} style={({ pressed }) => pressed && { transform: [{ scale: 0.88 }] }}>
-              <LinearGradient colors={[t.emerald, t.teal]} style={[styles.iconBtn, styles.sendBtn]}>
+              <View style={[styles.iconBtn, styles.sendBtn, { backgroundColor: t.emerald }]}>
                 <Ionicons name="arrow-up" size={18} color="#FFFFFF" />
-              </LinearGradient>
+              </View>
             </Pressable>
           </View>
         </View>
@@ -562,8 +514,6 @@ export function CentsChatModal() {
 }
 
 const makeStyles = (t: Palette) => StyleSheet.create({
-  glowTop: { position: 'absolute', top: 0, left: 0, right: 0, height: 220, opacity: 0.5 },
-
   header: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     paddingHorizontal: 16, paddingBottom: 10,
@@ -575,9 +525,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   onlineDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: t.emerald },
   glassBtn: {
     width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center',
-    overflow: 'hidden', borderWidth: 1,
-    borderColor: t.mode === 'dark' ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.9)',
-    backgroundColor: t.mode === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.5)',
+    borderWidth: 1, borderColor: t.border, backgroundColor: t.surface,
   },
   glassBtnSpacer: { width: 40, height: 40 },
 
@@ -588,20 +536,17 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     marginBottom: 28,
   },
   suggestions: { gap: 10 },
+  // v4: flat matte card — border does the work, no shadow.
   suggestCard: {
     flexDirection: 'row', alignItems: 'center', gap: 12,
-    borderRadius: 20, padding: 13, overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: t.mode === 'dark' ? 'rgba(255,255,255,0.14)' : 'rgba(255,255,255,0.95)',
-    shadowColor: '#02170D', shadowOpacity: t.mode === 'dark' ? 0.2 : 0.08,
-    shadowRadius: 14, shadowOffset: { width: 0, height: 6 },
-    elevation: 4,
+    borderRadius: 16, padding: 13,
+    borderWidth: 1, borderColor: t.border,
   },
   suggestIcon: {
-    width: 36, height: 36, borderRadius: 13, alignItems: 'center', justifyContent: 'center',
-    backgroundColor: t.emeraldTint, borderWidth: 1, borderColor: t.emeraldBorder,
+    width: 36, height: 36, borderRadius: 12, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: t.inputFill, borderWidth: 1, borderColor: t.borderSoft,
   },
-  suggestTitle: { color: t.textPrimary, fontSize: 14.5, fontWeight: '800' },
+  suggestTitle: { color: t.textPrimary, fontSize: 14.5, fontWeight: '700' },
   suggestPrompt: { color: t.textMuted, fontSize: 12.5, marginTop: 1 },
 
   list: { padding: 18, gap: 12, paddingBottom: 16 },
@@ -614,23 +559,17 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     backgroundColor: 'transparent', borderWidth: 1, borderColor: t.border,
   },
   glassBubble: {
-    maxWidth: '84%', borderRadius: 22, borderBottomLeftRadius: 8, overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: t.mode === 'dark' ? 'rgba(255,255,255,0.13)' : 'rgba(255,255,255,0.95)',
+    maxWidth: '84%', borderRadius: 18, borderBottomLeftRadius: 6, overflow: 'hidden',
+    borderWidth: 1, borderColor: t.border,
   },
   glassBubbleStrong: {
     minWidth: '72%',
-    borderColor: t.mode === 'dark' ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,1)',
-    shadowColor: '#02170D', shadowOpacity: t.mode === 'dark' ? 0.28 : 0.12,
-    shadowRadius: 18, shadowOffset: { width: 0, height: 8 },
-    elevation: 6,
+    borderColor: t.border,
   },
   glassInner: { paddingHorizontal: 16, paddingVertical: 12 },
   userBubble: {
-    maxWidth: '84%', borderRadius: 22, borderBottomRightRadius: 8, overflow: 'hidden',
+    maxWidth: '84%', borderRadius: 18, borderBottomRightRadius: 6, overflow: 'hidden',
     paddingHorizontal: 16, paddingVertical: 12,
-    shadowColor: t.emerald, shadowOpacity: 0.3, shadowRadius: 12, shadowOffset: { width: 0, height: 6 },
-    elevation: 5,
   },
   userText: { color: '#FFFFFF', fontSize: 14.5, lineHeight: 20, fontWeight: '500' },
   centsText: { color: t.textPrimary, fontSize: 14.5, lineHeight: 21 },
@@ -642,7 +581,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   },
 
   cardLabelRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 6 },
-  cardLabelText: { color: t.emerald, fontSize: 11.5, fontWeight: '800', letterSpacing: 0.8 },
+  cardLabelText: { color: t.textMuted, fontSize: 11, fontWeight: '600', letterSpacing: 1 },
   cardBig: { color: t.textPrimary, fontSize: 22, fontWeight: '800' },
   cardSub: { color: t.textMuted, fontSize: 12, marginTop: 2 },
   actionRow: { flexDirection: 'row', gap: 10, marginTop: 14 },
@@ -663,28 +602,24 @@ const makeStyles = (t: Palette) => StyleSheet.create({
 
   chipsRow: { gap: 8, paddingHorizontal: 16, paddingBottom: 10, alignItems: 'center' },
   chip: {
-    borderRadius: 999, paddingHorizontal: 14, paddingVertical: 9, overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: t.mode === 'dark' ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.94)',
-    backgroundColor: t.mode === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.6)',
+    borderRadius: 999, paddingHorizontal: 14, paddingVertical: 9,
+    borderWidth: 1, borderColor: t.border,
   },
   chipText: { color: t.textPrimary, fontSize: 12, fontWeight: '600' },
 
   composerWrap: { paddingHorizontal: 14 },
+  // Composer floats over the thread — a soft NEUTRAL shadow is allowed here.
   composer: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
-    borderRadius: 28, overflow: 'hidden', paddingHorizontal: 8, paddingVertical: 6,
-    borderWidth: 1,
-    borderColor: t.mode === 'dark' ? 'rgba(255,255,255,0.16)' : 'rgba(255,255,255,0.98)',
-    shadowColor: '#02170D', shadowOpacity: t.mode === 'dark' ? 0.3 : 0.14,
-    shadowRadius: 20, shadowOffset: { width: 0, height: 8 },
-    elevation: 10,
+    borderRadius: 24, overflow: 'hidden', paddingHorizontal: 8, paddingVertical: 6,
+    borderWidth: 1, borderColor: t.border,
+    shadowColor: '#000000', shadowOpacity: t.mode === 'dark' ? 0.20 : 0.08,
+    shadowRadius: 12, shadowOffset: { width: 0, height: 4 },
+    elevation: 6,
   },
   input: { flex: 1, color: t.textPrimary, fontSize: 14.5, paddingHorizontal: 4, paddingVertical: 8 },
   iconBtn: { width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center' },
-  sendBtn: {
-    shadowColor: t.emerald, shadowOpacity: 0.45, shadowRadius: 10, shadowOffset: { width: 0, height: 4 },
-  },
+  sendBtn: {},
 
   sheetScrim: { flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'flex-end' },
   sheet: {

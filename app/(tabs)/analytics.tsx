@@ -6,7 +6,6 @@ import {
   Alert, Animated, Keyboard, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
@@ -146,9 +145,9 @@ function TxEditor({ t, styles, tx, categories, accounts, onSave, onDelete, onClo
             )}
 
             <Pressable onPress={save} style={({ pressed }) => [styles.editSaveWrap, pressed && { opacity: 0.9 }]}>
-              <LinearGradient colors={[t.emerald, t.teal]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.editSave}>
+              <View style={[styles.editSave, { backgroundColor: t.emerald }]}>
                 <Text style={styles.editSaveText}>Save changes</Text>
-              </LinearGradient>
+              </View>
             </Pressable>
             <Pressable onPress={confirmDelete} style={styles.editDelete}>
               <Ionicons name="trash-outline" size={15} color={t.red} />
@@ -512,10 +511,10 @@ export default function AnalyticsScreen() {
             </View>
           </Pressable>
           <Pressable style={{ flex: 1 }} onPress={exportPDF} disabled={exporting !== null}>
-            <LinearGradient colors={[t.emerald, t.teal]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={[styles.exportBtnSolid, exporting === 'pdf' && { opacity: 0.7 }]}>
+            <View style={[styles.exportBtnSolid, { backgroundColor: t.emerald }, exporting === 'pdf' && { opacity: 0.7 }]}>
               <Ionicons name="document-text" size={18} color={t.onEmerald} />
               <Text style={[styles.exportText, { color: t.onEmerald }]}>{exporting === 'pdf' ? 'Preparing…' : 'PDF report'}</Text>
-            </LinearGradient>
+            </View>
           </Pressable>
         </View>
         <Text style={styles.exportHint}>Exports follow your current search and filters ({filtered.length} transaction{filtered.length === 1 ? '' : 's'}).</Text>
@@ -714,7 +713,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   editChipOn: { backgroundColor: t.emeraldTint, borderColor: t.emeraldBorder },
   editChipText: { color: t.textMuted, fontSize: 13, fontWeight: '600' },
   editChipTextOn: { color: t.emerald },
-  editSaveWrap: { borderRadius: radius.chip, marginTop: 12, shadowColor: t.emerald, shadowOpacity: 0.3, shadowRadius: 10, shadowOffset: { width: 0, height: 4 } },
+  editSaveWrap: { borderRadius: radius.chip, marginTop: 12, },
   editSave: { height: 50, borderRadius: radius.chip, alignItems: 'center', justifyContent: 'center' },
   editSaveText: { color: t.onEmerald, fontSize: 15, fontWeight: '800' },
   editDelete: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, marginTop: 14 },
