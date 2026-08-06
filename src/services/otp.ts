@@ -14,6 +14,27 @@
 
 const OTP_ENDPOINT: string | null = 'https://savecents-otp.savecents-app.workers.dev';
 
+// v5.11: the same Worker also emails Cents' monthly reports (see /worker):
+// themed email + CSV/PDF attachments + 7-day download buttons.
+export async function emailMonthlyReport(payload: {
+  email: string;
+  monthLabel: string;
+  preparedFor: string;
+  fileBase: string;
+  csvBase64: string;
+  pdfBase64: string;
+  stats: { income: number; expenses: number; net: number; count: number };
+}): Promise<void> {
+  if (!OTP_ENDPOINT) throw new Error('report-unavailable');
+  const res = await fetch(`${OTP_ENDPOINT}/send-report`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (res.status === 429) throw new Error('report-rate');
+  if (!res.ok) throw new Error('report-failed');
+}
+
 interface PendingOtp {
   code: string;
   email: string;

@@ -8,7 +8,9 @@ import {
 } from '../models/types';
 import { notifyBudgetCrossings, notifyGoalMilestones } from '../services/notifications';
 import { COUNTRIES } from '../data/countries';
-import { analyzeImage, hasTagalog, localParseIntent, parseCentsIntent, parseCentsVoice, transcribeAudio, CentsResult } from '../services/cents';
+import { emailMonthlyReport } from '../services/otp';
+import { buildMonthlyReport, matchReportRequest } from '../utils/report';
+import { analyzeDocument, analyzeImage, hasTagalog, localParseIntent, parseCentsIntent, parseCentsVoice, transcribeAudio, CentsResult } from '../services/cents';
 import { getSpokenState, speakAsCents, stopCentsVoice, CENTS_VOICES, CentsVoiceStyle } from '../services/speech';
 
 export interface FinanceState {
@@ -36,9 +38,10 @@ export interface FinanceState {
   setCountry: (code: string) => void;
   addAccount: (
     name: string, color?: string, initial?: string,
-    opts?: { kind?: 'debit' | 'credit'; creditLimit?: number; billingDay?: number; balance?: number; network?: 'visa' | 'mastercard' | 'none' },
+    opts?: { kind?: 'debit' | 'credit'; creditLimit?: number; billingDay?: number; balance?: number; network?: 'visa' | 'mastercard' | 'none'; currency?: string; nickname?: string },
   ) => void;
-  updateAccount: (id: string, patch: Partial<Pick<Account, 'name' | 'color' | 'initial' | 'kind' | 'creditLimit' | 'billingDay' | 'network'>>) => void;
+  updateAccount: (id: string, patch: Partial<Pick<Account, 'name' | 'color' | 'initial' | 'kind' | 'creditLimit' | 'billingDay' | 'network' | 'currency' | 'nickname'>>) => void;
+  reorderAccounts: (fromIndex: number, toIndex: number) => void;
   updateProfile: (name: string, email: string) => void;
   updatePersona: (nickname: string, avatarId: string | null) => void;
   biometricsEnabled: boolean;
@@ -91,6 +94,7 @@ export interface FinanceState {
   // M5.12: one-roundtrip voice turn; resolves to the transcript ('' on failure).
   sendVoiceClip: (base64: string, mimeType: string) => Promise<string>;
   sendImage: (base64: string, mimeType: string, mode: 'receipt' | 'price', imageUri?: string) => Promise<void>;
+  sendDocument: (part: { base64: string; mimeType: string } | { text: string }, name: string) => Promise<void>;
   confirmAction: (messageId: string, confirm: boolean) => void;
 }
 
@@ -103,11 +107,20 @@ export const monthKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMo
 // Shared bookkeeping for edit/delete: the state deltas a transaction caused.
 // sign +1 applies the transaction, sign -1 reverses it. Balances and budget
 // spent clamp at 0 the same way addExpense always has.
+// v4.7: credit cards track money OWED, so flows hit them inverted. Spending
+// from a credit card GROWS its balance (owed goes up, credit left goes
+// down); income/payments into it shrink what's owed. Debit stays as-is.
+function flowBalance(a: Account, isIncome: boolean, amount: number, sign: 1 | -1): number {
+  const flow = (isIncome ? amount : -amount) * sign;
+  const delta = a.kind === 'credit' ? -flow : flow;
+  return Math.max(a.balance + delta, 0);
+}
+
 function applyTxEffect(s: { accounts: Account[]; categories: Category[] }, tx: Transaction, sign: 1 | -1) {
   const accounts = tx.accountId
     ? s.accounts.map((a) =>
         a.id === tx.accountId
-          ? { ...a, balance: Math.max(a.balance + (tx.isIncome ? tx.amount : -tx.amount) * sign, 0) }
+          ? { ...a, balance: flowBalance(a, tx.isIncome, tx.amount, sign) }
           : a,
       )
     : s.accounts;
@@ -210,17 +223,22 @@ function flushPendingAsk(getS: () => FinanceState, set: Setter) {
   // Contribution questions show balances so an empty account is never a
   // surprise (M5.28, the BPI-at-zero incident).
   const namesWithBal = getS().accounts.map((a) => `${a.name} (${peso(a.balance)})`).join(', ');
+  const accountChoices = getS().accounts.map((a) => {
+    const nick = a.nickname ? ` ${a.nickname}` : '';
+    const spendable = a.kind === 'credit' ? Math.max((a.creditLimit ?? 0) - a.balance, 0) : a.balance;
+    return { label: `${a.name}${nick} (${peso(spendable)})`, send: `${a.name}${nick}` };
+  });
   let q: string;
   if (move && ids?.length) {
-    q = `Which account handled that: ${names}?`;
+    q = 'Which account handled that?';
   } else if (move) {
     q = move.direction === 'into'
-      ? `Which account should that ${peso(move.amount)} come from: ${namesWithBal}?`
-      : `Where should that ${peso(move.amount)} go: ${names}?`;
+      ? `Which account should that ${peso(move.amount)} come from?`
+      : `Where should that ${peso(move.amount)} go?`;
   } else {
-    q = `Which one paid for this: ${names}?`;
+    q = 'Which one paid for this?';
   }
-  pushCents(set, q);
+  pushCents(set, q, accountChoices);
 }
 
 // M5.25: every completed goal move gets a ledger transaction: readable in
@@ -270,7 +288,7 @@ function applySourceToTxs(acct: Account, getS: () => FinanceState, set: Setter):
   const total = txs.reduce((a, tx) => a + tx.amount, 0);
   set((s) => ({
     transactions: s.transactions.map((tx) => (ids.includes(tx.id) ? { ...tx, accountId: acct.id } : tx)),
-    accounts: s.accounts.map((a) => (a.id === acct.id ? { ...a, balance: Math.max(a.balance - total, 0) } : a)),
+    accounts: s.accounts.map((a) => (a.id === acct.id ? { ...a, balance: flowBalance(a, false, total, 1) } : a)),
     pendingSourceTxIds: null,
   }));
   pushCents(set, `Got it. ${peso(total)} deducted from ${acct.name}.`);
@@ -300,7 +318,7 @@ function applyGoalMove(acct: Account, getS: () => FinanceState, set: Setter): bo
 
   set((s) => ({
     accounts: s.accounts.map((a) =>
-      a.id === acct.id ? { ...a, balance: a.balance + move.amount } : a,
+      a.id === acct.id ? { ...a, balance: flowBalance(a, true, move.amount, 1) } : a,
     ),
     pendingGoalMove: null,
   }));
@@ -594,7 +612,12 @@ export const useFinance = create<FinanceState>()(
 
   addAccount: (name, color, initial, opts) => {
     const s = get();
-    if (s.accounts.some((a) => a.name.toLowerCase() === name.toLowerCase())) return;
+    // v4.8: a user can hold several cards from one bank; only an exact
+    // name + nickname duplicate is rejected.
+    const nick = (opts?.nickname ?? '').trim().toLowerCase();
+    if (s.accounts.some((a) =>
+      a.name.toLowerCase() === name.toLowerCase() && (a.nickname ?? '').trim().toLowerCase() === nick,
+    )) return;
     set({
       accounts: [...s.accounts, {
         id: uid(), name, balance: Math.max(opts?.balance ?? 0, 0), color, initial,
@@ -604,11 +627,21 @@ export const useFinance = create<FinanceState>()(
           ? Math.min(Math.max(Math.round(opts.billingDay), 1), 31)
           : undefined,
         network: opts?.network,
+        currency: opts?.currency,
+        nickname: opts?.nickname?.trim() || undefined,
       }],
     });
   },
   updateAccount: (id, patch) =>
     set((s) => ({ accounts: s.accounts.map((a) => (a.id === id ? { ...a, ...patch } : a)) })),
+  reorderAccounts: (fromIndex, toIndex) =>
+    set((s) => {
+      if (fromIndex === toIndex || fromIndex < 0 || fromIndex >= s.accounts.length) return s;
+      const next = [...s.accounts];
+      const [moved] = next.splice(fromIndex, 1);
+      next.splice(Math.min(Math.max(toIndex, 0), next.length), 0, moved);
+      return { accounts: next };
+    }),
   updateProfile: (name, email) => set((s) => ({ profile: { ...s.profile, name, email } })),
   updatePersona: (nickname, avatarId) =>
     set((s) => ({ profile: { ...s.profile, nickname: nickname.trim() || undefined, avatarId: avatarId ?? undefined } })),
@@ -668,7 +701,7 @@ export const useFinance = create<FinanceState>()(
     set((s) => ({
       goals: s.goals.map((g) => (g.id === goalId ? { ...g, current: g.current + amount } : g)),
       accounts: accountId
-        ? s.accounts.map((a) => (a.id === accountId ? { ...a, balance: Math.max(a.balance - amount, 0) } : a))
+        ? s.accounts.map((a) => (a.id === accountId ? { ...a, balance: flowBalance(a, false, amount, 1) } : a))
         : s.accounts,
     }));
     // Wakes the previously dormant milestone notifications (25/50/75/100).
@@ -690,7 +723,7 @@ export const useFinance = create<FinanceState>()(
     set((s) => ({
       goals: s.goals.map((g) => (g.id === goalId ? { ...g, current: Math.max(g.current - amount, 0) } : g)),
       accounts: accountId
-        ? s.accounts.map((a) => (a.id === accountId ? { ...a, balance: a.balance + take } : a))
+        ? s.accounts.map((a) => (a.id === accountId ? { ...a, balance: flowBalance(a, true, take, 1) } : a))
         : s.accounts,
     }));
     const acct = accountId ? get().accounts.find((a) => a.id === accountId) : undefined;
@@ -717,7 +750,7 @@ export const useFinance = create<FinanceState>()(
       return {
         categories,
         accounts: accountId
-          ? s.accounts.map((a) => (a.id === accountId ? { ...a, balance: Math.max(a.balance - amount, 0) } : a))
+          ? s.accounts.map((a) => (a.id === accountId ? { ...a, balance: flowBalance(a, false, amount, 1) } : a))
           : s.accounts,
         transactions: [
           { id: uid(), amount, description: note?.trim() || categoryName, categoryId: categoryName, timestamp: Date.now(), isIncome: false, accountId },
@@ -732,7 +765,7 @@ export const useFinance = create<FinanceState>()(
 
   addIncome: (amount, accountId, note) => {
     set((s) => ({
-      accounts: s.accounts.map((a) => (a.id === accountId ? { ...a, balance: a.balance + amount } : a)),
+      accounts: s.accounts.map((a) => (a.id === accountId ? { ...a, balance: flowBalance(a, true, amount, 1) } : a)),
       transactions: [
         { id: uid(), amount, description: note?.trim() || 'Income', categoryId: 'Income', timestamp: Date.now(), isIncome: true, accountId },
         ...s.transactions,
@@ -836,6 +869,10 @@ export const useFinance = create<FinanceState>()(
     // stamps and deducts right here (any channel).
     if (assignPendingSource(input, opts, get, set)) return;
 
+    // v5.11/v5.14: "send me my July report" is handled deterministically -
+    // shared with the Voice pipeline (handleReportRequest below).
+    if (await handleReportRequest(input, get, set, opts)) return;
+
     // M5.11: "sige" / "yes" / "wag" against a pending card confirms or
     // cancels it right here. Works for voice sessions and typed chat alike,
     // executes instantly, and the result is spoken like any other reply.
@@ -910,6 +947,7 @@ export const useFinance = create<FinanceState>()(
         }));
         if (assignPendingSource(transcript, { viaVoice: true }, get, set)) return transcript;
         if (tryResolvePendingCard(transcript, { viaVoice: true }, get, set)) return transcript;
+        if (await handleReportRequest(transcript, get, set, { viaVoice: true })) return transcript;
         let r2: CentsResult;
         try {
           r2 = await parseCentsIntent(transcript, buildBrainContext(get()));
@@ -936,6 +974,8 @@ export const useFinance = create<FinanceState>()(
     // Which-source answer, then "sige"/"yes": instant, deterministic.
     if (assignPendingSource(transcript, { viaVoice: true }, get, set)) return transcript;
     if (tryResolvePendingCard(transcript, { viaVoice: true }, get, set)) return transcript;
+    // "Send me my July report" spoken out loud works exactly like typed.
+    if (await handleReportRequest(transcript, get, set, { viaVoice: true })) return transcript;
 
     deliverResult(result, { viaVoice: true }, get, set);
     return transcript;
@@ -1028,6 +1068,35 @@ export const useFinance = create<FinanceState>()(
         text: msg === 'cents-overloaded'
           ? "I'm getting a lot of requests right now. Give it a few seconds, then retake the shot or just type it (e.g. 'groceries 3670 at Savemore')."
           : "I couldn't analyze that photo right now. Check your connection and try again, or type the expense instead.",
+      };
+    }
+    set((st) => ({ chat: [...st.chat, reply], isThinking: false }));
+  },
+
+  // v5.9: uploaded documents. Cents reads the file, lists what it found,
+  // and asks what to do; follow-ups run through normal chat intents.
+  sendDocument: async (part, name) => {
+    stopCentsVoice();
+    set((st) => ({
+      chat: [...st.chat, { id: uid(), sender: 'USER', type: 'text', text: `Uploaded ${name}` }],
+      isThinking: true,
+    }));
+    const ctx = buildBrainContext(get());
+    let reply: ChatMessage;
+    try {
+      const result = await analyzeDocument(part, name, ctx);
+      const analysis = [result.reply, result.details].filter(Boolean).join('\n\n');
+      reply = analysis
+        ? { id: uid(), sender: 'CENTS', type: 'text', text: analysis }
+        : { id: uid(), sender: 'CENTS', type: 'text', text: "I couldn't read anything useful from that file. If it's a statement or receipt, a clear PDF or CSV works best." };
+    } catch (e) {
+      const msg = String((e as Error)?.message ?? e);
+      console.warn('[Cents document error]', msg);
+      reply = {
+        id: uid(), sender: 'CENTS', type: 'text',
+        text: msg === 'cents-overloaded'
+          ? "I'm getting a lot of requests right now. Give it a few seconds and send the file again."
+          : "I couldn't analyze that file right now. Check your connection and try again.",
       };
     }
     set((st) => ({ chat: [...st.chat, reply], isThinking: false }));
@@ -1352,8 +1421,60 @@ function buildReplyFromResult(result: CentsResult, st2: FinanceState, assumedCat
 
 type Setter = (fn: (s: FinanceState) => Partial<FinanceState>) => void;
 
-function pushCents(set: Setter, text: string) {
-  set((s) => ({ chat: [...s.chat, { id: uid(), sender: 'CENTS', type: 'text', text }] }));
+// v5.14: the monthly-report flow, shared by typed chat, the composer voice
+// note, AND the full Voice mode (sendVoiceClip). Returns true when the
+// input was a report request and has been fully handled. Voice turns get
+// the confirmations spoken as well as written.
+async function handleReportRequest(
+  input: string,
+  get: () => FinanceState,
+  set: Setter,
+  opts?: { viaVoice?: boolean },
+): Promise<boolean> {
+  const reportReq = matchReportRequest(input);
+  if (!reportReq) return false;
+  const speak = (n = 1) => maybeSpeakReplies(get(), opts, get().chat.slice(-n), 'en');
+  const email = get().profile.email?.trim();
+  const preparedFor = get().profile.nickname || get().profile.name || 'there';
+  if (!email) {
+    pushCents(set, "I'd love to email that over, but I don't have an email on file. Add one in Profile and ask me again.");
+    set(() => ({ isThinking: false }));
+    speak();
+    return true;
+  }
+  try {
+    const report = await buildMonthlyReport(get().transactions, reportReq.monthIndex, reportReq.year, preparedFor);
+    if (!report) {
+      pushCents(set, 'I looked, but there are no transactions logged in that month yet, so there is nothing to report. Log a few and I will happily build it.');
+      set(() => ({ isThinking: false }));
+      speak();
+      return true;
+    }
+    pushCents(set, `On it. Building your ${report.label} report: ${report.stats.count} transactions, ${peso(report.stats.income)} in, ${peso(report.stats.expenses)} out.`);
+    await emailMonthlyReport({
+      email,
+      monthLabel: report.label,
+      preparedFor,
+      fileBase: report.fileBase,
+      csvBase64: report.csvBase64,
+      pdfBase64: report.pdfBase64,
+      stats: report.stats,
+    });
+    pushCents(set, `Sent! Your ${report.label} report is on its way to ${email}, PDF and CSV attached, plus download buttons that work for 7 days. Check your inbox (and spam, just in case).`);
+  } catch (e) {
+    const msg = String((e as Error)?.message ?? e);
+    pushCents(set,
+      msg === 'report-rate'
+        ? "I've sent quite a few reports this hour. Give it a little while and ask me again."
+        : "I built the report but couldn't email it right now. You can also export it anytime from Analytics with the share button.");
+  }
+  set(() => ({ isThinking: false }));
+  speak();
+  return true;
+}
+
+function pushCents(set: Setter, text: string, choices?: { label: string; send: string }[]) {
+  set((s) => ({ chat: [...s.chat, { id: uid(), sender: 'CENTS', type: 'text', text, choices }] }));
 }
 
 // M5.22: shared source resolution for every expense-creating action. When
@@ -1365,7 +1486,7 @@ function debitSource(s: { accounts: Account[] }, accountName: string | undefined
   return {
     acct,
     accounts: acct
-      ? s.accounts.map((a) => (a.id === acct.id ? { ...a, balance: Math.max(a.balance - amount, 0) } : a))
+      ? s.accounts.map((a) => (a.id === acct.id ? { ...a, balance: flowBalance(a, false, amount, 1) } : a))
       : s.accounts,
   };
 }

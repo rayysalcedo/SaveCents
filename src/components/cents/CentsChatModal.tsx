@@ -1,8 +1,8 @@
-// M5.5d: Cents chat — full-screen liquid-glass overlay in the v4 language the
-// owner picked: centered title + status dot header, soft emerald top glow,
-// left-aligned hero, tinted icon chips, frosted soft-border MATTE bubbles (no
-// sheen). The scan button opens a two-option glass sheet (item / receipt)
-// that launches the in-app ScanOverlay camera.
+// v5.7: Cents chat — full-screen matte overlay. Composer: camera SHOOTS a
+// photo straight to Cents, the clip uploads one from the library, and the
+// mic records an in-thread voice note (the full Voice mode and the Scanner
+// are separate features launched from the hub / quick dial). Quick prompts
+// appear as a timed suggestion on fresh chats and dissolve after 5s.
 // Deliberately NOT an RN Modal, and no KeyboardAvoidingView (KAV mis-measures
 // inside absolute/transformed overlays; keyboard tracked via useKeyboardInset).
 //
@@ -12,12 +12,17 @@
 // (the "blinking"). Keep new subcomponents at module scope.
 import React, { memo, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Animated, Easing, FlatList, Image, Keyboard, Modal, Platform,
-  Pressable, ScrollView, StyleSheet, Text, TextInput, View,
+  Animated, Easing, FlatList, Image, Keyboard, Platform,
+  Pressable, StyleSheet, Text, TextInput, View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { Palette, useTheme } from '../../theme/colors';
+import * as ImagePicker from 'expo-image-picker';
+import * as DocumentPicker from 'expo-document-picker';
+import * as FileSystem from 'expo-file-system/legacy';
+import { Palette, radius, useTheme } from '../../theme/colors';
+import { startListening, voiceAvailable, VoiceSession } from '../../services/voice';
+import { AvatarBadge } from '../Avatar';
 import { useFinance } from '../../store/finance';
 import { useUI } from '../../store/ui';
 import { useKeyboardInset } from '../../hooks/useKeyboardInset';
@@ -121,9 +126,12 @@ interface BubbleProps {
   styles: Styles;
   t: Palette;
   confirmAction: (id: string, confirm: boolean) => void;
+  profile: { avatarId?: string; name: string };
+  isLatest: boolean;
+  onChoice: (send: string) => void;
 }
 
-const Bubble = memo(function Bubble({ msg, styles, t, confirmAction }: BubbleProps) {
+const Bubble = memo(function Bubble({ msg, styles, t, confirmAction, profile, isLatest, onChoice }: BubbleProps) {
   const isUser = msg.sender === 'USER';
 
   if (msg.type === 'text') {
@@ -144,16 +152,38 @@ const Bubble = memo(function Bubble({ msg, styles, t, confirmAction }: BubblePro
             {msg.imageUri ? <Image source={{ uri: msg.imageUri }} style={styles.bubbleImage} resizeMode="cover" /> : null}
             <Text style={styles.userText}>{msg.text}</Text>
           </View>
+          <View style={styles.userMini}>
+            <AvatarBadge avatarId={profile.avatarId} name={profile.name} size={26} />
+          </View>
         </View>
       );
     }
+    const choices = msg.choices ?? [];
     return (
       <View style={styles.bubbleRow}>
         <CentsMini styles={styles} t={t} />
-        <Glass styles={styles} t={t}>
-          {msg.imageUri ? <Image source={{ uri: msg.imageUri }} style={styles.bubbleImage} resizeMode="cover" /> : null}
-          <Text style={styles.centsText}>{msg.text}</Text>
-        </Glass>
+        <View style={{ flexShrink: 1 }}>
+          <Glass styles={styles} t={t}>
+            {msg.imageUri ? <Image source={{ uri: msg.imageUri }} style={styles.bubbleImage} resizeMode="cover" /> : null}
+            <Text style={styles.centsText}>{msg.text}</Text>
+          </Glass>
+          {/* Fixed-info answers are one tap: cards (and any options the
+              store attaches) arrive as chips with balances. Only the
+              LATEST question shows them, so stale pickers never linger. */}
+          {choices.length > 0 && isLatest && (
+            <View style={styles.choiceWrap}>
+              {choices.map((c) => (
+                <Pressable
+                  key={c.label}
+                  onPress={() => onChoice(c.send)}
+                  style={({ pressed }) => [styles.choiceChip, pressed && { backgroundColor: t.emeraldTint, borderColor: t.emeraldBorder }]}
+                >
+                  <Text style={styles.choiceChipText} numberOfLines={1}>{c.label}</Text>
+                </Pressable>
+              ))}
+            </View>
+          )}
+        </View>
       </View>
     );
   }
@@ -264,47 +294,116 @@ const Bubble = memo(function Bubble({ msg, styles, t, confirmAction }: BubblePro
   );
 });
 
-function SheetItem(props: {
-  styles: Styles; t: Palette;
-  icon: keyof typeof Ionicons.glyphMap; title: string; sub: string; onPress: () => void;
-}) {
-  const { styles, t } = props;
-  return (
-    <Pressable style={({ pressed }) => [styles.sheetItem, pressed && { backgroundColor: t.inputFill }]} onPress={props.onPress}>
-      <View style={styles.sheetIcon}>
-        <Ionicons name={props.icon} size={20} color={t.emerald} />
-      </View>
-      <View style={{ flex: 1 }}>
-        <Text style={styles.sheetItemTitle}>{props.title}</Text>
-        <Text style={styles.sheetItemSub}>{props.sub}</Text>
-      </View>
-      <Ionicons name="chevron-forward" size={16} color={t.textFaint} />
-    </Pressable>
-  );
-}
-
 // ── Screen ──────────────────────────────────────────────────────────────────
 
 export function CentsChatModal() {
   const t = useTheme();
   const styles = useMemo(() => makeStyles(t), [t]);
   const insets = useSafeAreaInsets();
-  const { chatOpen, closeChat, openVoice, openScan } = useUI();
+  const { chatOpen, closeChat } = useUI();
   const { chat, isThinking, sendChat, confirmAction, profile } = useFinance();
   const { inset: kbInset } = useKeyboardInset();
 
   const enter = useRef(new Animated.Value(0)).current;
   const [input, setInput] = useState('');
-  const [scanSheet, setScanSheet] = useState(false);
   const listRef = useRef<FlatList>(null);
+  const { sendImage, sendDocument } = useFinance();
+
+  // v5.7: composer voice NOTE (separate from the full Voice mode) - tap
+  // the mic, speak, tap send/stop; the transcript lands in the thread.
+  const [recState, setRecState] = useState<'idle' | 'recording' | 'transcribing'>('idle');
+  const [recLevel, setRecLevel] = useState(0);
+  const recSession = useRef<VoiceSession | null>(null);
+  const startVoiceNote = async () => {
+    if (recState !== 'idle') return;
+    Keyboard.dismiss();
+    const session = await startListening({
+      onPartial: () => {},
+      onLevel: (l) => setRecLevel(l),
+      onTranscribing: () => setRecState('transcribing'),
+      // Deliberately NOT viaVoice: in the chat surface Cents replies in
+      // text, never out loud (spoken replies belong to Voice mode).
+      onFinal: (text) => { setRecState('idle'); recSession.current = null; if (text.trim()) sendChat(text.trim()); },
+      onError: () => { setRecState('idle'); recSession.current = null; },
+      onEnd: () => { setRecState('idle'); recSession.current = null; },
+      autoStopOnSilence: false,
+    });
+    if (session) { recSession.current = session; setRecState('recording'); }
+  };
+  const stopVoiceNote = () => recSession.current?.stop();
+  const cancelVoiceNote = () => { recSession.current?.cancel(); recSession.current = null; setRecState('idle'); };
+
+  // v5.7: shoot a photo (plain camera, NOT the scanner) or upload one.
+  const shootPhoto = async () => {
+    const perm = await ImagePicker.requestCameraPermissionsAsync();
+    if (!perm.granted) return;
+    const res = await ImagePicker.launchCameraAsync({ quality: 0.7, base64: true });
+    const a = res.assets?.[0];
+    if (!res.canceled && a?.base64) sendImage(a.base64, a.mimeType ?? 'image/jpeg', 'receipt', a.uri);
+  };
+  // v5.10: the clip opens a chooser - Photos (library picker) or Files
+  // (documents: PDF, CSV, text, images saved in Files).
+  const [attachSheet, setAttachSheet] = useState(false);
+  const uploadPhoto = async () => {
+    setAttachSheet(false);
+    const res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.8, base64: true });
+    const a = res.assets?.[0];
+    if (!res.canceled && a?.base64) sendImage(a.base64, a.mimeType ?? 'image/jpeg', 'receipt', a.uri);
+  };
+  // Upload anything Cents can read: photos go through vision; PDFs go up
+  // inline; CSV/text files are read as text. Cents analyzes the file and
+  // asks what to do with it (import entries, check budgets, summarize).
+  const uploadFile = async () => {
+    setAttachSheet(false);
+    const res = await DocumentPicker.getDocumentAsync({
+      type: ['image/*', 'application/pdf', 'text/csv', 'text/comma-separated-values', 'text/plain'],
+      copyToCacheDirectory: true, multiple: false,
+    });
+    const a = res.assets?.[0];
+    if (res.canceled || !a) return;
+    const mime = a.mimeType ?? '';
+    const name = a.name ?? 'file';
+    try {
+      if (mime.startsWith('image/')) {
+        const base64 = await FileSystem.readAsStringAsync(a.uri, { encoding: FileSystem.EncodingType.Base64 });
+        sendImage(base64, mime, 'receipt', a.uri);
+      } else if (mime === 'application/pdf' || name.toLowerCase().endsWith('.pdf')) {
+        const base64 = await FileSystem.readAsStringAsync(a.uri, { encoding: FileSystem.EncodingType.Base64 });
+        sendDocument({ base64, mimeType: 'application/pdf' }, name);
+      } else {
+        const text = await FileSystem.readAsStringAsync(a.uri, { encoding: FileSystem.EncodingType.UTF8 });
+        sendDocument({ text }, name);
+      }
+    } catch {
+      // unreadable file: stay quiet rather than crash the composer
+    }
+  };
+
+  // v5.7: quick prompts become a TIMED suggestion - fades in on a fresh
+  // chat and dissolves after 5 seconds (or on first send).
+  const [hintsVisible, setHintsVisible] = useState(false);
+  const hintAnim = useRef(new Animated.Value(0)).current;
+  const hideHints = React.useCallback(() => {
+    Animated.timing(hintAnim, { toValue: 0, duration: 350, useNativeDriver: true })
+      .start(() => setHintsVisible(false));
+  }, [hintAnim]);
 
   const fresh = chat.length <= 1; // only the seeded greeting so far
 
   useEffect(() => {
     if (chatOpen) {
       Animated.timing(enter, { toValue: 1, duration: 320, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
+      if (fresh) {
+        setHintsVisible(true);
+        Animated.timing(hintAnim, { toValue: 1, duration: 350, useNativeDriver: true }).start();
+        const id = setTimeout(hideHints, 5000);
+        return () => clearTimeout(id);
+      }
     } else {
       enter.setValue(0);
+      hintAnim.setValue(0);
+      setHintsVisible(false);
+      cancelVoiceNote();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatOpen]);
@@ -339,12 +438,8 @@ export function CentsChatModal() {
     const text = input.trim();
     if (!text) return;
     setInput('');
+    if (hintsVisible) hideHints();
     sendChat(text);
-  };
-
-  const startScan = (mode: 'price' | 'receipt') => {
-    setScanSheet(false);
-    openScan(mode); // our own overlay view, no iOS presentation conflict
   };
 
   if (!chatOpen) return null;
@@ -372,7 +467,6 @@ export function CentsChatModal() {
         <View style={styles.headerCenter}>
           <View style={styles.headerTitleRow}>
             <Text style={styles.headerTitle}>Cents AI</Text>
-            <View style={styles.onlineDot} />
           </View>
         </View>
         {/* Right spacer keeps the title centered; the header scan button was
@@ -425,10 +519,10 @@ export function CentsChatModal() {
               // inverted list: index 0 = newest = the only row that animates.
               index === 0 ? (
                 <AppearIn>
-                  <Bubble msg={item} styles={styles} t={t} confirmAction={confirmAction} />
+                  <Bubble msg={item} styles={styles} t={t} confirmAction={confirmAction} profile={profile} isLatest onChoice={(v) => sendChat(v)} />
                 </AppearIn>
               ) : (
-                <Bubble msg={item} styles={styles} t={t} confirmAction={confirmAction} />
+                <Bubble msg={item} styles={styles} t={t} confirmAction={confirmAction} profile={profile} isLatest={false} onChoice={(v) => sendChat(v)} />
               )
             }
             // In an inverted list the HEADER renders at the visual bottom —
@@ -449,71 +543,129 @@ export function CentsChatModal() {
 
       {/* Bottom dock: quick prompts + floating composer + keyboard inset */}
       <View>
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.chipsRow}
-          style={{ flexGrow: 0, flexShrink: 0 }}
-          keyboardShouldPersistTaps="always"
-        >
-          {QUICK_PROMPTS.map((p) => (
-            <Pressable key={p} style={[styles.chip, { backgroundColor: t.surface }]} onPress={() => sendChat(p)}>
-              <Text style={styles.chipText}>{p}</Text>
-            </Pressable>
-          ))}
-        </ScrollView>
+        {hintsVisible && (
+          <Animated.View style={[styles.chipsRow, { opacity: hintAnim }]} pointerEvents="box-none">
+            {QUICK_PROMPTS.slice(0, 2).map((p) => (
+              <Pressable
+                key={p}
+                style={[styles.chip, { backgroundColor: t.surface }]}
+                onPress={() => { hideHints(); sendChat(p); }}
+              >
+                <Text style={styles.chipText} numberOfLines={1}>{p}</Text>
+              </Pressable>
+            ))}
+          </Animated.View>
+        )}
 
         <View style={[styles.composerWrap, { paddingBottom: 10 }]}>
-          <View style={[styles.composer, { backgroundColor: t.surface }]}>
-            <Pressable style={styles.iconBtn} onPress={() => setScanSheet(true)}>
-              <Ionicons name="camera-outline" size={20} color={t.textMuted} />
-            </Pressable>
-            <TextInput
-              style={styles.input}
-              value={input}
-              onChangeText={setInput}
-              placeholder="Message Cents"
-              placeholderTextColor={t.textMuted}
-              onSubmitEditing={send}
-              returnKeyType="send"
-            />
-            <Pressable style={styles.iconBtn} onPress={openVoice}>
-              <Ionicons name="mic-outline" size={20} color={t.textMuted} />
-            </Pressable>
-            <Pressable onPress={send} style={({ pressed }) => pressed && { transform: [{ scale: 0.88 }] }}>
-              <View style={[styles.iconBtn, styles.sendBtn, { backgroundColor: t.emerald }]}>
-                <Ionicons name="arrow-up" size={18} color="#FFFFFF" />
+          {recState !== 'idle' ? (
+            /* Voice-note strip: replaces the composer while recording */
+            <View style={[styles.composer, { backgroundColor: t.surface }]}>
+              <Pressable style={styles.iconBtn} onPress={cancelVoiceNote} hitSlop={6}>
+                <Ionicons name="close" size={20} color={t.textMuted} />
+              </Pressable>
+              <View style={styles.recBody}>
+                <View style={[styles.recDot, { backgroundColor: t.red, opacity: 0.5 + recLevel * 0.5 }]} />
+                <Text style={styles.recText}>
+                  {recState === 'transcribing' ? 'Sending to Cents…' : 'Listening… tap send when done'}
+                </Text>
               </View>
-            </Pressable>
-          </View>
+              <Pressable
+                onPress={stopVoiceNote}
+                disabled={recState === 'transcribing'}
+                style={({ pressed }) => pressed && { transform: [{ scale: 0.88 }] }}
+              >
+                <View style={[styles.iconBtn, styles.sendBtn, { backgroundColor: recState === 'transcribing' ? t.inputFill : t.emerald }]}>
+                  <Ionicons name="arrow-up" size={18} color={recState === 'transcribing' ? t.textMuted : '#FFFFFF'} />
+                </View>
+              </Pressable>
+            </View>
+          ) : (
+            <View style={[styles.composer, { backgroundColor: t.surface }]}>
+              {/* Shoot a photo (plain camera; the scanner lives in the hub) */}
+              <Pressable style={styles.iconBtn} onPress={shootPhoto} hitSlop={4}>
+                <Ionicons name="camera-outline" size={20} color={t.textMuted} />
+              </Pressable>
+              {/* Upload: chooser for Photos or Files */}
+              <Pressable style={styles.iconBtn} onPress={() => { Keyboard.dismiss(); setAttachSheet(true); }} hitSlop={4}>
+                <Ionicons name="attach-outline" size={20} color={t.textMuted} />
+              </Pressable>
+              <TextInput
+                style={styles.input}
+                value={input}
+                onChangeText={setInput}
+                placeholder="Message Cents"
+                placeholderTextColor={t.textMuted}
+                onSubmitEditing={send}
+                returnKeyType="send"
+              />
+              {voiceAvailable() && (
+                <Pressable style={styles.iconBtn} onPress={startVoiceNote} hitSlop={4}>
+                  <Ionicons name="mic-outline" size={20} color={t.textMuted} />
+                </Pressable>
+              )}
+              <Pressable onPress={send} style={({ pressed }) => pressed && { transform: [{ scale: 0.88 }] }}>
+                <View style={[styles.iconBtn, styles.sendBtn, { backgroundColor: t.emerald }]}>
+                  <Ionicons name="arrow-up" size={18} color="#FFFFFF" />
+                </View>
+              </Pressable>
+            </View>
+          )}
         </View>
         <Animated.View style={{ height: dockSpacer }} />
       </View>
 
-      {/* Scan sheet: item or receipt, launches the in-app camera overlay */}
-      <Modal visible={scanSheet} transparent animationType="slide" onRequestClose={() => setScanSheet(false)}>
-        <Pressable style={styles.sheetScrim} onPress={() => setScanSheet(false)}>
-          <Pressable style={styles.sheet} onPress={() => {}}>
-            <View style={styles.sheetHandle} />
-            <Text style={styles.sheetTitle}>Scan with Cents</Text>
-            <SheetItem
-              styles={styles} t={t}
-              icon="pricetag" title="Scan an item" sub="Cents identifies it, finds the price, and checks your numbers"
-              onPress={() => startScan('price')}
-            />
-            <SheetItem
-              styles={styles} t={t}
-              icon="receipt" title="Scan a receipt" sub="Cents reads the total and breaks down what you paid for"
-              onPress={() => startScan('receipt')}
-            />
+      {/* Attach chooser: an INLINE overlay, deliberately not an RN Modal.
+          iOS refuses to present the native photo/file picker over a Modal
+          (or during its dismissal), which made these buttons dead. */}
+      {attachSheet && (
+        <Pressable style={styles.attachScrim} onPress={() => setAttachSheet(false)}>
+          <Pressable style={styles.attachSheet} onPress={() => {}}>
+            <Text style={styles.attachTitle}>Send to Cents</Text>
+            <Pressable style={({ pressed }) => [styles.attachRow, pressed && { backgroundColor: t.inputFill }]} onPress={uploadPhoto}>
+              <View style={styles.attachIcon}>
+                <Ionicons name="images-outline" size={19} color={t.emerald} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.attachRowTitle}>Photo Library</Text>
+                <Text style={styles.attachRowSub}>Receipts, screenshots, anything saved</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={15} color={t.textFaint} />
+            </Pressable>
+            <View style={styles.attachDivider} />
+            <Pressable style={({ pressed }) => [styles.attachRow, pressed && { backgroundColor: t.inputFill }]} onPress={uploadFile}>
+              <View style={styles.attachIcon}>
+                <Ionicons name="folder-open-outline" size={19} color={t.emerald} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.attachRowTitle}>Files</Text>
+                <Text style={styles.attachRowSub}>PDF statements, CSV exports, documents</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={15} color={t.textFaint} />
+            </Pressable>
           </Pressable>
         </Pressable>
-      </Modal>
+      )}
     </Animated.View>
   );
 }
 
 const makeStyles = (t: Palette) => StyleSheet.create({
+  // Attach chooser (floating modal: soft neutral shadow allowed)
+  attachScrim: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(10,12,14,0.45)', justifyContent: 'flex-end', padding: 16, paddingBottom: 40, zIndex: 50 },
+  attachSheet: {
+    backgroundColor: t.sheet, borderRadius: radius.card, borderWidth: 1, borderColor: t.border, padding: 16,
+    shadowColor: '#000000', shadowOpacity: 0.2, shadowRadius: 16, shadowOffset: { width: 0, height: 8 }, elevation: 10,
+  },
+  attachTitle: { color: t.textPrimary, fontSize: 15.5, fontWeight: '800', marginBottom: 8, paddingHorizontal: 4 },
+  attachRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, paddingHorizontal: 4, borderRadius: 12 },
+  attachIcon: {
+    width: 38, height: 38, borderRadius: 12, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: t.emeraldTint, borderWidth: 1, borderColor: t.emeraldBorder,
+  },
+  attachRowTitle: { color: t.textPrimary, fontSize: 14.5, fontWeight: '700' },
+  attachRowSub: { color: t.textMuted, fontSize: 11.5, marginTop: 1 },
+  attachDivider: { height: 1, backgroundColor: t.borderSoft },
   header: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     paddingHorizontal: 16, paddingBottom: 10,
@@ -522,7 +674,6 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   headerTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   headerTitle: { color: t.textPrimary, fontSize: 17, fontWeight: '800', letterSpacing: 0.2 },
   headerSub: { color: t.textMuted, fontSize: 11.5, marginTop: 1 },
-  onlineDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: t.emerald },
   glassBtn: {
     width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center',
     borderWidth: 1, borderColor: t.border, backgroundColor: t.surface,
@@ -600,8 +751,23 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   typingRow: { flexDirection: 'row', gap: 5, alignItems: 'flex-end', height: 12, paddingVertical: 2 },
   typingDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: t.emerald },
 
-  chipsRow: { gap: 8, paddingHorizontal: 16, paddingBottom: 10, alignItems: 'center' },
+  choiceWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8, paddingRight: 8 },
+  choiceChip: {
+    borderRadius: 999, borderWidth: 1, borderColor: t.border, backgroundColor: t.surface,
+    paddingHorizontal: 13, height: 34, alignItems: 'center', justifyContent: 'center',
+  },
+  choiceChipText: { color: t.textPrimary, fontSize: 13, fontWeight: '600' },
+  userMini: {
+    width: 26, height: 26, borderRadius: 13, overflow: 'hidden', marginLeft: 8,
+    alignSelf: 'flex-end', marginBottom: 2,
+    borderWidth: 1, borderColor: t.border,
+  },
+  recBody: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 4 },
+  recDot: { width: 9, height: 9, borderRadius: 5 },
+  recText: { color: t.textMuted, fontSize: 13.5, fontWeight: '600', flex: 1 },
+  chipsRow: { flexDirection: 'row', gap: 8, paddingHorizontal: 16, paddingBottom: 10 },
   chip: {
+    flex: 1, alignItems: 'center',
     borderRadius: 999, paddingHorizontal: 14, paddingVertical: 9,
     borderWidth: 1, borderColor: t.border,
   },
@@ -621,18 +787,4 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   iconBtn: { width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center' },
   sendBtn: {},
 
-  sheetScrim: { flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'flex-end' },
-  sheet: {
-    backgroundColor: t.sheet, borderTopLeftRadius: 28, borderTopRightRadius: 28,
-    padding: 24, paddingBottom: 44, borderWidth: 1, borderColor: t.border, gap: 4,
-  },
-  sheetHandle: { width: 40, height: 4, borderRadius: 2, backgroundColor: t.dotIdle, alignSelf: 'center', marginBottom: 14 },
-  sheetTitle: { color: t.textPrimary, fontSize: 18, fontWeight: '800', marginBottom: 10 },
-  sheetItem: { flexDirection: 'row', alignItems: 'center', gap: 14, padding: 12, borderRadius: 16 },
-  sheetIcon: {
-    width: 44, height: 44, borderRadius: 14, alignItems: 'center', justifyContent: 'center',
-    backgroundColor: t.emeraldTint, borderWidth: 1, borderColor: t.emeraldBorder,
-  },
-  sheetItemTitle: { color: t.textPrimary, fontSize: 15, fontWeight: '700' },
-  sheetItemSub: { color: t.textMuted, fontSize: 12, marginTop: 1 },
 });

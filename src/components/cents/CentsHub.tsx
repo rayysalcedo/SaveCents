@@ -11,7 +11,6 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useDragToDismiss } from '../../hooks/useDragToDismiss';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
-import { MoneyInput } from '../MoneyInput';
 import { Palette, radius, type, useTheme } from '../../theme/colors';
 import { useFinance } from '../../store/finance';
 import { useUI } from '../../store/ui';
@@ -30,6 +29,49 @@ export function CentsHub() {
 
   const [mode, setMode] = useState<Mode>('menu');
   const [amount, setAmount] = useState('');
+  // v5.4 calculator-first entry: step 1 is an in-sheet keypad (no system
+  // keyboard, so nothing to dismiss and nothing gets buried); "+" chains
+  // several amounts into one total; Next moves to naming and routing.
+  const [entryStep, setEntryStep] = useState<'amount' | 'details'>('amount');
+  const [calcAcc, setCalcAcc] = useState(0);
+  const [calcEntry, setCalcEntry] = useState('');
+  const calcTotal = calcAcc + (parseFloat(calcEntry) || 0);
+  const tapKey = (k: string) => {
+    Haptics.selectionAsync().catch(() => {});
+    if (k === 'back') {
+      if (calcEntry.length > 0) setCalcEntry(calcEntry.slice(0, -1));
+      else if (calcAcc > 0) { setCalcAcc(0); }
+      return;
+    }
+    if (k === 'clear') { setCalcAcc(0); setCalcEntry(''); return; }
+    if (k === 'plus') {
+      const v = parseFloat(calcEntry) || 0;
+      if (v > 0) { setCalcAcc(calcAcc + v); setCalcEntry(''); }
+      return;
+    }
+    if (k === '.') {
+      if (!calcEntry.includes('.')) setCalcEntry(calcEntry === '' ? '0.' : calcEntry + '.');
+      return;
+    }
+    // digits / 00
+    const next = (calcEntry + k).replace(/^0+(?=\d)/, '');
+    const [, dec] = next.split('.');
+    if (dec && dec.length > 2) return;
+    if (next.replace('.', '').length > 9) return;
+    setCalcEntry(next);
+  };
+  const confirmCalc = () => {
+    if (!(calcTotal > 0)) return;
+    setAmount(Number.isInteger(calcTotal) ? String(calcTotal) : calcTotal.toFixed(2));
+    Haptics.selectionAsync().catch(() => {});
+    setEntryStep('details');
+  };
+  const backToCalc = () => {
+    // Re-edit: current amount becomes the accumulator.
+    setCalcAcc(parseFloat(amount) || 0);
+    setCalcEntry('');
+    setEntryStep('amount');
+  };
   const [note, setNote] = useState('');
   const [pickedCat, setPickedCat] = useState<string | null>(null);
   const [pickedAcct, setPickedAcct] = useState<string | null>(null);
@@ -40,6 +82,7 @@ export function CentsHub() {
   useEffect(() => {
     if (hubOpen) {
       setMode('menu'); setAmount(''); setNote(''); setPickedCat(null); setPickedAcct(null); setAcctMenu(false);
+      setEntryStep('amount'); setCalcAcc(0); setCalcEntry('');
       Animated.timing(anim, { toValue: 1, duration: 280, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
     } else {
       anim.setValue(0);
@@ -90,7 +133,7 @@ export function CentsHub() {
   const AccountPicker = ({ optional }: { optional?: boolean }) => (
     <View style={{ zIndex: 30 }}>
       <Text style={styles.fieldLabel}>{optional ? 'PAY FROM (OPTIONAL)' : 'ROUTE TO'}</Text>
-      <Pressable style={[styles.acctSelect, acctMenu && { borderColor: t.emeraldBorder, backgroundColor: t.emeraldTint }]} onPress={() => setAcctMenu((v) => !v)}>
+      <Pressable style={[styles.acctSelect, acctMenu && { borderColor: t.emeraldBorder, backgroundColor: t.emeraldTint }]} onPress={() => { Keyboard.dismiss(); setAcctMenu((v) => !v); }}>
         {acct ? (
           <>
             <AcctDot name={acct.name} color={acct.color} initial={acct.initial} />
@@ -111,6 +154,14 @@ export function CentsHub() {
       </Pressable>
       {acctMenu && (
         <View style={styles.acctMenu}>
+          {/* Long lists scroll internally, capped at ~5.5 rows; the sheet
+              itself scrolls too since the menu now occupies real height. */}
+          <ScrollView
+            style={{ maxHeight: 250 }}
+            nestedScrollEnabled
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator
+          >
           {optional && (
             <Pressable style={[styles.acctMenuItem, styles.menuDivider]} onPress={() => { setPickedAcct(null); setAcctMenu(false); }}>
               <View style={styles.acctPlaceholderIcon}>
@@ -127,7 +178,7 @@ export function CentsHub() {
               onPress={() => { setPickedAcct(a.id); setAcctMenu(false); }}
             >
               <AcctDot name={a.name} color={a.color} initial={a.initial} />
-              <Text style={styles.acctMenuText}>{a.name}</Text>
+              <Text style={styles.acctMenuText}>{a.nickname ? `${a.name} ${a.nickname}` : a.name}</Text>
               <Text style={styles.acctMenuBal}>{peso(a.balance)}</Text>
               {pickedAcct === a.id && <Ionicons name="checkmark-circle" size={16} color={t.emerald} />}
             </Pressable>
@@ -135,6 +186,7 @@ export function CentsHub() {
           {accounts.length === 0 && (
             <Text style={styles.emptyMenu}>No accounts yet. Add one in the Wallet tab.</Text>
           )}
+          </ScrollView>
         </View>
       )}
     </View>
@@ -160,10 +212,16 @@ export function CentsHub() {
           {/* Glass sheet */}
           <Animated.View style={[styles.sheetShadow, { transform: [{ translateY: sheetDrag.drag }] }]}>
             <View style={[styles.sheetClip, { backgroundColor: t.sheet }]}>
-              <View style={[styles.sheetInner, { paddingBottom: 20 + insets.bottom }]}>
+              <Pressable style={[styles.sheetInner, { paddingBottom: 20 + insets.bottom }]} onPress={Keyboard.dismiss}>
                 <View style={styles.grabZone} {...sheetDrag.panHandlers}>
                   <View style={styles.handle} />
                 </View>
+                <ScrollView
+                  style={{ maxHeight: 560, flexGrow: 0 }}
+                  showsVerticalScrollIndicator={false}
+                  keyboardShouldPersistTaps="handled"
+                  keyboardDismissMode="on-drag"
+                >
 
                 {mode === 'menu' && (
                   <>
@@ -226,9 +284,62 @@ export function CentsHub() {
                       </View>
                     </View>
 
-                    <MoneyInput value={amount} onChangeText={setAmount} autoFocus />
+                    {/* Step 1: the calculator. No system keyboard at all. */}
+                    {entryStep === 'amount' && (
+                      <>
+                        <View style={styles.calcDisplay}>
+                          {calcAcc > 0 && (
+                            <Text style={styles.calcExpr}>{peso(calcAcc)} + {calcEntry || '0'}</Text>
+                          )}
+                          <Text style={styles.calcTotal} numberOfLines={1}>{peso(calcTotal)}</Text>
+                        </View>
+                        <View style={styles.calcGrid}>
+                          {[
+                            ['1', '2', '3', 'back'],
+                            ['4', '5', '6', 'plus'],
+                            ['7', '8', '9', 'clear'],
+                            ['.', '0', '00', 'next'],
+                          ].map((row, ri) => (
+                            <View key={ri} style={styles.calcRow}>
+                              {row.map((k) => {
+                                const isNext = k === 'next';
+                                const isOp = k === 'back' || k === 'plus' || k === 'clear';
+                                return (
+                                  <Pressable
+                                    key={k}
+                                    onPress={() => (isNext ? confirmCalc() : tapKey(k))}
+                                    style={({ pressed }) => [
+                                      styles.calcKey,
+                                      isNext && { backgroundColor: calcTotal > 0 ? t.emerald : t.inputFill, borderColor: calcTotal > 0 ? t.emerald : t.border },
+                                      pressed && !isNext && { backgroundColor: t.emeraldTint },
+                                    ]}
+                                  >
+                                    {k === 'back' && <Ionicons name="backspace-outline" size={20} color={t.textPrimary} />}
+                                    {k === 'plus' && <Ionicons name="add" size={22} color={t.emerald} />}
+                                    {k === 'clear' && <Text style={[styles.calcKeyText, { color: t.textMuted }]}>C</Text>}
+                                    {isNext && <Ionicons name="arrow-forward" size={20} color={calcTotal > 0 ? t.onEmerald : t.textMuted} />}
+                                    {!isOp && !isNext && <Text style={styles.calcKeyText}>{k}</Text>}
+                                  </Pressable>
+                                );
+                              })}
+                            </View>
+                          ))}
+                        </View>
+                      </>
+                    )}
 
-                    {mode === 'expense' && (
+                    {/* Step 2: name it and route it. */}
+                    {entryStep === 'details' && (
+                      <Pressable onPress={backToCalc} style={({ pressed }) => [styles.amountPill, pressed && { backgroundColor: t.emeraldTint }]}>
+                        <Text style={styles.amountPillValue}>{peso(parseFloat(amount) || 0)}</Text>
+                        <View style={styles.amountPillEdit}>
+                          <Ionicons name="pencil" size={13} color={t.emerald} />
+                          <Text style={styles.amountPillEditText}>Edit</Text>
+                        </View>
+                      </Pressable>
+                    )}
+
+                    {entryStep === 'details' && mode === 'expense' && (
                       <>
                         <Text style={styles.fieldLabel}>BUDGET</Text>
                         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipScroll} keyboardShouldPersistTaps="always">
@@ -246,17 +357,21 @@ export function CentsHub() {
                       </>
                     )}
 
-                    <AccountPicker optional={mode === 'expense'} />
+                    {entryStep === 'details' && <AccountPicker optional={mode === 'expense'} />}
 
-                    <TextInput
-                      style={styles.noteInput}
-                      placeholder={mode === 'expense' ? 'Note (e.g. Jollibee run)' : 'Note (e.g. July salary)'}
-                      placeholderTextColor={t.textMuted}
-                      value={note}
-                      onChangeText={setNote}
-                      returnKeyType="done"
-                    />
+                    {entryStep === 'details' && (
+                      <TextInput
+                        style={styles.noteInput}
+                        placeholder={mode === 'expense' ? 'Note (e.g. Jollibee run)' : 'Note (e.g. July salary)'}
+                        placeholderTextColor={t.textMuted}
+                        value={note}
+                        onChangeText={setNote}
+                        returnKeyType="done"
+                        blurOnSubmit
+                      />
+                    )}
 
+                    {entryStep === 'details' && (
                     <Pressable
                       disabled={mode === 'expense' ? !(validAmount && pickedCat) : !(validAmount && pickedAcct)}
                       onPress={mode === 'expense' ? submitExpense : submitIncome}
@@ -276,9 +391,11 @@ export function CentsHub() {
                         </Text>
                       </View>
                     </Pressable>
+                    )}
                   </>
                 )}
-              </View>
+                </ScrollView>
+              </Pressable>
             </View>
           </Animated.View>
         </Animated.View>
@@ -373,12 +490,13 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     width: 26, height: 26, borderRadius: 9, alignItems: 'center', justifyContent: 'center',
     backgroundColor: t.inputFill, borderWidth: 1, borderColor: t.borderSoft,
   },
+  // v5.6: IN-FLOW dropdown. An absolute overlay near the sheet bottom got
+  // clipped past the screen edge and, adding no height, gave the outer
+  // ScrollView nothing to scroll toward - bottom rows were unreachable.
   acctMenu: {
-    position: 'absolute', top: 76, left: 0, right: 0, zIndex: 40,
+    marginTop: 8,
     borderRadius: 16, borderWidth: 1, borderColor: t.border,
     backgroundColor: t.menuBg, overflow: 'hidden',
-    shadowColor: '#000', shadowOpacity: 0.3, shadowRadius: 20, shadowOffset: { width: 0, height: 10 },
-    elevation: 14,
   },
   acctMenuItem: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 13, paddingVertical: 11 },
   menuDivider: { borderBottomWidth: 1, borderBottomColor: t.borderSoft },
@@ -390,6 +508,25 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     color: t.textPrimary, fontSize: 14,
     backgroundColor: t.inputFill, borderWidth: 1, borderColor: t.borderSoft,
   },
+  // Calculator-first entry
+  calcDisplay: { alignItems: 'flex-end', paddingVertical: 10, paddingHorizontal: 4, minHeight: 64, justifyContent: 'flex-end' },
+  calcExpr: { color: t.textFaint, fontSize: 13, fontWeight: '600', ...type.money },
+  calcTotal: { color: t.textPrimary, fontSize: 34, fontWeight: '800', ...type.money },
+  calcGrid: { gap: 8, marginBottom: 14 },
+  calcRow: { flexDirection: 'row', gap: 8 },
+  calcKey: {
+    flex: 1, height: 52, borderRadius: 12, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: t.inputFill, borderWidth: 1, borderColor: t.border,
+  },
+  calcKeyText: { color: t.textPrimary, fontSize: 19, fontWeight: '700', ...type.money },
+  amountPill: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    borderRadius: radius.input, borderWidth: 1, borderColor: t.emeraldBorder,
+    backgroundColor: t.emeraldTint, paddingHorizontal: 14, height: 52, marginBottom: 12,
+  },
+  amountPillValue: { color: t.textPrimary, fontSize: 20, fontWeight: '800', ...type.money },
+  amountPillEdit: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  amountPillEditText: { color: t.emerald, fontSize: 13, fontWeight: '700' },
   submit: { height: 52, borderRadius: 16, alignItems: 'center', justifyContent: 'center', marginTop: 14 },
   submitText: { color: t.onEmerald, fontSize: 15.5, fontWeight: '800' },
 });

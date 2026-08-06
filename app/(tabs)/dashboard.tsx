@@ -21,8 +21,8 @@ import { BankMark, MerchantBadge, NetworkMark } from '../../src/components/Brand
 import { MoMBars, PieChart, SpendBars, TrajectoryCurve } from '../../src/components/Charts';
 import { C, Palette, radius, type, useTheme } from '../../src/theme/colors';
 import { useFinance } from '../../src/store/finance';
-import { peso } from '../../src/models/types';
-import { institutionFor } from '../../src/data/countries';
+import { fmtMoney, peso } from '../../src/models/types';
+import { COUNTRIES, institutionFor } from '../../src/data/countries';
 import { savingsSeries, savingsNote as buildSavingsNote } from '../../src/utils/stats';
 
 const SCREEN_W = Dimensions.get('window').width;
@@ -109,7 +109,7 @@ function BalanceCard({ item, index, scrollX, styles, country, hideBalance, onTog
             <View style={styles.bankIdRow}>
               {!isTotal && <BankMark inst={inst} name={acct!.name} size={34} />}
               <View>
-                <Text style={styles.bankLabel}>{isTotal ? 'Total Balance' : acct!.name}</Text>
+                <Text style={styles.bankLabel} numberOfLines={1}>{isTotal ? 'Total Balance' : acct!.nickname ? `${acct!.name} ${acct!.nickname}` : acct!.name}</Text>
                 {!isTotal && <Text style={styles.bankKindSub}>{kind}</Text>}
               </View>
             </View>
@@ -120,13 +120,19 @@ function BalanceCard({ item, index, scrollX, styles, country, hideBalance, onTog
             )}
           </View>
 
-          <Text style={styles.bankAmount}>{money(isTotal ? totalLiquid : acct!.balance)}</Text>
+          <Text style={styles.bankAmount}>
+            {hideBalance ? '****' : isTotal
+              ? peso(totalLiquid)
+              : isCredit
+                ? fmtMoney(Math.max((acct!.creditLimit ?? 0) - acct!.balance, 0), acct!.currency)
+                : fmtMoney(acct!.balance, acct!.currency)}
+          </Text>
           {isTotal && (
             <Text style={styles.bankCaption}>Across {accountCount} source{accountCount === 1 ? '' : 's'}</Text>
           )}
           {isCredit && (acct!.creditLimit ?? 0) > 0 && (
             <Text style={styles.bankCaption}>
-              owed of {hideBalance ? '****' : peso(acct!.creditLimit!)} limit
+              left of {hideBalance ? '****' : fmtMoney(acct!.creditLimit!, acct!.currency)} limit
             </Text>
           )}
 
@@ -242,9 +248,14 @@ export default function Dashboard() {
   }, [centsAnim]);
   const toggleHide = React.useCallback(() => setHideBalance((v) => !v), []);
 
-  // v4.3: credit-card balances are money OWED — they never count as liquid
-  // and stay out of the allocation pie.
-  const liquidAccounts = useMemo(() => accounts.filter((x) => x.kind !== 'credit'), [accounts]);
+  // v4.3/v4.7: credit balances are money OWED and foreign-currency balances
+  // have no FX rate, so neither counts toward the home total or the pie.
+  const country = useFinance((s) => s.country);
+  const homeCode = COUNTRIES[country].currencyCode;
+  const liquidAccounts = useMemo(
+    () => accounts.filter((x) => x.kind !== 'credit' && (!x.currency || x.currency === homeCode)),
+    [accounts, homeCode],
+  );
   const totalLiquid = liquidAccounts.reduce((a, x) => a + x.balance, 0);
   const totalLimit = categories.reduce((a, c) => a + c.limit, 0);
   const totalSpent = categories.reduce((a, c) => a + c.spent, 0);
@@ -294,12 +305,18 @@ export default function Dashboard() {
 
   // ── Balance card carousel ─────────────────────────────────────────────
   const bankScrollX = useRef(new Animated.Value(0)).current;
+  // v5.4: the carousel skips empty cards. A debit/wallet earns a slot with
+  // money in it; a credit card earns one once it has a limit or an owed
+  // balance to show. Zero-peso cards stay in the Wallet tab only.
   const balanceCards = useMemo(
-    () => [{ id: 'total', kind: 'total' as const }, ...accounts.map((a) => ({ id: a.id, kind: 'account' as const, account: a }))],
+    () => [
+      { id: 'total', kind: 'total' as const },
+      ...accounts
+        .filter((a) => (a.kind === 'credit' ? (a.creditLimit ?? 0) > 0 || a.balance > 0 : a.balance > 0))
+        .map((a) => ({ id: a.id, kind: 'account' as const, account: a })),
+    ],
     [accounts],
   );
-  const country = useFinance((s) => s.country);
-
   const money = (n: number) => (hideBalance ? '****' : peso(n));
 
 
@@ -442,27 +459,26 @@ export default function Dashboard() {
           })}
         </View>
 
-        {/* Cents co-pilot: one compact chat-style note, popping in above
-            the Today strip. Never more than two lines. */}
+        {/* Cents note: the same tinted block language as the Wallet
+            Outlook, popping in above the Today strip. */}
         {centsNotes.length > 0 && (
           <Animated.View
             style={[
-              styles.centsPing,
+              styles.centsBlock,
               {
                 opacity: centsAnim,
                 transform: [
                   { translateY: centsAnim.interpolate({ inputRange: [0, 1], outputRange: [12, 0] }) },
-                  { scale: centsAnim.interpolate({ inputRange: [0, 1], outputRange: [0.94, 1] }) },
+                  { scale: centsAnim.interpolate({ inputRange: [0, 1], outputRange: [0.96, 1] }) },
                 ],
               },
             ]}
           >
-            <View style={styles.centsAvatar}>
-              <Image source={require('../../assets/cents-mark.png')} style={{ width: 15, height: 15 }} resizeMode="contain" />
+            <View style={styles.centsHeadRow}>
+              <Image source={require('../../assets/cents-mark.png')} style={{ width: 13, height: 13 }} resizeMode="contain" />
+              <Text style={styles.centsEyebrow}>CENTS</Text>
             </View>
-            <View style={styles.centsBubble}>
-              <Text style={styles.centsMsg} numberOfLines={2}>{centsNotes[0].text}</Text>
-            </View>
+            <Text style={styles.centsMsg} numberOfLines={3}>{centsNotes[0].text}</Text>
           </Animated.View>
         )}
 
@@ -598,7 +614,7 @@ export default function Dashboard() {
                         .map(({ a, color }) => (
                           <View key={a.id} style={styles.legendRow}>
                             <View style={[styles.legendDot, { backgroundColor: color }]} />
-                            <Text style={styles.legendName} numberOfLines={1}>{a.name}</Text>
+                            <Text style={styles.legendName} numberOfLines={1}>{a.nickname ? `${a.name} ${a.nickname}` : a.name}</Text>
                             <Text style={styles.legendAmt}>{hideBalance ? '****' : peso(a.balance)}</Text>
                             <Text style={styles.legendVal}>
                               {totalLiquid > 0 ? Math.round((a.balance / totalLiquid) * 100) : 0}%
@@ -782,20 +798,15 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, zIndex: 10 },
   avatarHit: { padding: 4, margin: -4 },
 
-  // Cents chat-ping: a compact incoming-message row — small forest avatar
-  // wearing the yellow mark, matte bubble with a tucked tail corner.
-  centsPing: { flexDirection: 'row', alignItems: 'flex-end', gap: 8, marginBottom: 16 },
-  centsAvatar: {
-    width: 28, height: 28, borderRadius: 14, alignItems: 'center', justifyContent: 'center',
-    backgroundColor: t.forest, marginBottom: 1,
+  // Cents note: identical block language to the Wallet Outlook — soft
+  // tinted rounded surface, mark + eyebrow, quiet copy.
+  centsBlock: {
+    marginBottom: 16, borderRadius: 16, padding: 14,
+    backgroundColor: t.mode === 'dark' ? 'rgba(46,158,91,0.10)' : t.sageSoft,
   },
-  // Open bubble: no fill, just the same 1px border the cards wear.
-  centsBubble: {
-    flex: 1, backgroundColor: 'transparent', borderWidth: 1, borderColor: t.border,
-    borderRadius: 14, borderBottomLeftRadius: 4,
-    paddingHorizontal: 12, paddingVertical: 9,
-  },
-  centsMsg: { color: t.textMuted, fontSize: 12.5, lineHeight: 17 },
+  centsHeadRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 6 },
+  centsEyebrow: { ...type.eyebrow, fontSize: 10, color: t.textFaint },
+  centsMsg: { color: t.textMuted, fontSize: 12.5, lineHeight: 18 },
   avatarRing: { width: 48, height: 48, borderRadius: 24, padding: 2 },
   avatarInner: {
     flex: 1, borderRadius: 22, backgroundColor: t.insetBg,

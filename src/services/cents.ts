@@ -421,7 +421,7 @@ export async function transcribeAudio(base64: string, mimeType: string): Promise
 }
 
 // ── M4/M5.5: Vision ──────────────────────────────────────────────────────────
-export type VisionMode = 'receipt' | 'price';
+export type VisionMode = 'receipt' | 'price' | 'document';
 
 function buildVisionPrompt(mode: VisionMode, ctx: CentsContext): string {
   const common = `You are Cents, the casual, encouraging AI money coach inside SaveCents, like a sharp kaibigan who's great with money. Never use emojis. Never use em dashes.
@@ -429,6 +429,14 @@ ${buildSharedContext(ctx)}
 Read the attached photo carefully. Fill EVERY schema field; use 0, "" or false when not applicable.
 Category matching: pick the existing budget whose MEANING best fits WHAT WAS BOUGHT, using both its name and its [base category], e.g. a motorcycle cover or fuel goes to a motorcycle/vehicle/gas budget; dog food to a pets budget; Jollibee to dining; a Meralco bill to a Utilities-based budget named "Meralco"; a Netflix charge to a Subscriptions-based budget named "Netflix". Think about what the items are FOR. 'categoryName' must be a budget's exact NAME as listed. Never invent names; if nothing fits naturally, use "Others".
 Set lang to "fil" if the photo or its context is Filipino, else "en". Write reply and details in that language, casual coach tone.`;
+  if (mode === 'document') {
+    return `${common}
+The attachment is a DOCUMENT the user uploaded: possibly a bank or e-wallet statement, a batch of receipts, a budget list, a CSV export, or something similar.
+- intent MUST be "Unknown". Do NOT log anything yet.
+- amount = 0. item = a short label for the document (e.g. "BPI statement Jan", "Grocery receipts").
+- details = your analysis: FIRST one line naming what the document is. THEN, if it contains transactions, list up to 10 of the clearest ones, one per line, as "date - description - amount" (newest first); if it is a budget or list, summarize its key numbers instead. Keep every line short.
+- reply = one friendly sentence saying what you found, then ASK what they'd like you to do with it, offering concrete options, e.g. "That's your BPI statement with 14 transactions. Want me to log some of these as expenses, check them against your budgets, or just keep this as a summary?" The user can then tell you which entries to log and you handle them like normal chat requests.`;
+  }
   if (mode === 'receipt') {
     return `${common}
 The image is a PURCHASE RECEIPT or an ONLINE ORDER page (Shopee, Lazada, Grab, bank app, etc.).
@@ -460,6 +468,24 @@ export async function analyzeImage(
       { text: mode === 'receipt' ? 'Read and analyze this receipt.' : 'Identify this item and figure out its price.' },
     ],
     buildVisionPrompt(mode, ctx),
+  );
+}
+
+// v5.9: uploaded documents (PDF inline; CSV/plain text as text) run through
+// the same structured brain with the 'document' prompt, so Cents can read a
+// bank statement or receipt batch and ask what to do with it.
+export async function analyzeDocument(
+  part: { base64: string; mimeType: string } | { text: string },
+  name: string,
+  ctx: CentsContext,
+): Promise<CentsResult> {
+  const filePart: ContentPart = 'text' in part
+    ? { text: `CONTENTS OF THE UPLOADED FILE "${name}":
+${part.text.slice(0, 24000)}` }
+    : { inlineData: { mimeType: part.mimeType, data: part.base64 } };
+  return generateStructured(
+    [filePart, { text: `The user uploaded a document named "${name}". Analyze it.` }],
+    buildVisionPrompt('document', ctx),
   );
 }
 

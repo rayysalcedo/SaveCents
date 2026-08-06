@@ -14,6 +14,7 @@ export interface Institution {
 }
 
 export interface Country {
+  currencyCode: string;
   code: string;
   name: string;
   flag: string;
@@ -24,7 +25,7 @@ export interface Country {
 
 export const COUNTRIES: Record<string, Country> = {
   PH: {
-    code: 'PH', locale: 'en-PH', name: 'Philippines', flag: 'PH', symbol: '\u20B1',
+    code: 'PH', currencyCode: 'PHP', locale: 'en-PH', name: 'Philippines', flag: 'PH', symbol: '\u20B1',
     institutions: [
       // Traditional banks
       { name: 'BDO', initial: 'BD', color: '#003A70', kind: 'bank', network: 'mastercard' },
@@ -62,7 +63,7 @@ export const COUNTRIES: Record<string, Country> = {
     ],
   },
   US: {
-    code: 'US', locale: 'en-US', name: 'United States', flag: '🇺🇸', symbol: '$',
+    code: 'US', currencyCode: 'USD', locale: 'en-US', name: 'United States', flag: '🇺🇸', symbol: '$',
     institutions: [
       { name: 'Chase', initial: 'C', color: '#117ACA', kind: 'bank', network: 'visa' },
       { name: 'Bank of America', initial: 'BA', color: '#E31837', kind: 'bank', network: 'visa' },
@@ -74,7 +75,7 @@ export const COUNTRIES: Record<string, Country> = {
     ],
   },
   SG: {
-    code: 'SG', locale: 'en-SG', name: 'Singapore', flag: '🇸🇬', symbol: 'S$',
+    code: 'SG', currencyCode: 'SGD', locale: 'en-SG', name: 'Singapore', flag: '🇸🇬', symbol: 'S$',
     institutions: [
       { name: 'DBS', initial: 'D', color: '#ED1B24', kind: 'bank', network: 'visa' },
       { name: 'OCBC', initial: 'O', color: '#EE0000', kind: 'bank', network: 'visa' },
@@ -84,7 +85,7 @@ export const COUNTRIES: Record<string, Country> = {
     ],
   },
   MY: {
-    code: 'MY', locale: 'ms-MY', name: 'Malaysia', flag: '🇲🇾', symbol: 'RM',
+    code: 'MY', currencyCode: 'MYR', locale: 'ms-MY', name: 'Malaysia', flag: '🇲🇾', symbol: 'RM',
     institutions: [
       { name: 'Maybank', initial: 'M', color: '#FFC20E', kind: 'bank', network: 'visa' },
       { name: 'CIMB', initial: 'C', color: '#ED1C24', kind: 'bank', network: 'visa' },
