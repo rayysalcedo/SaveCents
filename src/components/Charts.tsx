@@ -209,16 +209,19 @@ export function MoMBars({
 }: { data: MonthBar[]; height?: number; highlightLast?: boolean }) {
   const t = useTheme();
   const max = Math.max(...data.map((d) => d.value), 1);
-  const anims = useRef(data.map(() => new Animated.Value(0))).current;
+  // Same growing pool as SpendBars: a fixed size pool crashes with
+  // undefined.interpolate the moment the data array gets longer mid-session.
+  const anims = useRef<Animated.Value[]>([]).current;
+  while (anims.length < data.length) anims.push(new Animated.Value(0));
 
   useEffect(() => {
     Animated.stagger(
       80,
-      anims.map((a) =>
+      anims.slice(0, data.length).map((a) =>
         Animated.timing(a, { toValue: 1, duration: 650, easing: Easing.out(Easing.cubic), useNativeDriver: false }),
       ),
     ).start();
-  }, [anims]);
+  }, [anims, data.length]);
 
   return (
     <View style={[styles.momRow, { height: height + 26 }]}>
@@ -256,16 +259,23 @@ export interface SpendRow { name: string; spent: number; limit: number }
 export function SpendBars({ data }: { data: SpendRow[] }) {
   const t = useTheme();
   const sorted = [...data].sort((a, b) => b.spent - a.spent).slice(0, 4);
-  const anims = useRef(sorted.map(() => new Animated.Value(0))).current;
+  // The anim pool GROWS with the data. The old version sized it once on
+  // first render, so adding a budget mid-session handed new bars an
+  // undefined anim and crashed on .interpolate. Appending is idempotent,
+  // safe to do during render, and existing bars keep their values.
+  const anims = useRef<Animated.Value[]>([]).current;
+  while (anims.length < sorted.length) anims.push(new Animated.Value(0));
 
   useEffect(() => {
     Animated.stagger(
       90,
-      anims.map((a) =>
+      anims.slice(0, sorted.length).map((a) =>
         Animated.timing(a, { toValue: 1, duration: 700, easing: Easing.out(Easing.cubic), useNativeDriver: false }),
       ),
     ).start();
-  }, [anims]);
+    // Re-run when the bar count changes so newly added bars animate in
+    // instead of sitting at zero width.
+  }, [anims, sorted.length]);
 
   return (
     <View style={{ gap: 12 }}>

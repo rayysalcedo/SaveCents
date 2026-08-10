@@ -4,9 +4,9 @@ import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
-  Account, ActionType, Category, ChatMessage, Goal, Transaction, UserProfile, uid, peso, setCurrencySymbol, setNumberLocale,
+  Account, ActionType, Category, ChatMessage, Goal, Lend, SaveCadence, SplitBill, Transaction, UserProfile, uid, peso, setCurrencySymbol, setNumberLocale,
 } from '../models/types';
-import { notifyBudgetCrossings, notifyGoalMilestones } from '../services/notifications';
+import { notifyAutoPay, notifyBudgetCrossings, notifyGoalMilestones } from '../services/notifications';
 import { COUNTRIES } from '../data/countries';
 import { emailMonthlyReport } from '../services/otp';
 import { buildMonthlyReport, matchReportRequest } from '../utils/report';
@@ -60,15 +60,42 @@ export interface FinanceState {
   setCentsVoiceStyle: (v: CentsVoiceStyle) => void;
   removeAccount: (id: string) => void;
   setAccountBalance: (id: string, balance: number) => void;
-  addBudget: (name: string, limit: number, icon?: string, category?: string, dueDate?: number) => void;
-  updateBudget: (id: string, name: string, limit: number, icon: string, category?: string, dueDate?: number) => void;
+  addBudget: (name: string, limit: number, icon?: string, category?: string, dueDate?: number, remind?: boolean, dueType?: 'once' | 'monthly', dueDay?: number, autoPay?: boolean, autoPayAccountId?: string) => void;
+  updateBudget: (id: string, name: string, limit: number, icon: string, category?: string, dueDate?: number, remind?: boolean, dueType?: 'once' | 'monthly', dueDay?: number, autoPay?: boolean, autoPayAccountId?: string) => void;
+  // Planner v2.3: settle due monthly auto-pay budgets. Idempotent per month,
+  // safe to call on every app open and after income lands.
+  runAutoPayIfDue: () => void;
   removeBudget: (id: string) => void;
   removeGoal: (id: string) => void;
   login: (name: string, email: string) => void;
   logout: () => void;
   replaceAll: (snap: CloudSnapshot) => void;
   resetToDefaults: () => void;
-  addGoal: (name: string, target: number, date: string) => void;
+  addGoal: (name: string, target: number, date: string, deadline?: number, cadence?: SaveCadence) => void;
+  // Planner v3.2: split the bill, with real money flow.
+  splits: SplitBill[];
+  addSplit: (input: SplitInput) => void;
+  updateSplit: (id: string, input: SplitInput) => void;
+  removeSplit: (id: string) => void;
+  // Me mode: person repaid, money lands in accountId. Legacy/other mode:
+  // pass no accountId and it is a plain tick.
+  markSplitPersonPaid: (splitId: string, personId: string, accountId?: string) => void;
+  unmarkSplitPersonPaid: (splitId: string, personId: string) => void;
+  // Other mode: the user pays their own share from accountId.
+  paySplitMyShare: (splitId: string, accountId: string) => void;
+  unpaySplitMyShare: (splitId: string) => void;
+  setSplitRemote: (splitId: string, token: string) => void;
+  applyRemoteSplitState: (splitId: string, remote: { people: { id: string; paid: boolean }[]; myPaid: boolean }) => void;
+  markSplitEmailed: (splitId: string, personId: string) => void;
+  // Planner v4: Lend.
+  lends: Lend[];
+  addLend: (input: LendInput) => void;
+  updateLend: (id: string, input: LendInput) => void;
+  removeLend: (id: string) => void;
+  // Repaid money lands in accountId; pass none for a plain track only tick.
+  markLendRepaid: (id: string, accountId?: string) => void;
+  unmarkLendRepaid: (id: string) => void;
+  markLendStageSent: (id: string, stage: number) => void;
   // Session A: goal contributions. Bumps goal.current, optionally debits a
   // source account, never touches budgets. The ONLY caller of
   // notifyGoalMilestones (cloud restores via replaceAll must stay silent).
@@ -114,6 +141,44 @@ function flowBalance(a: Account, isIncome: boolean, amount: number, sign: 1 | -1
   const flow = (isIncome ? amount : -amount) * sign;
   const delta = a.kind === 'credit' ? -flow : flow;
   return Math.max(a.balance + delta, 0);
+}
+
+// Planner v3.2: what the UI hands the store to create or edit a split. The
+// UI generates ids up front so the worker's manage link can reference them.
+export interface SplitInput {
+  id: string;
+  title: string;
+  total: number;
+  headcount: number;
+  mode: 'me' | 'other';
+  payerName: string;
+  payerEmail?: string;
+  payerAccountId?: string;
+  includeMe?: boolean;
+  people: { id: string; name: string; email?: string }[];
+}
+
+export interface LendInput {
+  id: string;
+  name: string;
+  email?: string;
+  amount: number;
+  dueDate: number;
+  note?: string;
+  accountId?: string; // absent = track only, no balance change
+  consent?: boolean;
+}
+
+// Reverse one transaction: undo its balance effect and drop it. Split
+// transactions never touch categories or goals, so this stays lean.
+function reverseSplitTx(s: { accounts: Account[]; transactions: Transaction[] }, txId: string | undefined) {
+  if (!txId) return { accounts: s.accounts, transactions: s.transactions };
+  const old = s.transactions.find((t) => t.id === txId);
+  if (!old) return { accounts: s.accounts, transactions: s.transactions };
+  const accounts = old.accountId
+    ? s.accounts.map((a) => (a.id === old.accountId ? { ...a, balance: flowBalance(a, old.isIncome, old.amount, -1) } : a))
+    : s.accounts;
+  return { accounts, transactions: s.transactions.filter((t) => t.id !== txId) };
 }
 
 function applyTxEffect(s: { accounts: Account[]; categories: Category[] }, tx: Transaction, sign: 1 | -1) {
@@ -525,9 +590,13 @@ export interface CloudSnapshot {
   // M5.6: YYYY-MM key of the last budget month rollover (see
   // rolloverBudgetsIfNeeded). Persisted so a relaunch mid-month is a no-op.
   lastRollover: string;
+  // Planner v3: split bills. Optional so pre-v3 cloud snapshots load clean.
+  splits?: SplitBill[];
+  // Planner v4: lends. Optional for the same reason.
+  lends?: Lend[];
 }
 
-const makeDefaults = (): CloudSnapshot & { isThinking: boolean } => ({
+const makeDefaults = (): CloudSnapshot & { isThinking: boolean; splits: SplitBill[]; lends: Lend[] } => ({
   accounts: [
     { id: uid(), name: 'GCash', balance: 5000 },
     { id: uid(), name: 'BPI', balance: 15000 },
@@ -553,6 +622,8 @@ const makeDefaults = (): CloudSnapshot & { isThinking: boolean } => ({
     },
   ],
   isThinking: false,
+  splits: [],
+  lends: [],
   profile: { name: 'Rayy', email: 'rayysalcedo@gmail.com', isLoggedIn: false },
   selectedGoalId: null,
   insightOrder: ['goal', 'alloc', 'mom', 'topspend'],
@@ -587,6 +658,8 @@ export const buildSnapshot = (s: FinanceState): CloudSnapshot => ({
   centsVoiceName: s.centsVoiceName ?? 'Puck',
   centsVoiceStyle: s.centsVoiceStyle ?? 'english',
   lastRollover: s.lastRollover ?? monthKey(),
+  splits: s.splits ?? [],
+  lends: s.lends ?? [],
 });
 
 export const useFinance = create<FinanceState>()(
@@ -654,15 +727,18 @@ export const useFinance = create<FinanceState>()(
   setAccountBalance: (id, balance) =>
     set((s) => ({ accounts: s.accounts.map((a) => (a.id === id ? { ...a, balance } : a)) })),
 
-  addBudget: (name, limit, icon = 'pricetag', category, dueDate) => {
+  addBudget: (name, limit, icon = 'pricetag', category, dueDate, remind, dueType, dueDay, autoPay, autoPayAccountId) => {
     const s = get();
     if (s.categories.some((c) => c.name.toLowerCase() === name.toLowerCase())) return;
-    set({ categories: [...s.categories, { id: uid(), name, limit, spent: 0, icon, category, dueDate }] });
+    set({ categories: [...s.categories, { id: uid(), name, limit, spent: 0, icon, category, dueDate, dueType, dueDay, autoPay, autoPayAccountId, ...(remind === false ? { remind } : {}) }] });
+    get().runAutoPayIfDue();
   },
-  updateBudget: (id, name, limit, icon, category, dueDate) =>
+  updateBudget: (id, name, limit, icon, category, dueDate, remind, dueType, dueDay, autoPay, autoPayAccountId) => {
     set((s) => ({
-      categories: s.categories.map((c) => (c.id === id ? { ...c, name, limit, icon, category, dueDate } : c)),
-    })),
+      categories: s.categories.map((c) => (c.id === id ? { ...c, name, limit, icon, category, dueDate, dueType, dueDay, autoPay, autoPayAccountId, ...(remind === undefined ? {} : { remind }) } : c)),
+    }));
+    get().runAutoPayIfDue();
+  },
   removeBudget: (id) => set((s) => ({ categories: s.categories.filter((c) => c.id !== id) })),
   removeGoal: (id) =>
     set((s) => ({
@@ -676,7 +752,7 @@ export const useFinance = create<FinanceState>()(
   // Load a cloud snapshot into the store (fresh install / account switch).
   replaceAll: (snap) => {
     setCurrencySymbol(snap.currency);
-    set({ ...snap, isThinking: false });
+    set({ ...snap, splits: snap.splits ?? [], lends: snap.lends ?? [], isThinking: false });
   },
   // Wipe to factory state (different user logs in, or account deletion).
   resetToDefaults: () => {
@@ -685,8 +761,320 @@ export const useFinance = create<FinanceState>()(
     set(d);
   },
 
-  addGoal: (name, target, date) =>
-    set((s) => ({ goals: [...s.goals, { id: uid(), name, target, current: 0, date }] })),
+  addGoal: (name, target, date, deadline, cadence) =>
+    set((s) => ({ goals: [...s.goals, { id: uid(), name, target, current: 0, date, ...(deadline ? { deadline } : {}), ...(cadence ? { cadence } : {}) }] })),
+
+  // Planner v3.2: split the bill with real money flow. Equal shares to the
+  // centavo; rounding dust stays with the payer, the classic house rule.
+  // Me mode logs the full bill as an expense right away, then each repayment
+  // as income when the user confirms it. Other mode logs only the user's own
+  // share, when they pay it. Split transactions live under the 'Split bills'
+  // name on purpose WITHOUT creating a budget, so the budget list stays clean.
+  addSplit: (input) =>
+    set((s) => {
+      const share = Math.round((input.total / input.headcount) * 100) / 100;
+      let accounts = s.accounts;
+      let transactions = s.transactions;
+      let expenseTxId: string | undefined;
+      if (input.mode === 'me' && input.payerAccountId) {
+        expenseTxId = uid();
+        accounts = accounts.map((a) =>
+          a.id === input.payerAccountId ? { ...a, balance: flowBalance(a, false, input.total, 1) } : a,
+        );
+        transactions = [
+          { id: expenseTxId, amount: input.total, description: `Split: ${input.title}`, categoryId: 'Split bills', timestamp: Date.now(), isIncome: false, accountId: input.payerAccountId },
+          ...transactions,
+        ];
+      }
+      const bill: SplitBill = {
+        id: input.id,
+        title: input.title,
+        total: input.total,
+        payerName: input.payerName,
+        headcount: input.headcount,
+        createdAt: Date.now(),
+        mode: input.mode,
+        payerEmail: input.mode === 'other' ? input.payerEmail?.trim() || undefined : undefined,
+        payerAccountId: input.mode === 'me' ? input.payerAccountId : undefined,
+        expenseTxId,
+        myShare: input.mode === 'other' && input.includeMe ? { included: true, paid: false } : undefined,
+        people: input.people.map((p) => ({ id: p.id, name: p.name, email: p.email?.trim() || undefined, share, paid: false })),
+      };
+      return { splits: [bill, ...s.splits], accounts, transactions };
+    }),
+
+  // Edit keeps what is true: paid ticks and logged repayments survive by
+  // person id. The original expense is re-logged fresh so total or account
+  // changes always net out right. People edited away get their repayment
+  // income reversed, since that money claim no longer exists.
+  updateSplit: (id, input) =>
+    set((s) => {
+      const old = s.splits.find((b) => b.id === id);
+      if (!old) return s;
+      let { accounts, transactions } = { accounts: s.accounts, transactions: s.transactions };
+      // Reverse the old logged expense (me mode) and my-share expense if the
+      // shape changed; re-log below from the new truth.
+      ({ accounts, transactions } = reverseSplitTx({ accounts, transactions }, old.expenseTxId));
+      const keptIds = new Set(input.people.map((p) => p.id));
+      for (const p of old.people) {
+        if (!keptIds.has(p.id)) ({ accounts, transactions } = reverseSplitTx({ accounts, transactions }, p.txId));
+      }
+      const dropMyShare = !(input.mode === 'other' && input.includeMe);
+      if (dropMyShare && old.myShare?.txId) {
+        ({ accounts, transactions } = reverseSplitTx({ accounts, transactions }, old.myShare.txId));
+      }
+      const share = Math.round((input.total / input.headcount) * 100) / 100;
+      let expenseTxId: string | undefined;
+      if (input.mode === 'me' && input.payerAccountId) {
+        expenseTxId = uid();
+        accounts = accounts.map((a) =>
+          a.id === input.payerAccountId ? { ...a, balance: flowBalance(a, false, input.total, 1) } : a,
+        );
+        transactions = [
+          { id: expenseTxId, amount: input.total, description: `Split: ${input.title}`, categoryId: 'Split bills', timestamp: Date.now(), isIncome: false, accountId: input.payerAccountId },
+          ...transactions,
+        ];
+      }
+      const oldPeople = new Map(old.people.map((p) => [p.id, p]));
+      const bill: SplitBill = {
+        ...old,
+        title: input.title,
+        total: input.total,
+        payerName: input.payerName,
+        headcount: input.headcount,
+        mode: input.mode,
+        payerEmail: input.mode === 'other' ? input.payerEmail?.trim() || undefined : undefined,
+        payerAccountId: input.mode === 'me' ? input.payerAccountId : undefined,
+        expenseTxId,
+        myShare: input.mode === 'other' && input.includeMe
+          ? { included: true, paid: old.myShare?.paid ?? false, txId: old.myShare?.txId }
+          : undefined,
+        remoteToken: input.mode === 'other' ? old.remoteToken : undefined,
+        people: input.people.map((p) => {
+          const prev = oldPeople.get(p.id);
+          return {
+            id: p.id,
+            name: p.name,
+            email: p.email?.trim() || undefined,
+            share,
+            paid: prev?.paid ?? false,
+            txId: prev?.txId,
+            emailedAt: prev?.emailedAt,
+          };
+        }),
+      };
+      return { splits: s.splits.map((b) => (b.id === id ? bill : b)), accounts, transactions };
+    }),
+
+  // Deleting a split keeps its logged transactions: the money really moved.
+  removeSplit: (id) => set((s) => ({ splits: s.splits.filter((b) => b.id !== id) })),
+
+  markSplitPersonPaid: (splitId, personId, accountId) =>
+    set((s) => {
+      const bill = s.splits.find((b) => b.id === splitId);
+      const person = bill?.people.find((p) => p.id === personId);
+      if (!bill || !person || person.paid) return s;
+      let accounts = s.accounts;
+      let transactions = s.transactions;
+      let txId: string | undefined;
+      if (accountId) {
+        txId = uid();
+        accounts = accounts.map((a) => (a.id === accountId ? { ...a, balance: flowBalance(a, true, person.share, 1) } : a));
+        transactions = [
+          { id: txId, amount: person.share, description: `Split repaid: ${person.name} · ${bill.title}`, categoryId: 'Split bills', timestamp: Date.now(), isIncome: true, accountId },
+          ...transactions,
+        ];
+      }
+      return {
+        accounts,
+        transactions,
+        splits: s.splits.map((b) =>
+          b.id === splitId ? { ...b, people: b.people.map((p) => (p.id === personId ? { ...p, paid: true, txId } : p)) } : b,
+        ),
+      };
+    }),
+
+  unmarkSplitPersonPaid: (splitId, personId) =>
+    set((s) => {
+      const bill = s.splits.find((b) => b.id === splitId);
+      const person = bill?.people.find((p) => p.id === personId);
+      if (!bill || !person) return s;
+      const { accounts, transactions } = reverseSplitTx(s, person.txId);
+      return {
+        accounts,
+        transactions,
+        splits: s.splits.map((b) =>
+          b.id === splitId ? { ...b, people: b.people.map((p) => (p.id === personId ? { ...p, paid: false, txId: undefined } : p)) } : b,
+        ),
+      };
+    }),
+
+  paySplitMyShare: (splitId, accountId) =>
+    set((s) => {
+      const bill = s.splits.find((b) => b.id === splitId);
+      if (!bill?.myShare || bill.myShare.paid) return s;
+      const share = bill.people[0]?.share ?? Math.round((bill.total / bill.headcount) * 100) / 100;
+      const txId = uid();
+      const accounts = s.accounts.map((a) => (a.id === accountId ? { ...a, balance: flowBalance(a, false, share, 1) } : a));
+      const transactions: Transaction[] = [
+        { id: txId, amount: share, description: `My share: ${bill.title}`, categoryId: 'Split bills', timestamp: Date.now(), isIncome: false, accountId },
+        ...s.transactions,
+      ];
+      return {
+        accounts,
+        transactions,
+        splits: s.splits.map((b) => (b.id === splitId ? { ...b, myShare: { ...b.myShare!, paid: true, txId } } : b)),
+      };
+    }),
+
+  unpaySplitMyShare: (splitId) =>
+    set((s) => {
+      const bill = s.splits.find((b) => b.id === splitId);
+      if (!bill?.myShare) return s;
+      const { accounts, transactions } = reverseSplitTx(s, bill.myShare.txId);
+      return {
+        accounts,
+        transactions,
+        splits: s.splits.map((b) => (b.id === splitId ? { ...b, myShare: { ...b.myShare!, paid: false, txId: undefined } } : b)),
+      };
+    }),
+
+  setSplitRemote: (splitId, token) =>
+    set((s) => ({ splits: s.splits.map((b) => (b.id === splitId ? { ...b, remoteToken: token } : b)) })),
+
+  // Pull from the payer's manage page. Their ticks win for other people;
+  // for the user's own share a logged expense in the app is the stronger
+  // truth and never gets unset from outside.
+  applyRemoteSplitState: (splitId, remote) =>
+    set((s) => ({
+      splits: s.splits.map((b) => {
+        if (b.id !== splitId) return b;
+        const remoteById = new Map(remote.people.map((p) => [p.id, p.paid]));
+        return {
+          ...b,
+          people: b.people.map((p) => (remoteById.has(p.id) ? { ...p, paid: remoteById.get(p.id)! } : p)),
+          myShare: b.myShare
+            ? { ...b.myShare, paid: b.myShare.txId ? b.myShare.paid : (b.myShare.paid || remote.myPaid) }
+            : b.myShare,
+        };
+      }),
+    })),
+
+  markSplitEmailed: (splitId, personId) =>
+    set((s) => ({
+      splits: s.splits.map((b) =>
+        b.id === splitId ? { ...b, people: b.people.map((p) => (p.id === personId ? { ...p, emailedAt: Date.now() } : p)) } : b,
+      ),
+    })),
+
+  // Planner v4: Lend. Lending from an account logs the money OUT right away
+  // ("Lent: Marco"), repayment logs it back IN ("Lend repaid: Marco"), both
+  // under the Split bills style categoryless name 'Lending' so budgets stay
+  // untouched. Track only skips the balance side entirely.
+  addLend: (input) =>
+    set((s) => {
+      let accounts = s.accounts;
+      let transactions = s.transactions;
+      let expenseTxId: string | undefined;
+      if (input.accountId) {
+        expenseTxId = uid();
+        accounts = accounts.map((a) => (a.id === input.accountId ? { ...a, balance: flowBalance(a, false, input.amount, 1) } : a));
+        transactions = [
+          { id: expenseTxId, amount: input.amount, description: `Lent: ${input.name}`, categoryId: 'Lending', timestamp: Date.now(), isIncome: false, accountId: input.accountId },
+          ...transactions,
+        ];
+      }
+      const lend: Lend = {
+        id: input.id,
+        name: input.name,
+        email: input.email?.trim() || undefined,
+        amount: input.amount,
+        dueDate: input.dueDate,
+        note: input.note?.trim() || undefined,
+        createdAt: Date.now(),
+        accountId: input.accountId,
+        expenseTxId,
+        repaid: false,
+        consent: input.consent,
+        sentStages: [],
+      };
+      return { lends: [lend, ...s.lends], accounts, transactions };
+    }),
+
+  // Edit re-logs the outgoing money fresh so amount or account changes net
+  // out. A changed due date resets which reminders count as sent, so the new
+  // date gets its own 7-3-1. Repayment state survives untouched.
+  updateLend: (id, input) =>
+    set((s) => {
+      const old = s.lends.find((l) => l.id === id);
+      if (!old) return s;
+      let { accounts, transactions } = reverseSplitTx(s, old.expenseTxId);
+      let expenseTxId: string | undefined;
+      if (input.accountId) {
+        expenseTxId = uid();
+        accounts = accounts.map((a) => (a.id === input.accountId ? { ...a, balance: flowBalance(a, false, input.amount, 1) } : a));
+        transactions = [
+          { id: expenseTxId, amount: input.amount, description: `Lent: ${input.name}`, categoryId: 'Lending', timestamp: Date.now(), isIncome: false, accountId: input.accountId },
+          ...transactions,
+        ];
+      }
+      const dueChanged = old.dueDate !== input.dueDate;
+      const lend: Lend = {
+        ...old,
+        name: input.name,
+        email: input.email?.trim() || undefined,
+        amount: input.amount,
+        dueDate: input.dueDate,
+        note: input.note?.trim() || undefined,
+        accountId: input.accountId,
+        expenseTxId,
+        consent: input.consent,
+        sentStages: dueChanged ? [] : old.sentStages,
+      };
+      return { lends: s.lends.map((l) => (l.id === id ? lend : l)), accounts, transactions };
+    }),
+
+  // Deleting keeps logged transactions: the money really moved.
+  removeLend: (id) => set((s) => ({ lends: s.lends.filter((l) => l.id !== id) })),
+
+  markLendRepaid: (id, accountId) =>
+    set((s) => {
+      const lend = s.lends.find((l) => l.id === id);
+      if (!lend || lend.repaid) return s;
+      let accounts = s.accounts;
+      let transactions = s.transactions;
+      let repaidTxId: string | undefined;
+      if (accountId) {
+        repaidTxId = uid();
+        accounts = accounts.map((a) => (a.id === accountId ? { ...a, balance: flowBalance(a, true, lend.amount, 1) } : a));
+        transactions = [
+          { id: repaidTxId, amount: lend.amount, description: `Lend repaid: ${lend.name}`, categoryId: 'Lending', timestamp: Date.now(), isIncome: true, accountId },
+          ...transactions,
+        ];
+      }
+      return {
+        accounts,
+        transactions,
+        lends: s.lends.map((l) => (l.id === id ? { ...l, repaid: true, repaidAt: Date.now(), repaidTxId } : l)),
+      };
+    }),
+
+  unmarkLendRepaid: (id) =>
+    set((s) => {
+      const lend = s.lends.find((l) => l.id === id);
+      if (!lend) return s;
+      const { accounts, transactions } = reverseSplitTx(s, lend.repaidTxId);
+      return {
+        accounts,
+        transactions,
+        lends: s.lends.map((l) => (l.id === id ? { ...l, repaid: false, repaidAt: undefined, repaidTxId: undefined } : l)),
+      };
+    }),
+
+  markLendStageSent: (id, stage) =>
+    set((s) => ({
+      lends: s.lends.map((l) => (l.id === id ? { ...l, sentStages: [...(l.sentStages ?? []), stage] } : l)),
+    })),
 
   // Session A: "Add savings" on a goal card. current is NOT capped at target
   // (over-saving is real and the numbers stay honest; the UI caps the percent
@@ -764,6 +1152,8 @@ export const useFinance = create<FinanceState>()(
   },
 
   addIncome: (amount, accountId, note) => {
+    // Planner v2.3: after this income posts, waiting auto-pays get their
+    // retry (see the end of this action).
     set((s) => ({
       accounts: s.accounts.map((a) => (a.id === accountId ? { ...a, balance: flowBalance(a, true, amount, 1) } : a)),
       transactions: [
@@ -773,6 +1163,9 @@ export const useFinance = create<FinanceState>()(
     }));
     const acct = get().accounts.find((a) => a.id === accountId);
     pushCents(set, `Added ${peso(amount)} to ${acct?.name ?? 'your account'}.`);
+    // Money just landed: any auto-pay that was short on balance gets its
+    // shot right now instead of waiting for the next app open.
+    get().runAutoPayIfDue();
   },
 
   // M5.6: edit a logged transaction. Old effects are reversed, new ones
@@ -845,15 +1238,85 @@ export const useFinance = create<FinanceState>()(
         const spent = s.transactions
           .filter((tx) => !tx.isIncome && tx.timestamp >= monthStart && tx.categoryId.toLowerCase() === c.name.toLowerCase())
           .reduce((a, tx) => a + tx.amount, 0);
+        // Planner v2.1: one time dues are done once their month is over.
+        // Monthly dues re-arm on their intended day, clamped to short months
+        // (a 31st lands on Feb 28 instead of drifting to Mar 3). Legacy
+        // budgets without dueDay learn theirs from the old date's day.
         let dueDate = c.dueDate;
-        while (dueDate && dueDate < monthStart) {
-          const d = new Date(dueDate);
-          d.setMonth(d.getMonth() + 1);
-          dueDate = d.getTime();
+        let dueDay = c.dueDay;
+        if (dueDate && dueDate < monthStart) {
+          if (c.dueType === 'once') {
+            dueDate = undefined;
+          } else {
+            const nowD = new Date();
+            if (!dueDay) dueDay = new Date(dueDate).getDate();
+            const lastDay = new Date(nowD.getFullYear(), nowD.getMonth() + 1, 0).getDate();
+            const d = new Date(nowD.getFullYear(), nowD.getMonth(), Math.min(dueDay, lastDay));
+            d.setHours(12, 0, 0, 0);
+            dueDate = d.getTime();
+          }
         }
-        return { ...c, spent, dueDate };
+        return { ...c, spent, dueDate, dueDay };
       }),
     });
+  },
+
+  // Planner v2.3: auto-pay. For every monthly budget with auto-pay on whose
+  // due day has arrived and which has not been settled this month, log the
+  // UNSPENT part of the budget as an expense from the chosen account. The
+  // unspent part (not the full limit) means a bill the user already logged
+  // by hand never gets double charged. Debit style accounts must cover the
+  // amount or the user gets one heads up for the month and the charge waits;
+  // credit cards always go through since spending there just grows what is
+  // owed. Reruns on app open, on budget edits, and right after income lands,
+  // so "logs itself once there is balance" actually happens.
+  runAutoPayIfDue: () => {
+    const key = monthKey();
+    const now = Date.now();
+    const enabled = get().notificationsEnabled;
+    for (const c of get().categories) {
+      if (!c.autoPay || !c.autoPayAccountId || !c.dueDate || c.dueType === 'once') continue;
+      if (c.autoPayLast === key) continue;
+      if (c.dueDate > now) continue; // due day not here yet
+      const amount = Math.max(c.limit - c.spent, 0);
+      const stamp = (patch: Partial<Category>) =>
+        set((s) => ({ categories: s.categories.map((x) => (x.id === c.id ? { ...x, ...patch } : x)) }));
+      if (amount <= 0) {
+        // Already fully logged by hand this month. Nothing owed, mark done.
+        stamp({ autoPayLast: key });
+        continue;
+      }
+      const acct = get().accounts.find((a) => a.id === c.autoPayAccountId);
+      if (!acct) {
+        if (c.autoPayFailNotified !== key) {
+          stamp({ autoPayFailNotified: key });
+          notifyAutoPay(`${c.name} auto-pay needs attention`, 'The account it pays from is gone. Pick a new one in Budgets.', enabled);
+          pushCents(set, `Heads up: ${c.name} is set to auto-pay but its account is gone. Pick a new one in Budgets and I will take it from there.`);
+        }
+        continue;
+      }
+      // What the account can actually cover: balance for debit style,
+      // remaining credit for cards. A card without a set limit is let
+      // through since there is nothing to check against.
+      const available = acct.kind === 'credit'
+        ? (acct.creditLimit ? Math.max(acct.creditLimit - acct.balance, 0) : Number.POSITIVE_INFINITY)
+        : acct.balance;
+      if (available < amount) {
+        if (c.autoPayFailNotified !== key) {
+          stamp({ autoPayFailNotified: key });
+          notifyAutoPay(
+            `${c.name} auto-pay is waiting`,
+            `${acct.name} does not have ${peso(amount)} free for it. Top it up and it logs itself.`,
+            enabled,
+          );
+          pushCents(set, `Heads up: ${c.name} is due but ${acct.name} only has ${peso(available)} of the ${peso(amount)} needed. Add funds or log some income and I will auto-log it the moment the balance is there.`);
+        }
+        continue;
+      }
+      get().addExpense(amount, c.name, acct.id, `Auto-pay: ${c.name}`);
+      stamp({ autoPayLast: key });
+      notifyAutoPay(`${c.name} auto-paid`, `${peso(amount)} from ${acct.name}, logged for you.`, enabled);
+    }
   },
 
   // M2: real Gemini intent parsing via Firebase AI Logic, with the local
@@ -1126,6 +1589,7 @@ export const useFinance = create<FinanceState>()(
           setNumberLocale(COUNTRIES[state.country]?.locale ?? 'en-PH');
           state.setHasHydrated(true);
           state.rolloverBudgetsIfNeeded(); // month may have changed since last open
+          state.runAutoPayIfDue(); // settle any monthly bills whose day arrived
         }
       },
     },
@@ -1609,7 +2073,10 @@ function executeAction(action: ActionType, set: Setter) {
       }
       // Spoken deadline when given (M5.28); ~4 months default otherwise.
       const d = action.date ?? new Date(Date.now() + 120 * day).toISOString().slice(0, 10);
-      st.addGoal(action.name, action.target, d);
+      // Planner v1: hand the store a real timestamp so the Goals section can
+      // do deadline pace math on chat-created goals too.
+      const dTs = Date.parse(d);
+      st.addGoal(action.name, action.target, d, Number.isNaN(dTs) ? undefined : dTs);
       pushCents(set, `Created the ${action.name} goal with a ${peso(action.target)} target${action.date ? ` by ${new Date(d).toLocaleDateString(undefined, { month: 'long', year: 'numeric' })}` : ''}.`);
       break;
     }

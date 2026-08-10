@@ -8,19 +8,24 @@
 import { useEffect } from 'react';
 import { useFinance } from '../store/finance';
 import { syncScheduledNotifications } from '../services/notifications';
+import { sweepLendReminders } from '../services/lend';
 
 export function useNotificationSync() {
   const categories = useFinance((s) => s.categories);
   const transactions = useFinance((s) => s.transactions);
   const goals = useFinance((s) => s.goals);
+  const lends = useFinance((s) => s.lends);
   const enabled = useFinance((s) => s.notificationsEnabled);
   const hydrated = useFinance((s) => s.hasHydrated);
 
   useEffect(() => {
     if (!hydrated) return;
     const id = setTimeout(() => {
-      syncScheduledNotifications({ categories, transactions, goals, enabled });
+      syncScheduledNotifications({ categories, transactions, goals, lends, enabled });
+      // Planner v4: consented borrower reminders ride the same debounce.
+      const st = useFinance.getState();
+      sweepLendReminders(lends, st.profile.nickname || st.profile.name || 'A SaveCents user', st.markLendStageSent);
     }, 1200);
     return () => clearTimeout(id);
-  }, [categories, transactions, goals, enabled, hydrated]);
+  }, [categories, transactions, goals, lends, enabled, hydrated]);
 }

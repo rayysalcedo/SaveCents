@@ -221,10 +221,19 @@ export default function Dashboard() {
   const t = useTheme();
   const styles = useMemo(() => makeStyles(t), [t]);
   const router = useRouter();
-  const { accounts, categories, goals, transactions, profile, selectedGoalId, selectGoal } = useFinance();
+  // Perf rule: subscribe to slices, not the whole store, so Home stops
+  // re-rendering on every chat message and sync tick.
+  const accounts = useFinance((st) => st.accounts);
+  const categories = useFinance((st) => st.categories);
+  const goals = useFinance((st) => st.goals);
+  const transactions = useFinance((st) => st.transactions);
+  const profile = useFinance((st) => st.profile);
+  const selectedGoalId = useFinance((st) => st.selectedGoalId);
+  const selectGoal = useFinance((st) => st.selectGoal);
 
   const rolloverBudgetsIfNeeded = useFinance((st) => st.rolloverBudgetsIfNeeded);
-  React.useEffect(() => { rolloverBudgetsIfNeeded(); }, [rolloverBudgetsIfNeeded]);
+  const runAutoPayIfDue = useFinance((st) => st.runAutoPayIfDue);
+  React.useEffect(() => { rolloverBudgetsIfNeeded(); runAutoPayIfDue(); }, [rolloverBudgetsIfNeeded, runAutoPayIfDue]);
 
   // v4.1: the goal shown in Insights is the STARRED goal (set with the star
   // in Goals → Manage); falls back to the first goal.

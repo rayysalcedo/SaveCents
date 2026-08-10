@@ -2,7 +2,7 @@
 // Replaces: the hardcoded Home savings chart data and the weekly=500 constant
 // behind goal pacing. "Saved" always means net (income minus expenses) inside
 // the bucket; chart bars clamp at zero, the note text keeps the honest sign.
-import { Transaction } from '../models/types';
+import { SaveCadence, Transaction } from '../models/types';
 import { peso } from '../models/types';
 
 export type SavingsPeriod = 'D' | 'W' | 'M' | 'Y';
@@ -125,4 +125,92 @@ export function paceLabel(target: number, current: number, rate: number): string
   if (current >= target) return 'Reached';
   if (rate <= 0) return 'No pace yet';
   return `${Math.ceil((target - current) / rate)} wks left`;
+}
+
+// Planner v1: deadline driven goal plans.
+// Goals created by the UI store a real `deadline` timestamp. Older goals only
+// carry a display string in `date`, which historically came in TWO shapes:
+// ISO "2026-12-10" (chat created) and "Mar 2026" (UI created). Hermes only
+// reliably parses the ISO shape, so "MMM YYYY" is parsed by hand and lands on
+// the END of that month (the generous reading of "by March").
+
+const MONTH_ABBR = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+
+export function parseGoalDate(date: string): number | null {
+  const trimmed = (date ?? '').trim();
+  if (!trimmed) return null;
+  // "MMM YYYY" is checked FIRST: some engines parse it as the 1st of the
+  // month, Hermes rejects it outright. Handling it by hand keeps every
+  // platform on the same generous end of month reading.
+  const m = /^([A-Za-z]{3,9})\.?\s+(\d{4})$/.exec(trimmed);
+  if (m) {
+    const idx = MONTH_ABBR.indexOf(m[1].slice(0, 3).toLowerCase());
+    // new Date(y, m+1, 0) = last day of month m. Noon avoids TZ edge cases.
+    if (idx >= 0) { const d = new Date(+m[2], idx + 1, 0); d.setHours(12, 0, 0, 0); return d.getTime(); }
+  }
+  const iso = Date.parse(trimmed);
+  if (!Number.isNaN(iso)) return iso;
+  return null;
+}
+
+export function goalDeadline(g: { deadline?: number; date: string }): number | null {
+  return g.deadline ?? parseGoalDate(g.date);
+}
+
+export type GoalStatus = 'reached' | 'pastDue' | 'onTrack' | 'behind' | 'noDeadline';
+
+// How the plan copy talks about each rhythm ("save 500 a week").
+export const CADENCE_NOUN: Record<SaveCadence, string> = {
+  daily: 'a day',
+  weekly: 'a week',
+  monthly: 'a month',
+};
+
+// Weeks per unit, for converting the weekly rate into the user's rhythm.
+// 4.345 = 365.25 / 12 / 7, the honest average weeks in a month.
+const CADENCE_WEEKS: Record<SaveCadence, number> = { daily: 1 / 7, weekly: 1, monthly: 4.345 };
+
+export interface GoalPlan {
+  status: GoalStatus;
+  // Save this much per week and the deadline is met. null when reached, past
+  // due, or the deadline never parsed. Use cadenceAsk for the user's rhythm.
+  neededWeekly: number | null;
+  deadline: number | null;
+  weeksLeft: number | null; // fractional, floored at 0
+}
+
+// The honest weekly ask: remaining amount over remaining weeks, compared to
+// the user's REAL 28 day rate to say on track or behind. Deadlines closer
+// than a week clamp to one week so the ask stays a sane weekly number.
+export function goalPlan(
+  g: { target: number; current: number; deadline?: number; date: string },
+  weeklyRate: number,
+  now = Date.now(),
+): GoalPlan {
+  const deadline = goalDeadline(g);
+  if (g.current >= g.target) return { status: 'reached', neededWeekly: null, deadline, weeksLeft: null };
+  if (deadline == null) return { status: 'noDeadline', neededWeekly: null, deadline: null, weeksLeft: null };
+  const weeksLeft = Math.max((deadline - now) / (7 * DAY), 0);
+  if (weeksLeft <= 0) return { status: 'pastDue', neededWeekly: null, deadline, weeksLeft: 0 };
+  const neededWeekly = (g.target - g.current) / Math.max(weeksLeft, 1);
+  return {
+    status: weeklyRate >= neededWeekly ? 'onTrack' : 'behind',
+    neededWeekly,
+    deadline,
+    weeksLeft,
+  };
+}
+
+// The ask converted into the user's saving rhythm: remaining amount over the
+// remaining units of that rhythm, each clamped to at least one unit so the
+// number stays sane right before a deadline.
+export function cadenceAsk(plan: GoalPlan, remaining: number, cadence: SaveCadence): number | null {
+  if (plan.weeksLeft == null || plan.weeksLeft <= 0 || remaining <= 0) return null;
+  const units = plan.weeksLeft / CADENCE_WEEKS[cadence];
+  return remaining / Math.max(units, 1);
+}
+
+// The user's real saving rate expressed in the same rhythm.
+export function cadenceRate(weeklyRate: number, cadence: SaveCadence): number {
+  return weeklyRate * CADENCE_WEEKS[cadence];
 }

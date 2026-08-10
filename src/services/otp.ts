@@ -14,6 +14,9 @@
 
 const OTP_ENDPOINT: string | null = 'https://savecents-otp.savecents-app.workers.dev';
 
+// Planner v3: the same Worker sends split bill emails (see /worker).
+export const WORKER_ENDPOINT = OTP_ENDPOINT;
+
 // v5.11: the same Worker also emails Cents' monthly reports (see /worker):
 // themed email + CSV/PDF attachments + 7-day download buttons.
 export async function emailMonthlyReport(payload: {

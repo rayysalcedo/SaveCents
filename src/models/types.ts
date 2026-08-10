@@ -27,7 +27,27 @@ export interface Category {
   icon: string;
   category?: string; // base category used for icons and AI filing
   dueDate?: number;  // optional bill due date (ms since epoch)
+  // Planner v2.1: how the due date behaves. 'monthly' recurs on dueDay every
+  // month (no year needed, resets with the budget month). 'once' is a single
+  // date that clears itself after its month passes. Absent = monthly, which
+  // matches how rollover always treated due dates.
+  dueType?: 'once' | 'monthly';
+  dueDay?: number;   // 1-31, the intended day for monthly dues (clamped to short months)
+  // Planner v2: whether the 7-3-1 due date reminders fire for this budget.
+  // Absent = true, so every existing budget with a due date keeps reminding.
+  remind?: boolean;
+  // Planner v2.3: auto-pay for monthly bills. On the due day, whatever is
+  // left of the budget gets logged as an expense from autoPayAccountId. If
+  // that account cannot cover it, the user gets a heads up instead, and the
+  // charge logs itself as soon as balance lands (rechecked on app open and
+  // whenever income arrives).
+  autoPay?: boolean;
+  autoPayAccountId?: string;
+  autoPayLast?: string;         // YYYY-MM of the last successful auto-pay
+  autoPayFailNotified?: string; // YYYY-MM we already flagged as short on balance
 }
+
+export type SaveCadence = 'daily' | 'weekly' | 'monthly';
 
 export interface Goal {
   id: string;
@@ -35,6 +55,13 @@ export interface Goal {
   target: number;
   current: number;
   date: string;
+  // Planner v1: real deadline timestamp (ms). `date` stays the display string
+  // for backward compatibility; older goals without this field get their
+  // deadline re-derived from `date` by parseGoalDate (src/utils/stats.ts).
+  deadline?: number;
+  // Planner v1.1: how often the user plans to add savings. Drives the ask
+  // ("save 200 a day" vs "save 6,000 a month"). Absent = weekly.
+  cadence?: SaveCadence;
 }
 
 export interface Transaction {
@@ -100,6 +127,63 @@ export interface UserProfile {
 }
 
 export const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
+
+// Planner v3: split the bill. The payer covered the whole thing; `people`
+// are the OTHERS who owe their share back. headcount includes the payer so
+// the math display stays honest (total / headcount = share).
+export interface SplitPerson {
+  id: string;
+  name: string;
+  email?: string;
+  share: number;
+  paid: boolean;
+  emailedAt?: number; // last time their share was emailed
+  txId?: string;      // me mode: the income logged when they repaid
+}
+
+// Planner v4: Lend. Money handed out that should come back. Unpaid past the
+// due date is money at risk; repaid flows straight back into an account and
+// the savings math. Borrower emails (7, 3 and 1 days before due) only go out
+// when the user confirms the borrower agreed to be contacted, they only ever
+// go to the borrower, and the tone stays a polite reminder.
+export interface Lend {
+  id: string;
+  name: string;        // who borrowed
+  email?: string;
+  amount: number;
+  dueDate: number;     // ms since epoch
+  note?: string;
+  createdAt: number;
+  accountId?: string;  // where the money left from (absent = track only)
+  expenseTxId?: string;
+  repaid: boolean;
+  repaidAt?: number;
+  repaidTxId?: string;
+  consent?: boolean;      // borrower agreed to email reminders
+  sentStages?: number[];  // which of the 7-3-1 reminders already went out
+}
+
+export interface SplitBill {
+  id: string;
+  title: string;     // what it was, e.g. Dinner at Mesa
+  total: number;
+  payerName: string; // who covered it
+  headcount: number; // total people including the payer
+  people: SplitPerson[];
+  createdAt: number;
+  // Planner v3.2: who covered the bill decides how money flows.
+  // 'me': the user paid. The total logs as an expense from payerAccountId,
+  //   and each repayment logs as income when the user confirms it received.
+  // 'other': someone else paid. They get a private manage link; the user's
+  //   own share (if included) logs as an expense when they pay it.
+  // Absent = a v3 legacy split: plain ticks, no money logging.
+  mode?: 'me' | 'other';
+  payerEmail?: string;     // other mode
+  payerAccountId?: string; // me mode: the account the bill came out of
+  expenseTxId?: string;    // me mode: the logged total expense
+  myShare?: { included: boolean; paid: boolean; txId?: string }; // other mode
+  remoteToken?: string;    // other mode: the worker side bill token
+}
 
 let CURRENCY_SYMBOL = '\u20B1';
 export const setCurrencySymbol = (s: string) => { CURRENCY_SYMBOL = s; };

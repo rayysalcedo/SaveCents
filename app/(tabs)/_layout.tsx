@@ -20,7 +20,7 @@ import { CentsQuickDial, QUICK_OPTIONS, quickIndexForGesture } from '../../src/c
 const TAB_META: Record<string, { icon: keyof typeof Ionicons.glyphMap; label: string }> = {
   dashboard: { icon: 'home', label: 'Home' },
   wallet: { icon: 'wallet', label: 'Wallet' },
-  goals: { icon: 'flag', label: 'Goals' },
+  goals: { icon: 'grid', label: 'Planner' },
   analytics: { icon: 'bar-chart', label: 'Analytics' },
 };
 

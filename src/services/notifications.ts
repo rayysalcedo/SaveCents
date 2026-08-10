@@ -9,7 +9,8 @@
 // switch: every app open plants the chain below into the OS, and the next
 // open wipes and replants it from day zero. Keep using the app and the chain
 // silently resets; go quiet and it fires on its own.
-//   1. Bill due tomorrow: 9:00 AM the day before each budget dueDate.
+//   1. Bill countdown: 9:00 AM at 7, 3 and 1 days before each budget
+//      dueDate, honoring the per-budget remind toggle (absent = on).
 //   2. Bill due today: 9:00 AM on the day itself.
 //   3. Forever check-ins: WEEKLY repeating triggers on Monday, Thursday and
 //      Saturday at 8:00 PM. Registered once with the OS, they fire every
@@ -38,7 +39,7 @@
 // the crossing notifiers from here; a cycle would break Hermes module init).
 // Callers pass the data in.
 import * as Notifications from 'expo-notifications';
-import { Category, Goal, Transaction, peso } from '../models/types';
+import { Category, Goal, Lend, Transaction, peso } from '../models/types';
 
 // Show alerts even while the app is foregrounded (quiet: no sound/badge).
 Notifications.setNotificationHandler({
@@ -99,12 +100,13 @@ interface ScheduleInputs {
   categories: Category[];
   transactions: Transaction[];
   goals: Goal[];
+  lends?: Lend[];
   enabled: boolean;
 }
 
 // Rebuild every scheduled notification to match current data. Cheap (a
 // handful of items), so wipe-and-reschedule keeps it simple and correct.
-export async function syncScheduledNotifications({ categories, transactions, goals, enabled }: ScheduleInputs): Promise<void> {
+export async function syncScheduledNotifications({ categories, transactions, goals, lends = [], enabled }: ScheduleInputs): Promise<void> {
   try {
     await Notifications.cancelAllScheduledNotificationsAsync();
     if (!enabled) return;
@@ -117,23 +119,51 @@ export async function syncScheduledNotifications({ categories, transactions, goa
         trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date },
       });
 
-    // 1 + 2. Bill reminders: the day before and the day of.
+    // 1 + 2. Bill reminders: 7, 3 and 1 days before the due date, then the
+    // day itself, all at 9 AM. A budget can opt out with remind: false
+    // (absent = on). Copy quotes remaining budget, safe to freeze because the
+    // whole chain is wiped and replanted on every app open.
     for (const c of categories) {
-      if (!c.dueDate) continue;
+      if (!c.dueDate || c.remind === false) continue;
       const remaining = Math.max(c.limit - c.spent, 0);
-      const dayBefore = at(c.dueDate - DAY, 9);
-      if (dayBefore.getTime() > now) {
+      const dueLabel = new Date(c.dueDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      const leadBody = remaining > 0
+        ? `${peso(remaining)} of the ${peso(c.limit)} budget is still unspent.`
+        : 'This budget is fully used, double-check the bill is covered.';
+      for (const lead of [7, 3, 1]) {
+        const when = at(c.dueDate - lead * DAY, 9);
+        if (when.getTime() <= now) continue;
         await schedule(
-          `${c.name} is due tomorrow`,
-          remaining > 0
-            ? `${peso(remaining)} of the ${peso(c.limit)} budget is still unspent.`
-            : 'This budget is fully used, double-check the bill is covered.',
-          dayBefore,
+          lead === 1 ? `${c.name} is due tomorrow` : `${c.name} is due in ${lead} days`,
+          lead === 1 ? leadBody : `Due ${dueLabel}. ${leadBody}`,
+          when,
         );
       }
       const dayOf = at(c.dueDate, 9);
       if (dayOf.getTime() > now) {
         await schedule(`${c.name} is due today`, 'Settle it now and tell Cents so the budget stays true.', dayOf);
+      }
+    }
+
+    // 2b. Planner v4: lend paybacks. The USER gets 7, 3 and 1 day pings
+    // before each unpaid lend's due date, plus the day itself, at 9 AM.
+    // These are local notifications for the user only; borrower emails are a
+    // separate, consented flow (see src/services/lend.ts).
+    for (const l of lends) {
+      if (l.repaid || !l.dueDate) continue;
+      const dueLabel = new Date(l.dueDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      for (const lead of [7, 3, 1]) {
+        const when = at(l.dueDate - lead * DAY, 9);
+        if (when.getTime() <= now) continue;
+        await schedule(
+          lead === 1 ? `${l.name}'s payback is due tomorrow` : `${l.name}'s payback is due in ${lead} days`,
+          `${peso(l.amount)} due ${dueLabel}. A friendly nudge now beats an awkward one later.`,
+          when,
+        );
+      }
+      const dayOf = at(l.dueDate, 9);
+      if (dayOf.getTime() > now) {
+        await schedule(`${l.name}'s payback is due today`, `${peso(l.amount)} is due back today. Tick it off in Planner once it lands.`, dayOf);
       }
     }
 
@@ -207,6 +237,13 @@ const fireNow = (title: string, body: string) =>
     if (!(await ensureNotificationPermission())) return;
     await Notifications.scheduleNotificationAsync({ content: { title, body }, trigger: null });
   })().catch(() => {});
+
+// Planner v2.3: immediate banner for auto-pay outcomes (paid, or short on
+// balance). Same fire-and-forget contract as every other notifier here.
+export function notifyAutoPay(title: string, body: string, enabled: boolean): void {
+  if (!enabled) return;
+  fireNow(title, body);
+}
 
 // 7. Immediate alert when a spend pushes a budget across 90 percent (special
 // copy at fully used). Compared by id so renames do not false-positive.
