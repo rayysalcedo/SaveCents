@@ -12,7 +12,11 @@
 //  - in production the caller falls back to Firebase's built-in
 //    password-reset email (real, secure, zero backend).
 
-const OTP_ENDPOINT: string | null = 'https://savecents-otp.savecents-app.workers.dev';
+// v5.48.1: the branded custom domain (attached in Cloudflare, verified
+// answering). The worker mints split/manage links from the REQUEST origin,
+// so calling this address is what makes links read savecents.app. The old
+// workers.dev URL still answers as a fallback.
+const OTP_ENDPOINT: string | null = 'https://api.savecents.app';
 
 // Planner v3: the same Worker sends split bill emails (see /worker).
 export const WORKER_ENDPOINT = OTP_ENDPOINT;

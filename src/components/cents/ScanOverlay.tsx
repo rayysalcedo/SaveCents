@@ -72,7 +72,7 @@ const ScanFrame = ({ styles, sweep, frameW, frameH }: {
         style={styles.scanLine}
       />
       <LinearGradient
-        colors={['rgba(46,158,91,0.18)', 'rgba(46,158,91,0)']}
+        colors={['rgba(245,198,74,0.16)', 'rgba(245,198,74,0)']}
         start={{ x: 0.5, y: 0 }} end={{ x: 0.5, y: 1 }}
         style={styles.scanTrail}
       />

@@ -25,7 +25,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Palette, radius, useTheme } from '../src/theme/colors';
 import { useFinance } from '../src/store/finance';
 import {
-  authAvailable, authErrorMessage, completePasswordReset, resetPassword, sendVerificationEmail, signIn, signUp, subscribeAuth,
+  authAvailable, authErrorMessage, completePasswordReset, isCurrentPassword, resetPassword, sendVerificationEmail, signIn, signUp, subscribeAuth,
 } from '../src/services/auth';
 import { OtpUnavailableError, requestEmailOtp, requestResetOtp, verifyEmailOtp, verifyResetOtp } from '../src/services/otp';
 import { IN_EXPO_GO, googleConfigured, useGoogleSignIn } from '../src/services/googleAuth';
@@ -424,6 +424,7 @@ export default function AuthScreen() {
   const [fpStep, setFpStep] = useState<'code' | 'new'>('code');
   const [fpCode, setFpCode] = useState('');
   const [fpNew, setFpNew] = useState('');
+  const [fpShow, setFpShow] = useState(false);
   const [fpNew2, setFpNew2] = useState('');
   const [fpBusy, setFpBusy] = useState(false);
   const [fpError, setFpError] = useState('');
@@ -477,6 +478,13 @@ export default function AuthScreen() {
     if (fpNew.length < 8) { setFpError('Use at least 8 characters.'); return; }
     if (fpNew !== fpNew2) { setFpError('Passwords do not match.'); return; }
     setFpBusy(true);
+    // v5.49 (owner): resetting to the CURRENT password is refused - if the
+    // "new" password can already sign this email in, it's the old one.
+    if (await isCurrentPassword(email, fpNew)) {
+      setFpBusy(false);
+      setFpError('That is already your current password. Pick a new one.');
+      return;
+    }
     try {
       await completePasswordReset(fpOob.current, fpNew);
       setFpOpen(false);
@@ -560,7 +568,9 @@ export default function AuthScreen() {
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
-          {/* Top bar: back chevron on OTP, theme switcher always */}
+          {/* Top bar: back chevron on OTP only; the empty placeholder no
+              longer paints a ghost circle (v5.49 owner report), and the
+              switcher hides on SUCCESS - the theme follows what was chosen. */}
           <View style={styles.topBar}>
             {step === 'OTP' ? (
               <Pressable
@@ -570,8 +580,12 @@ export default function AuthScreen() {
               >
                 <Ionicons name="chevron-back" size={20} color={t.textPrimary} />
               </Pressable>
-            ) : <View style={styles.backBtn} />}
-            <ThemeSwitch t={t} styles={styles} onToggle={toggleTheme} />
+            ) : <View style={{ width: 38, height: 38 }} />}
+            {step !== 'SUCCESS' ? (
+              <ThemeSwitch t={t} styles={styles} onToggle={toggleTheme} />
+            ) : (
+              <View style={{ width: 38, height: 38 }} />
+            )}
           </View>
 
           <Animated.View style={{ opacity: fade }}>
@@ -785,28 +799,54 @@ export default function AuthScreen() {
                 <Text style={{ color: t.textMuted, fontSize: 13.5, lineHeight: 20, marginTop: 6, marginBottom: 16 }}>
                   Code confirmed. Choose your new SaveCents password.
                 </Text>
-                <TextInput
-                  value={fpNew}
-                  onChangeText={setFpNew}
-                  secureTextEntry
-                  placeholder="New password (8+ characters)"
-                  placeholderTextColor={t.textFaint}
-                  style={{
-                    color: t.textPrimary, fontSize: 15, backgroundColor: t.inputFill, borderWidth: 1,
-                    borderColor: t.borderSoft, borderRadius: 14, paddingHorizontal: 14, paddingVertical: 12, marginBottom: 10,
-                  }}
-                />
-                <TextInput
-                  value={fpNew2}
-                  onChangeText={setFpNew2}
-                  secureTextEntry
-                  placeholder="Repeat the new password"
-                  placeholderTextColor={t.textFaint}
-                  style={{
-                    color: t.textPrimary, fontSize: 15, backgroundColor: t.inputFill, borderWidth: 1,
-                    borderColor: t.borderSoft, borderRadius: 14, paddingHorizontal: 14, paddingVertical: 12,
-                  }}
-                />
+                {/* v5.49: same fields the signup uses - eye toggles + the
+                    live rule rows, no more mystery letter-spacing. */}
+                <View style={{ position: 'relative', marginBottom: 10 }}>
+                  <TextInput
+                    value={fpNew}
+                    onChangeText={setFpNew}
+                    secureTextEntry={!fpShow}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    placeholder="New password"
+                    placeholderTextColor={t.textFaint}
+                    style={{
+                      color: t.textPrimary, fontSize: 15, backgroundColor: t.inputFill, borderWidth: 1,
+                      borderColor: t.borderSoft, borderRadius: 14, paddingHorizontal: 14, paddingVertical: 12, paddingRight: 44,
+                    }}
+                  />
+                  <Pressable style={{ position: 'absolute', right: 12, top: 12 }} onPress={() => setFpShow((v) => !v)} hitSlop={8}>
+                    <Ionicons name={fpShow ? 'eye' : 'eye-off'} size={19} color={t.textMuted} />
+                  </Pressable>
+                </View>
+                <View style={{ position: 'relative' }}>
+                  <TextInput
+                    value={fpNew2}
+                    onChangeText={setFpNew2}
+                    secureTextEntry={!fpShow}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    placeholder="Repeat the new password"
+                    placeholderTextColor={t.textFaint}
+                    style={{
+                      color: t.textPrimary, fontSize: 15, backgroundColor: t.inputFill, borderWidth: 1,
+                      borderColor: t.borderSoft, borderRadius: 14, paddingHorizontal: 14, paddingVertical: 12, paddingRight: 44,
+                    }}
+                  />
+                  <Pressable style={{ position: 'absolute', right: 12, top: 12 }} onPress={() => setFpShow((v) => !v)} hitSlop={8}>
+                    <Ionicons name={fpShow ? 'eye' : 'eye-off'} size={19} color={t.textMuted} />
+                  </Pressable>
+                </View>
+                <View style={{ marginTop: 10, gap: 4 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <Ionicons name={fpNew.length >= 8 ? 'checkmark-circle' : 'ellipse-outline'} size={13} color={fpNew.length >= 8 ? t.emerald : t.textFaint} />
+                    <Text style={{ color: fpNew.length >= 8 ? t.emerald : t.textFaint, fontSize: 12 }}>At least 8 characters</Text>
+                  </View>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <Ionicons name={fpNew.length > 0 && fpNew === fpNew2 ? 'checkmark-circle' : 'ellipse-outline'} size={13} color={fpNew.length > 0 && fpNew === fpNew2 ? t.emerald : t.textFaint} />
+                    <Text style={{ color: fpNew.length > 0 && fpNew === fpNew2 ? t.emerald : t.textFaint, fontSize: 12 }}>Both entries match</Text>
+                  </View>
+                </View>
               </>
             )}
 

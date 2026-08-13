@@ -79,7 +79,7 @@ export async function buildMonthlyReport(
       <td style="padding:9px 12px;color:#6C757D;font-size:11px;white-space:nowrap;">${new Date(tx.timestamp).toLocaleDateString('en-PH', { month: 'short', day: 'numeric' })}</td>
       <td style="padding:9px 12px;color:#1A1D20;font-size:12px;">${esc(tx.description)}</td>
       <td style="padding:9px 12px;color:#6C757D;font-size:11px;">${esc(tx.goalId ? 'Savings' : tx.categoryId)}</td>
-      <td style="padding:9px 12px;text-align:right;font-size:12px;font-weight:700;color:${tx.isIncome ? '#165B33' : '#1A1D20'};white-space:nowrap;">${tx.isIncome ? '+' : '-'}${peso(tx.amount)}</td>
+      <td style="padding:9px 12px;text-align:right;font-size:12px;font-weight:700;color:${tx.isIncome ? '#8A5C00' : '#1A1D20'};white-space:nowrap;">${tx.isIncome ? '+' : '-'}${peso(tx.amount)}</td>
     </tr>`).join('');
   const stat = (labelTxt: string, value: string, color = '#1A1D20') => `
     <td style="padding:14px 16px;background:#FAF9F6;border:1px solid #E9ECEF;border-radius:12px;">
@@ -98,9 +98,9 @@ export async function buildMonthlyReport(
         </td>
       </tr></table>
       <table width="100%" cellpadding="0" cellspacing="10" style="margin-top:18px;"><tr>
-        ${stat('INCOME', peso(income), '#165B33')}
+        ${stat('INCOME', peso(income), '#8A5C00')}
         ${stat('EXPENSES', peso(expenses))}
-        ${stat('NET', `${stats.net < 0 ? '-' : ''}${peso(Math.abs(stats.net))}`, stats.net < 0 ? '#DC2626' : '#165B33')}
+        ${stat('NET', `${stats.net < 0 ? '-' : ''}${peso(Math.abs(stats.net))}`, stats.net < 0 ? '#DC2626' : '#8A5C00')}
       </tr></table>
       <table width="100%" cellpadding="0" cellspacing="0" style="margin-top:20px;border:1px solid #E9ECEF;border-radius:14px;overflow:hidden;">
         <tr style="background:#F4F3EF;">

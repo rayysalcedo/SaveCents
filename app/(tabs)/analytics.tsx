@@ -261,7 +261,7 @@ function TxEditor({ t, styles, tx, categories, accounts, onSave, onDelete, onClo
               </View>
             </View>
 
-            {!tx.isIncome && !tx.goalId && (
+            {!tx.isIncome && !tx.goalId && !tx.transferToId && (
               <>
                 <Text style={styles.editLabel}>Budget</Text>
                 <TxBudgetSelect
@@ -328,7 +328,8 @@ export default function AnalyticsScreen() {
     const q = query.trim().toLowerCase();
     return transactions.filter((tx) => {
       if (filter === 'income' && !tx.isIncome) return false;
-      if (filter === 'expense' && tx.isIncome) return false;
+      if (filter === 'expense' && (tx.isIncome || tx.transferToId)) return false;
+      if (filter === 'income' && tx.transferToId) return false;
       if (catFilter && tx.categoryId.toLowerCase() !== catFilter.toLowerCase()) return false;
       if (acctFilter && tx.accountId !== acctFilter) return false;
       if (!q) return true;
@@ -342,8 +343,8 @@ export default function AnalyticsScreen() {
 
   // ---- Real computed insights ----
   const totals = useMemo(() => {
-    const income = filtered.filter((x) => x.isIncome).reduce((a, x) => a + x.amount, 0);
-    const spent = filtered.filter((x) => !x.isIncome).reduce((a, x) => a + x.amount, 0);
+    const income = filtered.filter((x) => x.isIncome && !x.transferToId).reduce((a, x) => a + x.amount, 0);
+    const spent = filtered.filter((x) => !x.isIncome && !x.transferToId).reduce((a, x) => a + x.amount, 0);
     return { income, spent, net: income - spent };
   }, [filtered]);
 
@@ -374,6 +375,7 @@ export default function AnalyticsScreen() {
       let inc = 0, exp = 0;
       for (const x of transactions) {
         if (x.timestamp < from || x.timestamp >= to) continue;
+        if (x.transferToId) continue; // v5.48: transfers move pockets, not money
         if (x.isIncome) inc += x.amount; else exp += x.amount;
       }
       return { net: inc - exp, spent: exp };
@@ -571,6 +573,7 @@ export default function AnalyticsScreen() {
     let income = 0, spent = 0;
     for (const x of transactions) {
       if (x.timestamp < trend.from || x.timestamp >= trend.to) continue;
+      if (x.transferToId) continue;
       if (x.isIncome) income += x.amount; else spent += x.amount;
     }
     return { income, spent, net: income - spent };
@@ -612,7 +615,7 @@ export default function AnalyticsScreen() {
   const timeline = useMemo(() => {
     const monthSpent = new Map<string, number>();
     for (const tx of filtered) {
-      if (tx.isIncome) continue;
+      if (tx.isIncome || tx.transferToId) continue;
       const d = new Date(tx.timestamp);
       const mk = `${d.getFullYear()}-${d.getMonth()}`;
       monthSpent.set(mk, (monthSpent.get(mk) ?? 0) + tx.amount);
@@ -646,7 +649,7 @@ export default function AnalyticsScreen() {
       }
       const day = items[items.length - 1] as Extract<Item, { type: 'day' }>;
       day.txs.push(tx);
-      day.net += tx.isIncome ? tx.amount : -tx.amount;
+      if (!tx.transferToId) day.net += tx.isIncome ? tx.amount : -tx.amount;
     }
     return items;
   }, [pageSlice, filtered]);
@@ -1148,8 +1151,9 @@ export default function AnalyticsScreen() {
               <GlassCard pad={8}>
                 {item.txs.map((tx, i, arr) => {
                   const cat = categories.find((c) => c.name.toLowerCase() === tx.categoryId.toLowerCase());
-                  const isBillPay = !tx.isIncome && !!cat?.creditAccountId;
-                  const icon = tx.isIncome ? 'trending-up' : tx.goalId ? 'flag' : ((cat?.icon as any) || 'pricetag');
+                  const isTransfer = !!tx.transferToId;
+                  const isBillPay = !tx.isIncome && !isTransfer && !!cat?.creditAccountId;
+                  const icon = isTransfer ? 'swap-horizontal' : tx.isIncome ? 'trending-up' : tx.goalId ? 'flag' : ((cat?.icon as any) || 'pricetag');
                   return (
                     <Pressable
                       key={tx.id}
@@ -1164,15 +1168,15 @@ export default function AnalyticsScreen() {
                         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
                           {isBillPay && <Ionicons name="card" size={11} color={t.emerald} />}
                           <Text style={styles.txCat} numberOfLines={1}>
-                            {tx.isIncome ? 'Income' : tx.categoryId}
-                            {' · '}
-                            {accounts.find((a) => a.id === tx.accountId)?.name ?? 'No source'}
+                            {isTransfer
+                              ? `Transfer · ${accounts.find((a) => a.id === tx.accountId)?.name ?? '?'} → ${accounts.find((a) => a.id === tx.transferToId)?.name ?? '?'}`
+                              : `${tx.isIncome ? 'Income' : tx.categoryId} · ${accounts.find((a) => a.id === tx.accountId)?.name ?? 'No source'}`}
                           </Text>
                         </View>
                       </View>
                       <View style={{ alignItems: 'flex-end' }}>
-                        <Text style={[styles.txAmount, tx.isIncome && { color: t.emerald }]}>
-                          {tx.isIncome ? '+' : '-'}{peso(tx.amount)}
+                        <Text style={[styles.txAmount, tx.isIncome && { color: t.emerald }, isTransfer && { color: t.textMuted }]}>
+                          {isTransfer ? '' : tx.isIncome ? '+' : '-'}{peso(tx.amount)}
                         </Text>
                         <Text style={styles.txTime}>
                           {new Date(tx.timestamp).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}
@@ -1480,7 +1484,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   // v5.41: Cents strip (mirrors the dashboard centsBlock)
   trendCentsBlock: {
     marginBottom: 14, borderRadius: 16, padding: 14,
-    backgroundColor: t.mode === 'dark' ? 'rgba(46,158,91,0.10)' : t.sageSoft,
+    backgroundColor: t.mode === 'dark' ? 'rgba(245,198,74,0.10)' : t.sageSoft,
   },
   trendCentsHead: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 6 },
   trendCentsEyebrow: { ...type.eyebrow, fontSize: 10, color: t.textFaint },

@@ -10,7 +10,9 @@ id = "1fa37f38faa6415782c012de8ba905a7"
 
 [vars]
 SENDER_NAME = "SaveCents"
-# Must be a sender you verified inside Brevo (your Gmail works to start).
-SENDER_EMAIL = "rayysalcedo@gmail.com"
+# v5.49.1: domain authenticated in Brevo (DKIM verified) - emails now send
+# from the brand. Replies route to the human inbox via REPLY_TO_EMAIL.
+SENDER_EMAIL = "noreply@savecents.app"
+REPLY_TO_EMAIL = "support@savecents.app"
 
 # Secret (never in this file):  wrangler secret put BREVO_API_KEY

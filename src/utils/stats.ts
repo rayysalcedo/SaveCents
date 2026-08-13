@@ -72,6 +72,8 @@ function buckets(period: SavingsPeriod, now = Date.now()): Bucket[] {
 }
 
 function netInRange(txs: Transaction[], from: number, to: number): number {
+  // v5.48: transfers move pockets, not net worth - excluded.
+  txs = txs.filter((t) => !t.transferToId);
   let net = 0;
   for (const tx of txs) {
     if (tx.timestamp >= from && tx.timestamp < to) net += tx.isIncome ? tx.amount : -tx.amount;

@@ -1,16 +1,34 @@
-// Animated open: a brand-green overlay that plays once at cold start. The
-// logo pops in with a spring (slight overshoot, like a coin landing), holds
-// a beat, then the whole sheet dissolves into the app. Pure Animated API,
-// no native modules, so it ships safely over EAS Update to the existing
-// bundle. pointerEvents none: it can never block a tap, even mid-fade.
+// Animated open, v2 "the coin flip" (v5.50, owner request): the Cents coin
+// (transparent asset) spins in like a flipped coin - rotateY with
+// perspective, three decelerating turns - then LANDS with a real bounce
+// (Easing.bounce on translateY), holds a beat, and the espresso sheet
+// dissolves into the app. Pure Animated API, no native modules: Expo Go
+// safe and ships over EAS Update.
+//
+// Taste dials (all single numbers): SPINS (turns), SPIN_MS (speed),
+// DROP (landing height), BOUNCE_MS (settle time).
+//
+// NOTE the two-layer truth of splash screens: the OS's very first frame is
+// the STATIC native splash (app.json) by design - nothing can animate it.
+// This overlay takes over at first React render and plays the motion. For a
+// zero-flash handoff the native splash art should be re-exported as the
+// coin on the same espresso #241A05 (owner-side asset task).
 import React, { useEffect, useRef, useState } from 'react';
 import { Animated, Easing, StyleSheet } from 'react-native';
 
-const BRAND_GREEN = '#00C968';
+const ESPRESSO = '#241A05'; // matches the adaptive icon bg; gold pops on it
+// WHOLE turns only - a half turn lands the coin on its BACK (mirrored),
+// which is exactly the bug the owner caught on device (v80 fix).
+const SPINS = 3;
+const SPIN_MS = 950;
+const DROP = 22;
+const BOUNCE_MS = 520;
 
 export default function SplashIntro() {
   const [done, setDone] = useState(false);
-  const scale = useRef(new Animated.Value(0.72)).current;
+  const spin = useRef(new Animated.Value(0)).current;      // 0..1 -> rotateY
+  const scale = useRef(new Animated.Value(0.78)).current;
+  const y = useRef(new Animated.Value(-DROP - 34)).current; // starts high
   const logoOpacity = useRef(new Animated.Value(0)).current;
   const overlay = useRef(new Animated.Value(1)).current;
 
@@ -18,40 +36,51 @@ export default function SplashIntro() {
     Animated.sequence([
       // Expo Go keeps its own loading screen up slightly past first render
       // when running a published bundle; without this hold the whole intro
-      // plays behind it. The overlay is solid green during the wait, so the
-      // user just sees green a beat longer, then the pop. Standalone builds
-      // simply show green a moment before the logo lands, which reads fine.
+      // plays behind it. Standalone builds just show espresso a beat.
       Animated.delay(600),
+      // Phase A - the flip: the coin drops toward its mark while spinning
+      // on its vertical axis, decelerating like a real toss.
       Animated.parallel([
         Animated.timing(logoOpacity, {
-          toValue: 1,
-          duration: 240,
-          easing: Easing.out(Easing.quad),
-          useNativeDriver: true,
+          toValue: 1, duration: 180, easing: Easing.out(Easing.quad), useNativeDriver: true,
         }),
-        Animated.spring(scale, {
-          toValue: 1,
-          friction: 5,
-          tension: 90,
-          useNativeDriver: true,
+        Animated.timing(spin, {
+          toValue: 1, duration: SPIN_MS, easing: Easing.out(Easing.cubic), useNativeDriver: true,
+        }),
+        Animated.timing(scale, {
+          toValue: 1, duration: SPIN_MS, easing: Easing.out(Easing.cubic), useNativeDriver: true,
+        }),
+        Animated.timing(y, {
+          toValue: -DROP, duration: SPIN_MS, easing: Easing.out(Easing.quad), useNativeDriver: true,
         }),
       ]),
-      Animated.delay(320),
+      // Phase B - the landing: classic double-bounce settle.
+      Animated.timing(y, {
+        toValue: 0, duration: BOUNCE_MS, easing: Easing.bounce, useNativeDriver: true,
+      }),
+      Animated.delay(240),
       Animated.timing(overlay, {
-        toValue: 0,
-        duration: 420,
-        easing: Easing.inOut(Easing.quad),
-        useNativeDriver: true,
+        toValue: 0, duration: 420, easing: Easing.inOut(Easing.quad), useNativeDriver: true,
       }),
     ]).start(() => setDone(true));
-  }, [logoOpacity, overlay, scale]);
+  }, [logoOpacity, overlay, scale, spin, y]);
+
+  const rotateY = spin.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['0deg', `${SPINS * 360}deg`],
+  });
 
   if (done) return null;
   return (
     <Animated.View pointerEvents="none" style={[styles.fill, { opacity: overlay }]}>
       <Animated.Image
-        source={require('../../assets/splash-logo.png')}
-        style={[styles.logo, { opacity: logoOpacity, transform: [{ scale }] }]}
+        source={require('../../assets/cents-splash.png')}
+        style={[styles.logo, {
+          opacity: logoOpacity,
+          // perspective must lead the chain for rotateY to read as a coin
+          // flip instead of a flat squash.
+          transform: [{ perspective: 800 }, { translateY: y }, { rotateY }, { scale }],
+        }]}
         resizeMode="contain"
       />
     </Animated.View>
@@ -61,13 +90,11 @@ export default function SplashIntro() {
 const styles = StyleSheet.create({
   fill: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: BRAND_GREEN,
+    backgroundColor: ESPRESSO,
     alignItems: 'center',
     justifyContent: 'center',
     zIndex: 999,
     elevation: 999,
   },
-  // The logo art shares the overlay's exact green, so the square image
-  // blends invisibly into the sheet and only the glyph reads.
-  logo: { width: 200, height: 200 },
+  logo: { width: 168, height: 168 },
 });

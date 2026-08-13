@@ -78,6 +78,10 @@ export interface Goal {
 }
 
 export interface Transaction {
+  // v5.48: set = this row is a TRANSFER between accounts (accountId = from,
+  // transferToId = to). Never income, never an expense: excluded from every
+  // total, trend, budget and net - it only moves balances.
+  transferToId?: string;
   id: string;
   amount: number;
   description: string;
@@ -122,7 +126,10 @@ export type ActionType =
   | { kind: 'SetBudgetDue'; categoryName: string; dueDay: number; remind?: boolean }
   // v5.43: read-only - arms the Transactions tab's filters (search text
   // and/or a budget) so "show my Grab expenses" lands on a filtered ledger.
-  | { kind: 'ShowTransactions'; query?: string; categoryName?: string };
+  | { kind: 'ShowTransactions'; query?: string; categoryName?: string }
+  // v5.48: account ids resolved at ASK time (txId pattern) so the confirm
+  // can never move money between different accounts than were named.
+  | { kind: 'MoveFunds'; fromId: string; toId: string; amount: number; label: string };
 
 interface ChatBase {
   id: string;

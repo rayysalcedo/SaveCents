@@ -16,6 +16,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 import { MoneyInput } from '../../src/components/MoneyInput';
+import { AccountSelect } from '../../src/components/AccountSelect';
 import { BankMark, MerchantBadge, NetworkMark } from '../../src/components/BrandBadge';
 import { Palette, radius, type, useTheme } from '../../src/theme/colors';
 import { useDragToDismiss } from '../../src/hooks/useDragToDismiss';
@@ -70,7 +71,7 @@ function StackCard({ acct, inst, t, styles, index, expanded, onToggle, onMenu, o
   onMeasure: (h: number) => void;
 }) {
   const isCredit = acct.kind === 'credit';
-  const base = inst?.color ?? acct.color ?? '#165B33';
+  const base = inst?.color ?? acct.color ?? '#8A5C00';
   const gradient: [string, string] = [shade(base, -0.55), shade(base, 0.02)];
   const creditLeft = isCredit ? Math.max((acct.creditLimit ?? 0) - acct.balance, 0) : 0;
   const used = isCredit && acct.creditLimit ? Math.min(acct.balance / acct.creditLimit, 1) : 0;
@@ -359,6 +360,12 @@ export default function WalletScreen() {
 
   // ── Add flow ───────────────────────────────────────────────────────────
   const [addSheet, setAddSheet] = useState(false);
+  const [moveSheet, setMoveSheet] = useState(false);
+  const [mvFrom, setMvFrom] = useState<string | null>(null);
+  const [mvTo, setMvTo] = useState<string | null>(null);
+  const [mvAmount, setMvAmount] = useState('');
+  const [mvNote, setMvNote] = useState('');
+  const addTransfer = useFinance((s2) => s2.addTransfer);
   const addDrag = useDragToDismiss(() => closeAdd());
   const [pick, setPick] = useState<{ name: string; color?: string; initial?: string } | null>(null);
   const [customMode, setCustomMode] = useState(false);
@@ -525,6 +532,17 @@ export default function WalletScreen() {
         {/* Header: title + bare add icon */}
         <View style={styles.titleRow}>
           <Text style={styles.title}>Wallet</Text>
+          <View style={{ flex: 1 }} />
+          {/* v5.48: move funds - pocket to pocket, never an expense */}
+          <Pressable
+            onPress={() => { setMvFrom(null); setMvTo(null); setMvAmount(''); setMvNote(''); setMoveSheet(true); }}
+            hitSlop={8}
+            style={({ pressed }) => [styles.moveBtn, pressed && { opacity: 0.8 }]}
+            accessibilityLabel="Move funds"
+          >
+            <Ionicons name="swap-horizontal" size={16} color={t.emerald} />
+            <Text style={styles.moveBtnText}>Move</Text>
+          </Pressable>
           <Pressable
             onPress={() => setAddSheet(true)}
             hitSlop={8}
@@ -662,6 +680,79 @@ export default function WalletScreen() {
       </ScrollView>
 
       {/* ── Add sheet ─────────────────────────────────────────────────── */}
+      {/* ── v5.48 Move funds sheet ── */}
+      <Modal visible={moveSheet} transparent animationType="slide" onRequestClose={() => setMoveSheet(false)}>
+        <View style={{ flex: 1, justifyContent: 'flex-end' }}>
+          <Pressable style={styles.scrimFill} onPress={() => { Keyboard.dismiss(); setMoveSheet(false); }} />
+          <View style={sheetLift}>
+            <Pressable style={[styles.sheet, sheetPad]} onPress={Keyboard.dismiss}>
+              <View style={styles.handle} />
+              <Text style={styles.sheetTitle}>Move funds</Text>
+              <Text style={styles.moveSub}>Pocket to pocket. Never logged as an expense or income.</Text>
+              <Text style={styles.fieldLabel}>FROM</Text>
+              <AccountSelect
+                accounts={accounts.filter((a) => a.id !== mvTo)} country={country}
+                value={mvFrom} onChange={setMvFrom}
+                placeholder="Source account"
+                style={{ marginBottom: 12 }}
+              />
+              <Text style={styles.fieldLabel}>TO</Text>
+              <AccountSelect
+                accounts={accounts.filter((a) => a.id !== mvFrom)} country={country}
+                value={mvTo} onChange={setMvTo}
+                placeholder="Destination account"
+                style={{ marginBottom: 12 }}
+              />
+              <Text style={styles.fieldLabel}>AMOUNT</Text>
+              <MoneyInput value={mvAmount} onChangeText={setMvAmount} quickChips={false} />
+              <Text style={[styles.fieldLabel, { marginTop: 12 }]}>NOTE (OPTIONAL)</Text>
+              <TextInput
+                style={styles.moveNoteInput}
+                placeholder="e.g. Savings top-up"
+                placeholderTextColor={t.textMuted}
+                value={mvNote}
+                onChangeText={setMvNote}
+                returnKeyType="done"
+              />
+              {(() => {
+                const amt = parseFloat(mvAmount);
+                const from = accounts.find((a) => a.id === mvFrom);
+                const to = accounts.find((a) => a.id === mvTo);
+                const ok = !!from && !!to && !Number.isNaN(amt) && amt > 0;
+                const short = ok && from!.kind !== 'credit' && from!.balance < amt;
+                const paysCard = ok && to!.kind === 'credit';
+                return (
+                  <>
+                    {short && (
+                      <Text style={styles.moveWarn}>
+                        {from!.name} only holds {peso(from!.balance)} - this would take it negative.
+                      </Text>
+                    )}
+                    {paysCard && !short && (
+                      <Text style={styles.moveHint}>Moving to {to!.name} pays the card down.</Text>
+                    )}
+                    <Pressable
+                      style={[styles.moveCta, { backgroundColor: ok ? t.emerald : t.inputFill }]}
+                      disabled={!ok}
+                      onPress={() => {
+                        addTransfer(from!.id, to!.id, amt, mvNote);
+                        Keyboard.dismiss();
+                        setMoveSheet(false);
+                      }}
+                    >
+                      <Ionicons name="swap-horizontal" size={16} color={ok ? t.onEmerald : t.textMuted} />
+                      <Text style={[styles.moveCtaText, !ok && { color: t.textMuted }]}>
+                        {ok ? `Move ${peso(amt)}` : 'Move funds'}
+                      </Text>
+                    </Pressable>
+                  </>
+                );
+              })()}
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
       <Modal visible={addSheet} transparent animationType="slide" onRequestClose={closeAdd}>
         <View style={{ flex: 1, justifyContent: 'flex-end' }}>
           <Pressable style={styles.scrimFill} onPress={closeAdd} />
@@ -1109,7 +1200,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   // Outlook: quiet tinted block, no border — visible without shouting
   fcBlock: {
     marginTop: 18, borderRadius: 16, padding: 14,
-    backgroundColor: t.mode === 'dark' ? 'rgba(46,158,91,0.10)' : t.sageSoft,
+    backgroundColor: t.mode === 'dark' ? 'rgba(245,198,74,0.10)' : t.sageSoft,
   },
   fcHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   fcTitleWrap: { flexDirection: 'row', alignItems: 'center', gap: 6 },
@@ -1232,6 +1323,25 @@ const makeStyles = (t: Palette) => StyleSheet.create({
 
   // Fields
   fieldLabel: { ...type.eyebrow, color: t.textFaint, marginBottom: 6, marginTop: 2 },
+  // v5.48: move funds
+  moveBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 5, marginRight: 10,
+    paddingHorizontal: 12, paddingVertical: 8, borderRadius: 999,
+    backgroundColor: t.emeraldTint, borderWidth: 1, borderColor: t.emeraldBorder,
+  },
+  moveBtnText: { color: t.emerald, fontSize: 12.5, fontWeight: '800' },
+  moveSub: { color: t.textMuted, fontSize: 12.5, marginTop: 4, marginBottom: 14 },
+  moveNoteInput: {
+    height: 44, borderRadius: 12, paddingHorizontal: 12, color: t.textPrimary, fontSize: 13.5,
+    backgroundColor: t.inputFill, borderWidth: 1, borderColor: t.borderSoft,
+  },
+  moveWarn: { color: t.red, fontSize: 12, marginTop: 10, fontWeight: '600' },
+  moveHint: { color: t.emerald, fontSize: 12, marginTop: 10, fontWeight: '600' },
+  moveCta: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7,
+    height: 48, borderRadius: 16, marginTop: 14,
+  },
+  moveCtaText: { color: t.onEmerald, fontSize: 14.5, fontWeight: '800' },
   input: {
     height: 50, borderRadius: radius.input, paddingHorizontal: 14, color: t.textPrimary, fontSize: 15.5, fontWeight: '600',
     backgroundColor: t.inputFill, borderWidth: 1, borderColor: t.border, marginBottom: 12,

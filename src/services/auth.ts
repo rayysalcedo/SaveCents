@@ -79,6 +79,20 @@ export async function resetPassword(email: string): Promise<void> {
 
 // M5.33: finish a NO-LINK reset - the oobCode came from the Worker after the
 // user's 6-digit code checked out.
+// v5.49 (owner): resetting to the CURRENT password is rejected. Firebase
+// cannot compare against the stored hash, so we probe: if signing in with
+// the "new" password SUCCEEDS, it is the old one - sign out and refuse.
+export async function isCurrentPassword(email: string, candidate: string): Promise<boolean> {
+  if (!authAvailable()) return false;
+  try {
+    await signInWithEmailAndPassword(getFirebaseAuth(), email.trim(), candidate);
+    await fbSignOut(getFirebaseAuth());
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function completePasswordReset(oobCode: string, newPassword: string): Promise<void> {
   await confirmPasswordReset(getFirebaseAuth(), oobCode, newPassword);
 }

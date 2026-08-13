@@ -7,7 +7,7 @@
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
-    "backgroundColor": "#F1F6F0",
+    "backgroundColor": "#FBF8F2",
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.rxsfin.savecents",
@@ -19,7 +19,7 @@
     "android": {
       "package": "com.rxsfin.savecents",
       "adaptiveIcon": {
-        "backgroundColor": "#00C968",
+        "backgroundColor": "#241A05",
         "foregroundImage": "./assets/android-icon-foreground.png"
       },
       "permissions": [

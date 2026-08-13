@@ -239,7 +239,7 @@ export function MoMBars({
                   overflow: 'hidden',
                 }}
               >
-                <View style={{ flex: 1, backgroundColor: active ? t.emerald : (t.mode === 'dark' ? 'rgba(46,158,91,0.35)' : 'rgba(22,91,51,0.30)') }} />
+                <View style={{ flex: 1, backgroundColor: active ? t.emerald : (t.mode === 'dark' ? 'rgba(245,198,74,0.35)' : 'rgba(161,98,7,0.30)') }} />
               </Animated.View>
             </View>
             <Text style={[styles.momLabel, { color: active ? t.textPrimary : t.textMuted }, active && { fontWeight: '800' }]}>

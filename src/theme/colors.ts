@@ -1,45 +1,56 @@
-// "Grounded Editorial" v4 — matte surfaces, earthy neutrals, forest-green
-// accents. Design rules:
-//   1. Surfaces over glass: solid matte fills + crisp 1px borders. No blur,
-//      no neon glow. Shadows are reserved for FLOATING elements (modals, FAB).
-//   2. Accent discipline: ~90% of every screen is neutral; forest green marks
-//      primary actions/income, warm amber marks alerts, so numbers lead.
-//   3. Compatibility: token KEYS are unchanged so every screen re-skins
-//      automatically. `teal` === `emerald` on purpose — legacy
-//      [emerald, teal] gradients now render as flat solids.
+// "Minted Gold" v5 — Cents the coin IS the brand. Warm parchment light
+// mode, espresso dark mode, one gold system in three roles:
+//   COIN GOLD (bright #F5C64A / #F2BE22): the mark, fills, Paid chips, and
+//     the ENTIRE dark-mode accent, with espresso ink on top of it.
+//   DEEP GOLD (#A16207): light mode's working gold - buttons, active states,
+//     icons - readable on parchment, unmistakably gold beside the fills.
+//   Semantics: GOLD IN, RED OUT. Positive money glints gold (earning mints
+//     coins); expenses keep the mature crimson. There is NO green and NO
+//     third warning hue - urgent rides the red family, gentle stays neutral.
+//   Owner decision (M5.47): credit/debit CARD colors are DATA (institution
+//     brands, user swatches) and are never rethemed - only app chrome is.
+// Design rules carried from v4:
+//   1. Surfaces over glass: solid matte fills + crisp 1px borders.
+//   2. Accent discipline: ~90% of every screen stays neutral so numbers lead.
+//   3. Compatibility: token KEYS are unchanged (emerald now paints GOLD) so
+//      every screen re-skins automatically; `teal` === `emerald` keeps
+//      legacy gradients flat.
 import { useMemo } from 'react';
 import { useColorScheme } from 'react-native';
 import { useFinance } from '../store/finance';
 
 const brand = {
-  // Primary action / income green — mature forest, not neon emerald.
-  emerald: '#2E9E5B',
+  // Primary action / positive money — bright coin gold (dark-mode value;
+  // light mode overrides to the deep working gold below).
+  emerald: '#F5C64A',
   // Identical to emerald so all legacy [emerald, teal] gradients go FLAT.
-  teal: '#2E9E5B',
-  // Muted sage (was neon mint) — used for subtle held/active states.
-  mint: '#7FB89A',
-  sage: '#9DBFA5',
-  centsYellow: '#E8C547', // brand mark, slightly desaturated
-  centsYellowTint: 'rgba(232,197,71,0.12)',
-  sageTint: 'rgba(157,191,165,0.14)',
-  sageSoft: 'rgba(157,191,165,0.08)',
-  forest: '#165B33',
-  deepForest: '#11492A',
+  teal: '#F5C64A',
+  // Champagne neutrals — subtle held/active states, warmed from sage.
+  mint: '#CDB77E',
+  sage: '#C2AD79',
+  centsYellow: '#F2BE22', // the coin itself, promoted to hero
+  centsYellowTint: 'rgba(242,190,34,0.12)',
+  sageTint: 'rgba(242,190,34,0.12)',
+  sageSoft: 'rgba(242,190,34,0.07)',
+  forest: '#8A5C00',      // deep gold ink (positive money text on light)
+  deepForest: '#5C3D00',
   // Mature crimson for expenses/destructive — no hot #FF4D4D.
   red: '#DC2626',
-  // Cyberpunk purple retired -> editorial slate (charts/allocation hues).
+  // Editorial slate for chart/allocation hues (unchanged).
   purple: '#64748B',
-  // Warm amber for alerts/warnings per the editorial palette.
-  amber: '#D97706',
-  // Flat: legacy "hero gradient" call sites now paint a single matte forest.
-  heroGradient: ['#165B33', '#165B33', '#165B33'] as const,
+  // Owner decision (M5.47): NO third warning hue. Urgent = red family,
+  // gentle = neutral. amber resolves to crimson so legacy warn paint
+  // reads urgent instead of colliding with the gold brand.
+  amber: '#DC2626',
+  // The espresso "gold card" hero (owner decision c).
+  heroGradient: ['#241A05', '#1A1206', '#0F0A03'] as const,
   // Sheen overlays render invisible — decorative gloss is retired.
   sheen: 'rgba(255,255,255,0)',
-  emeraldTint: 'rgba(46,158,91,0.10)',
-  emeraldBorder: 'rgba(46,158,91,0.30)',
+  emeraldTint: 'rgba(245,198,74,0.12)',
+  emeraldBorder: 'rgba(245,198,74,0.32)',
   redTint: 'rgba(220,38,38,0.08)',
   // Glow retired: any legacy glow paint resolves to near-nothing.
-  emeraldGlow: 'rgba(46,158,91,0.10)',
+  emeraldGlow: 'rgba(245,198,74,0.10)',
 };
 
 interface ThemeMeta {
@@ -50,54 +61,58 @@ interface ThemeMeta {
 
 export const darkPalette = {
   ...brand,
-  onEmerald: '#FFFFFF',
+  // Espresso ink on bright gold — the coin look. White-on-yellow fails
+  // contrast; this is what makes dark-mode buttons feel minted.
+  onEmerald: '#231A00',
   ...( { mode: 'dark', blurTint: 'dark', statusBar: 'light' } as ThemeMeta ),
-  // Deep slate/charcoal — grounded, not pitch-black-with-glow.
-  bg: '#121417',
-  surface: '#1A1D20',           // SOLID matte card (was translucent glass)
-  surfaceStrong: '#212529',
-  sheet: '#1A1D20',
-  menuBg: '#212529',
-  border: 'rgba(255,255,255,0.08)',
-  borderSoft: 'rgba(255,255,255,0.05)',
-  inputFill: '#212529',
-  trackBg: 'rgba(255,255,255,0.06)',
-  dotIdle: 'rgba(255,255,255,0.18)',
-  insetBg: '#16181B',
-  tabBarBg: '#1A1D20',
-  textPrimary: '#F4F3F0',       // warm off-white ink
-  textMuted: '#9AA1A9',
-  textFaint: 'rgba(154,161,169,0.55)',
+  // Warm espresso, not blue slate — cool charcoal makes gold look sickly;
+  // warm charcoal makes it look like a black card.
+  bg: '#15110C',
+  surface: '#1D1812',           // SOLID matte card
+  surfaceStrong: '#262017',
+  sheet: '#1D1812',
+  menuBg: '#262017',
+  border: 'rgba(255,244,214,0.09)',
+  borderSoft: 'rgba(255,244,214,0.05)',
+  inputFill: '#262017',
+  trackBg: 'rgba(255,244,214,0.07)',
+  dotIdle: 'rgba(255,244,214,0.18)',
+  insetBg: '#191510',
+  tabBarBg: '#1D1812',
+  textPrimary: '#F5F1E8',       // warm parchment ink
+  textMuted: '#A79E8C',
+  textFaint: 'rgba(167,158,140,0.55)',
 };
 
 export type Palette = typeof darkPalette;
 
 export const lightPalette: Palette = {
   ...brand,
-  // Deeper forest reads better on warm off-white.
-  emerald: '#165B33',
-  teal: '#165B33',
-  emeraldTint: 'rgba(22,91,51,0.07)',
-  emeraldBorder: 'rgba(22,91,51,0.22)',
-  emeraldGlow: 'rgba(22,91,51,0.08)',
+  // Light mode's WORKING gold: deep enough to read as text/icons on
+  // parchment, unmistakably gold next to the bright coin fills.
+  emerald: '#A16207',
+  teal: '#A16207',
+  emeraldTint: 'rgba(161,98,7,0.08)',
+  emeraldBorder: 'rgba(161,98,7,0.26)',
+  emeraldGlow: 'rgba(242,190,34,0.14)',
   onEmerald: '#FFFFFF',
   ...( { mode: 'light', blurTint: 'light', statusBar: 'dark' } as ThemeMeta ),
-  // Warm paper off-white, not clinical mint.
-  bg: '#FAF9F6',
+  // Warm parchment, one shade toward the coin.
+  bg: '#FBF8F2',
   surface: '#FFFFFF',
   surfaceStrong: '#FFFFFF',
   sheet: '#FFFFFF',
   menuBg: '#FFFFFF',
-  border: '#E9ECEF',
-  borderSoft: '#F1F3F5',
-  inputFill: '#F5F4F0',
-  trackBg: '#ECEBE7',
-  dotIdle: '#D8D7D2',
-  insetBg: '#F5F4F0',
+  border: '#EAE4D8',
+  borderSoft: '#F3EEE4',
+  inputFill: '#F7F3EA',
+  trackBg: '#EEE8DB',
+  dotIdle: '#DCD5C6',
+  insetBg: '#F7F3EA',
   tabBarBg: '#FFFFFF',
-  textPrimary: '#1A1D20',       // charcoal ink
-  textMuted: '#6C757D',
-  textFaint: 'rgba(108,117,125,0.55)',
+  textPrimary: '#221B10',       // espresso ink
+  textMuted: '#77705F',
+  textFaint: 'rgba(119,112,95,0.55)',
 };
 
 export function useTheme(): Palette {

@@ -82,7 +82,9 @@ function BalanceCard({ item, index, scrollX, styles, country, hideBalance, onTog
   // v4.1: linked-source cards wear the institution's EXACT brand color,
   // deepened just enough (-30%) that white type passes contrast — the way
   // the real GCash/BPI/BDO cards read. Total keeps the house forest.
-  const base = isTotal ? '#165B33' : (inst?.color ?? acct?.color ?? ACCOUNT_COLORS[index % ACCOUNT_COLORS.length]);
+  // v5.47: the hero total card is the espresso gold card; per-account
+  // cards keep their institution/user DATA colors (owner decision d).
+  const base = isTotal ? '#241A05' : (inst?.color ?? acct?.color ?? ACCOUNT_COLORS[index % ACCOUNT_COLORS.length]);
   // v4.4: same quiet two-stop brand gradient as the Wallet stack.
   const gradient: [string, string] = isTotal
     ? [shade(base, -0.5), shade(base, 0.12)]
@@ -276,7 +278,8 @@ export default function Dashboard() {
   // M5.17 (owner): the old single net number read as nonsense ("Saved today"
   // in red). The card now shows BOTH sides of the day: what went out, and
   // what is left of today's money after spending (never negative).
-  const todayTx = transactions.filter((x) => x.timestamp >= startOfDay.getTime());
+  // v5.48: transfers are pocket moves - never spent, never saved.
+  const todayTx = transactions.filter((x) => x.timestamp >= startOfDay.getTime() && !x.transferToId);
   // v4.1 accuracy pass: a transaction with goalId is a SAVINGS MOVE — money
   // set aside (or pulled back), never spending. So:
   //   Spent = real outflows only (no goal moves)
@@ -301,20 +304,20 @@ export default function Dashboard() {
     if (urgentDue) {
       const d = dueLabel(urgentDue.dueDate!);
       const remaining = Math.max(urgentDue.limit - urgentDue.spent, 0);
-      return { kind: 'due' as const, name: urgentDue.name, line: `${d.text} · ${peso(remaining)} left`, amount: remaining, urgent: true, icon: urgentDue.icon };
+      return { kind: 'due' as const, id: urgentDue.id, seg: 'bills' as const, name: urgentDue.name, line: `${d.text} · ${peso(remaining)} left`, amount: remaining, urgent: true, icon: urgentDue.icon };
     }
     const maxed = categories.find((c) => c.limit > 0 && c.spent >= c.limit && !c.dueDate);
     if (maxed) {
       const over = maxed.spent - maxed.limit;
-      return { kind: 'maxed' as const, name: maxed.name, line: over > 0 ? `Over budget by ${peso(over)}` : 'Budget fully used', amount: 0, urgent: true, icon: maxed.icon };
+      return { kind: 'maxed' as const, id: maxed.id, seg: 'spending' as const, name: maxed.name, line: over > 0 ? `Over budget by ${peso(over)}` : 'Budget fully used', amount: 0, urgent: true, icon: maxed.icon };
     }
     const near = categories
       .filter((c) => c.limit > 0 && c.spent / c.limit >= 0.85 && c.spent < c.limit)
       .sort((a, b) => b.spent / b.limit - a.spent / a.limit)[0];
-    if (near) return { kind: 'near' as const, name: near.name, line: `${Math.round((near.spent / near.limit) * 100)}% used · ${peso(near.limit - near.spent)} left`, amount: near.limit - near.spent, urgent: false, icon: near.icon };
+    if (near) return { kind: 'near' as const, id: near.id, seg: (near.dueDate || near.creditAccountId ? 'bills' : 'spending') as 'bills' | 'spending', name: near.name, line: `${Math.round((near.spent / near.limit) * 100)}% used · ${peso(near.limit - near.spent)} left`, amount: near.limit - near.spent, urgent: false, icon: near.icon };
     if (dues[0]) {
       const d = dueLabel(dues[0].dueDate!);
-      return { kind: 'due' as const, name: dues[0].name, line: d.text, amount: Math.max(dues[0].limit - dues[0].spent, 0), urgent: false, icon: dues[0].icon };
+      return { kind: 'due' as const, id: dues[0].id, seg: 'bills' as const, name: dues[0].name, line: d.text, amount: Math.max(dues[0].limit - dues[0].spent, 0), urgent: false, icon: dues[0].icon };
     }
     return null;
   }, [categories]);
@@ -365,6 +368,7 @@ export default function Dashboard() {
   const [savingsPeriod, setSavingsPeriod] = useState<'D' | 'W' | 'M' | 'Y'>('M');
   // M5.6 truth pass: the chart and its note are computed from real
   // transactions (src/utils/stats.ts), no more sample numbers.
+  const setPlannerFocus = useFinance((s) => s.setPlannerFocus);
   const savingsData = useMemo(() => savingsSeries(transactions, savingsPeriod), [transactions, savingsPeriod]);
   const savingsSub = { D: 'Last 7 days', W: 'Last 5 weeks', M: 'Last 5 months', Y: 'Last 5 years' }[savingsPeriod];
   const savingsNote = useMemo(() => buildSavingsNote(savingsData, savingsPeriod), [savingsData, savingsPeriod]);
@@ -537,24 +541,32 @@ export default function Dashboard() {
             </View>
           </View>
 
-          <Pressable style={styles.todayCard} onPress={() => router.push({ pathname: '/(tabs)/goals', params: { tab: 'budgets' } })}>
+          <Pressable
+            style={styles.todayCard}
+            onPress={() => {
+              // v5.48 (owner): land ON the item, not just the tab - the
+              // planner opens the right segment and pulses the row.
+              if (attention) setPlannerFocus({ catId: attention.id, seg: attention.seg });
+              router.push({ pathname: '/(tabs)/goals', params: { tab: 'budgets' } });
+            }}
+          >
             <View style={[
               styles.todayIcon,
               attention?.urgent
-                ? { backgroundColor: 'rgba(245,158,11,0.14)', borderColor: 'rgba(245,158,11,0.4)' }
+                ? { backgroundColor: t.redTint, borderColor: 'rgba(220,38,38,0.35)' }
                 : { backgroundColor: t.emeraldTint, borderColor: t.emeraldBorder },
             ]}>
               <Ionicons
                 name={attention ? 'alert-circle' : 'checkmark-circle'}
                 size={16}
-                color={attention?.urgent ? t.amber : t.emerald}
+                color={attention?.urgent ? t.red : t.emerald}
               />
             </View>
             <Text style={styles.todayLabel}>Needs attention</Text>
             {attention ? (
               <>
                 <Text style={styles.todayValue} numberOfLines={1}>{attention.name}</Text>
-                <Text style={[styles.todayCaption, attention.urgent && { color: t.amber, fontWeight: '700' }]} numberOfLines={1}>
+                <Text style={[styles.todayCaption, attention.urgent && { color: t.red, fontWeight: '700' }]} numberOfLines={2}>
                   {attention.line}
                 </Text>
               </>
@@ -838,7 +850,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   // tinted rounded surface, mark + eyebrow, quiet copy.
   centsBlock: {
     marginBottom: 16, borderRadius: 16, padding: 14,
-    backgroundColor: t.mode === 'dark' ? 'rgba(46,158,91,0.10)' : t.sageSoft,
+    backgroundColor: t.mode === 'dark' ? 'rgba(245,198,74,0.10)' : t.sageSoft,
   },
   centsHeadRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 6 },
   centsEyebrow: { ...type.eyebrow, fontSize: 10, color: t.textFaint },

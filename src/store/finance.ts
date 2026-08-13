@@ -69,6 +69,13 @@ export interface FinanceState {
   // v5.43: Cents arms the Transactions tab's filters; the tab consumes and
   // clears this on focus. Read-only, transient.
   ledgerFilter: { query?: string; categoryName?: string } | null;
+  // v5.48: move money between accounts without logging income or expense.
+  addTransfer: (fromId: string, toId: string, amount: number, note?: string) => void;
+  // v5.48: dashboard "needs attention" deep-link - the planner consumes
+  // this, opens Budgets on the right segment, and briefly highlights the
+  // item. Transient, never persisted meaningfully.
+  plannerFocus: { catId: string; seg: 'bills' | 'spending' } | null;
+  setPlannerFocus: (f: { catId: string; seg: 'bills' | 'spending' } | null) => void;
   setLedgerFilter: (f: { query?: string; categoryName?: string } | null) => void;
   removeBudget: (id: string) => void;
   removeGoal: (id: string) => void;
@@ -191,6 +198,29 @@ function reverseSplitTx(s: { accounts: Account[]; transactions: Transaction[] },
 }
 
 function applyTxEffect(s: { accounts: Account[]; categories: Category[] }, tx: Transaction, sign: 1 | -1) {
+  // v5.48 TRANSFERS: two balance legs, no income/expense anywhere. The
+  // source leg behaves like an outflow (debit down / credit owed up - a
+  // cash advance), the destination leg like an inflow (debit up / credit
+  // owed DOWN - a transfer to a card IS a payment), and when the
+  // destination is a credit card its linked bill budget's paid amount moves
+  // too, so the bill and the card never tell different stories. sign -1
+  // reverses all of it on edit/delete.
+  if (tx.transferToId) {
+    const accounts = s.accounts.map((a) => {
+      if (a.id === tx.accountId) return { ...a, balance: flowBalance(a, false, tx.amount, sign) };
+      if (a.id === tx.transferToId) return { ...a, balance: flowBalance(a, true, tx.amount, sign) };
+      return a;
+    });
+    const destCredit = s.accounts.find((a) => a.id === tx.transferToId && a.kind === 'credit');
+    const categories = destCredit
+      ? s.categories.map((c) =>
+          c.creditAccountId === destCredit.id
+            ? { ...c, spent: Math.max(c.spent + tx.amount * sign, 0) }
+            : c,
+        )
+      : s.categories;
+    return { accounts, categories };
+  }
   let accounts = tx.accountId
     ? s.accounts.map((a) =>
         a.id === tx.accountId
@@ -609,6 +639,7 @@ function deliverResult(
         // GCash" collapsed both onto one source. Per-action wins now.
         accountName: a.accountName || result.accountName,
         targetDate: a.targetDate || result.targetDate,
+        toAccountName: a.toAccountName || result.toAccountName,
         dueDay: a.dueDay || result.dueDay,
         reply: '',
       };
@@ -696,24 +727,14 @@ export interface CloudSnapshot {
 }
 
 const makeDefaults = (): CloudSnapshot & { isThinking: boolean; splits: SplitBill[]; lends: Lend[] } => ({
-  accounts: [
-    { id: uid(), name: 'GCash', balance: 5000 },
-    { id: uid(), name: 'BPI', balance: 15000 },
-    { id: uid(), name: 'Cash', balance: 2000 },
-  ],
-  categories: [
-    { id: uid(), name: 'Giorno Gas', limit: 1500, spent: 250, icon: 'car' },
-    { id: uid(), name: 'Pets', limit: 3000, spent: 800, icon: 'paw' },
-    { id: uid(), name: 'Gaming', limit: 1500, spent: 1500, icon: 'game-controller' },
-    { id: uid(), name: 'Dining', limit: 4000, spent: 0, icon: 'restaurant' },
-  ],
-  goals: [{ id: uid(), name: 'Hong Kong Trip', target: 30000, current: 10000, date: 'Nov 2026' }],
-  transactions: [
-    { id: uid(), amount: 22000, description: 'Salary', categoryId: 'Income', timestamp: now, isIncome: true },
-    { id: uid(), amount: 800, description: 'Pet Express', categoryId: 'Pets', timestamp: now, isIncome: false },
-    { id: uid(), amount: 250, description: 'Shell Station', categoryId: 'Giorno Gas', timestamp: now - day, isIncome: false },
-    { id: uid(), amount: 1500, description: 'Steam Games', categoryId: 'Gaming', timestamp: now - day, isIncome: false },
-  ],
+  // v5.49 (owner, field report): NEW USERS START FROM ZERO. The demo seed
+  // (sample accounts, budgets, the Hong Kong goal, four transactions) dated
+  // from the first dev builds and leaked into every fresh signup. Existing
+  // users are untouched - persisted state always wins over these defaults.
+  accounts: [],
+  categories: [],
+  goals: [],
+  transactions: [],
   chat: [
     {
       id: uid(), sender: 'CENTS', type: 'text',
@@ -723,7 +744,7 @@ const makeDefaults = (): CloudSnapshot & { isThinking: boolean; splits: SplitBil
   isThinking: false,
   splits: [],
   lends: [],
-  profile: { name: 'Rayy', email: 'rayysalcedo@gmail.com', isLoggedIn: false },
+  profile: { name: '', email: '', isLoggedIn: false },
   selectedGoalId: null,
   insightOrder: ['goal', 'alloc', 'mom', 'topspend'],
   themeMode: 'light' as const, // M5: friendly light/sage is the new default
@@ -1361,6 +1382,7 @@ export const useFinance = create<FinanceState>()(
         // cycle) or clearing their once-type due date would corrupt that.
         if (c.creditAccountId) return c;
         const spent = s.transactions
+          .filter((tx) => !tx.transferToId)
           .filter((tx) => !tx.isIncome && tx.timestamp >= monthStart && tx.categoryId.toLowerCase() === c.name.toLowerCase())
           .reduce((a, tx) => a + tx.amount, 0);
         // Planner v2.1: one time dues are done once their month is over.
@@ -1457,6 +1479,27 @@ export const useFinance = create<FinanceState>()(
   // (applyCreditBillPayment), so the two never disagree.
   ledgerFilter: null,
   setLedgerFilter: (f) => set({ ledgerFilter: f }),
+  plannerFocus: null,
+  setPlannerFocus: (f) => set({ plannerFocus: f }),
+
+  addTransfer: (fromId, toId, amount, note) => {
+    if (!(amount > 0) || fromId === toId) return;
+    set((s) => {
+      const from = s.accounts.find((a) => a.id === fromId);
+      const to = s.accounts.find((a) => a.id === toId);
+      if (!from || !to) return s;
+      const tx: Transaction = {
+        id: uid(), amount,
+        description: note?.trim() || `${from.name} → ${to.name}`,
+        categoryId: 'Transfer', timestamp: Date.now(), isIncome: false,
+        accountId: fromId, transferToId: toId,
+      };
+      return {
+        ...applyTxEffect(s, tx, 1),
+        transactions: [tx, ...s.transactions],
+      };
+    });
+  },
 
   runCreditStatementsIfDue: () => {
     const key = monthKey();
@@ -2159,6 +2202,38 @@ function buildReplyFromResult(result: CentsResult, st2: FinanceState, assumedCat
           confirmed: false, handled: false,
         };
         break;
+      case 'MoveFunds': {
+        const from = matchAccount(result.accountName, st2.accounts);
+        const to = matchAccount(result.toAccountName, st2.accounts);
+        if (!from || !to) {
+          reply = {
+            id: uid(), sender: 'CENTS', type: 'text',
+            text: fil
+              ? 'Saang account manggagaling at saan mapupunta? Sabihin mo, hal. "ilipat ang 500 mula GCash papuntang BPI".'
+              : `Which account is it coming from, and where is it going? Say something like "move 500 from GCash to BPI".`,
+          };
+          break;
+        }
+        if (from.id === to.id) {
+          reply = { id: uid(), sender: 'CENTS', type: 'text', text: `That's the same account on both sides - nothing to move.` };
+          break;
+        }
+        if (!(amount > 0)) {
+          reply = { id: uid(), sender: 'CENTS', type: 'text', text: `How much should I move from ${from.name} to ${to.name}?` };
+          break;
+        }
+        const short = from.kind !== 'credit' && from.balance < amount;
+        reply = {
+          id: uid(), sender: 'CENTS', type: 'confirmation',
+          prompt: fil
+            ? `Ilipat ang ${peso(amount)} mula ${from.name} papuntang ${to.name}?`
+            : `Move ${peso(amount)} from ${from.name} to ${to.name}?${to.kind === 'credit' ? ' That pays the card down.' : ''}`,
+          action: { kind: 'MoveFunds', fromId: from.id, toId: to.id, amount, label: `${from.name} → ${to.name}` },
+          confirmed: false, handled: false, lang,
+          coachNote: short ? `${from.name} only holds ${peso(from.balance)} right now - this would take it negative.` : undefined,
+        };
+        break;
+      }
       case 'ShowTransactions': {
         const catHit = result.categoryName
           ? st2.categories.find((c) => c.name.toLowerCase() === result.categoryName!.toLowerCase())
@@ -2578,6 +2653,11 @@ function executeAction(action: ActionType, set: Setter) {
     // M5.34: ledger edits by chat/voice. The txId was resolved at ASK time,
     // so these ride the same removeTransaction/updateTransaction machinery
     // Analytics uses - balances, budgets and goals all reverse correctly.
+    case 'MoveFunds': {
+      useFinance.getState().addTransfer(action.fromId, action.toId, action.amount);
+      pushCents(set, `Moved ${peso(action.amount)} (${action.label}). Balances updated - no expense logged.`);
+      break;
+    }
     case 'ShowTransactions': {
       set(() => ({ ledgerFilter: { query: action.query, categoryName: action.categoryName } }));
       const what = action.categoryName ?? action.query ?? 'your latest';

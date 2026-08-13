@@ -690,6 +690,20 @@ export default function PlannerScreen() {
     [categories],
   );
   const [budgetSegPick, setBudgetSegPick] = useState<'bills' | 'spending' | null>(null);
+  // v5.48: dashboard deep-link - land on the item and pulse it briefly.
+  const plannerFocus = useFinance((s) => s.plannerFocus);
+  const setPlannerFocus = useFinance((s) => s.setPlannerFocus);
+  const [highlightCat, setHighlightCat] = useState<string | null>(null);
+  useEffect(() => {
+    if (!plannerFocus) return;
+    setView('budgets');
+    setBudgetSegPick(plannerFocus.seg);
+    setHighlightCat(plannerFocus.catId);
+    setPlannerFocus(null);
+    const timer = setTimeout(() => setHighlightCat(null), 1800);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [plannerFocus]);
   const budgetSeg: 'bills' | 'spending' = budgetSegPick ?? (billCats.length > 0 ? 'bills' : 'spending');
 
   const budgetGroups = useMemo(() => {
@@ -794,9 +808,10 @@ export default function PlannerScreen() {
     // the red alarm undated envelopes get.
     const paid = maxed && !!c.dueDate;
     const alarm = maxed && !paid;
+    const spotlight = highlightCat === c.id;
     return (
       <Pressable key={c.id} onPress={() => openEditBudget(c.id)}>
-        <GlassCard pad={16}>
+        <GlassCard pad={16} style={spotlight ? { borderColor: t.emerald, borderWidth: 1.5, backgroundColor: t.emeraldTint } : undefined}>
           <View style={styles.budgetRow}>
             <View style={[styles.budgetIcon, alarm && { backgroundColor: t.redTint, borderColor: 'rgba(255,77,77,0.35)' }]}>
               <Ionicons name={(c.icon as any) || 'pricetag'} size={18} color={alarm ? t.red : t.emerald} />
@@ -979,7 +994,7 @@ export default function PlannerScreen() {
                       </View>
                     )}
                     {plan.status === 'behind' && ask != null && (
-                      <View style={[styles.planRow, { backgroundColor: 'rgba(217,119,6,0.10)', borderColor: 'rgba(217,119,6,0.30)' }]}>
+                      <View style={[styles.planRow, { backgroundColor: t.redTint, borderColor: 'rgba(220,38,38,0.22)' }]}>
                         <Ionicons name="alert-circle" size={15} color={t.amber} />
                         <Text style={[styles.planText, { color: t.amber }]}>
                           Needs {peso(Math.ceil(ask))} {noun} to hit {planDate}. Right now you're averaging {myRate > 0 ? `${peso(Math.round(myRate))} ${noun}` : 'nothing yet'}.
@@ -2245,7 +2260,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   // v5.42: Cents strip (mirrors the dashboard centsBlock)
   plannerCentsBlock: {
     marginBottom: 14, borderRadius: 16, padding: 14,
-    backgroundColor: t.mode === 'dark' ? 'rgba(46,158,91,0.10)' : t.sageSoft,
+    backgroundColor: t.mode === 'dark' ? 'rgba(245,198,74,0.10)' : t.sageSoft,
   },
   plannerCentsHead: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 6 },
   plannerCentsEyebrow: { ...type.eyebrow, fontSize: 10, color: t.textFaint },

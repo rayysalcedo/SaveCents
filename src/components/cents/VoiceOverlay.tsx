@@ -564,7 +564,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.1)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)',
     borderRadius: 999, paddingHorizontal: 13, paddingVertical: 7,
   },
-  liveDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: '#7FB89A' },
+  liveDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: '#E4C76B' },
   topPillText: { color: 'rgba(255,255,255,0.92)', fontSize: 12.5, fontWeight: '700' },
   xBtn: {
     width: 38, height: 38, borderRadius: 14, alignItems: 'center', justifyContent: 'center',
