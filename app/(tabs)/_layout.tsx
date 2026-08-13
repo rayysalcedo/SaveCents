@@ -21,7 +21,7 @@ const TAB_META: Record<string, { icon: keyof typeof Ionicons.glyphMap; label: st
   dashboard: { icon: 'home', label: 'Home' },
   wallet: { icon: 'wallet', label: 'Wallet' },
   goals: { icon: 'grid', label: 'Planner' },
-  analytics: { icon: 'bar-chart', label: 'Analytics' },
+  analytics: { icon: 'bar-chart', label: 'Transactions' },
 };
 
 // Soft glass circle that pops in behind the focused icon.

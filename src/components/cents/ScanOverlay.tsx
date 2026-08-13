@@ -129,6 +129,7 @@ const ThreadItem = React.memo(function ThreadItem({ msg, styles, t, confirmActio
   }
   const prompt =
     msg.type === 'confirmation' || msg.type === 'negotiation' ? msg.prompt
+    : msg.type === 'batchConfirmation' ? `${msg.prompt}\n${msg.steps.map((s2, i) => `${i + 1}. ${s2}`).join('\n')}`
     : msg.type === 'receiptScan' ? `Log ${peso(msg.amount)} from ${msg.store}?`
     : msg.type === 'consultItem' ? `${msg.item} at ${peso(msg.amount)} delays ${msg.goalName} by ${msg.delayWeeks} weeks. Proceed?`
     : `"${msg.item}" (${peso(msg.amount)}) doesn't fit your budgets. Create a category?`;

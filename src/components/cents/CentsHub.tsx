@@ -14,8 +14,8 @@ import * as Haptics from 'expo-haptics';
 import { Palette, radius, type, useTheme } from '../../theme/colors';
 import { useFinance } from '../../store/finance';
 import { useUI } from '../../store/ui';
-import { peso } from '../../models/types';
-import { institutionFor } from '../../data/countries';
+import { Account, Category, peso } from '../../models/types';
+import { BUDGET_CATEGORIES, institutionFor } from '../../data/countries';
 
 type Mode = 'menu' | 'expense' | 'income';
 
@@ -25,7 +25,7 @@ export function CentsHub() {
   const insets = useSafeAreaInsets();
   const { hubOpen, closeHub, openChat, openScan } = useUI();
   const sheetDrag = useDragToDismiss(() => dismiss());
-  const { accounts, categories, country, addExpense, addIncome } = useFinance();
+  const { accounts, categories, country, addExpense, addIncome, addBudget } = useFinance();
 
   const [mode, setMode] = useState<Mode>('menu');
   const [amount, setAmount] = useState('');
@@ -76,12 +76,13 @@ export function CentsHub() {
   const [pickedCat, setPickedCat] = useState<string | null>(null);
   const [pickedAcct, setPickedAcct] = useState<string | null>(null);
   const [acctMenu, setAcctMenu] = useState(false);
+  const [budgetMenu, setBudgetMenu] = useState(false);
 
   // Slide-up + backdrop fade
   const anim = useRef(new Animated.Value(0)).current;
   useEffect(() => {
     if (hubOpen) {
-      setMode('menu'); setAmount(''); setNote(''); setPickedCat(null); setPickedAcct(null); setAcctMenu(false);
+      setMode('menu'); setAmount(''); setNote(''); setPickedCat(null); setPickedAcct(null); setAcctMenu(false); setBudgetMenu(false);
       setEntryStep('amount'); setCalcAcc(0); setCalcEntry('');
       Animated.timing(anim, { toValue: 1, duration: 280, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
     } else {
@@ -114,85 +115,7 @@ export function CentsHub() {
     dismiss();
   };
 
-  const AcctDot = ({ name, color, initial, size = 26 }: { name: string; color?: string; initial?: string; size?: number }) => {
-    const inst = institutionFor(country, name);
-    const c = color ?? inst?.color ?? t.emerald;
-    return (
-      <View style={{
-        width: size, height: size, borderRadius: size * 0.34, alignItems: 'center', justifyContent: 'center',
-        backgroundColor: c + '22', borderWidth: 1, borderColor: c + '55',
-      }}>
-        <Text style={{ color: c, fontSize: size * 0.36, fontWeight: '800' }}>
-          {initial ?? inst?.initial ?? name.slice(0, 1).toUpperCase()}
-        </Text>
-      </View>
-    );
-  };
-
-  // Dropdown/picker for routing to a card or e-wallet
-  const AccountPicker = ({ optional }: { optional?: boolean }) => (
-    <View style={{ zIndex: 30 }}>
-      <Text style={styles.fieldLabel}>{optional ? 'PAY FROM (OPTIONAL)' : 'ROUTE TO'}</Text>
-      <Pressable style={[styles.acctSelect, acctMenu && { borderColor: t.emeraldBorder, backgroundColor: t.emeraldTint }]} onPress={() => { Keyboard.dismiss(); setAcctMenu((v) => !v); }}>
-        {acct ? (
-          <>
-            <AcctDot name={acct.name} color={acct.color} initial={acct.initial} />
-            <Text style={styles.acctSelectText}>{acct.name}</Text>
-            <Text style={styles.acctSelectBal}>{peso(acct.balance)}</Text>
-          </>
-        ) : (
-          <>
-            <View style={styles.acctPlaceholderIcon}>
-              <Ionicons name="wallet-outline" size={14} color={t.textMuted} />
-            </View>
-            <Text style={[styles.acctSelectText, { color: t.textMuted }]}>
-              {optional ? 'No source, just track it' : 'Choose a card or e-wallet'}
-            </Text>
-          </>
-        )}
-        <Ionicons name={acctMenu ? 'chevron-up' : 'chevron-down'} size={15} color={t.emerald} />
-      </Pressable>
-      {acctMenu && (
-        <View style={styles.acctMenu}>
-          {/* Long lists scroll internally, capped at ~5.5 rows; the sheet
-              itself scrolls too since the menu now occupies real height. */}
-          <ScrollView
-            style={{ maxHeight: 250 }}
-            nestedScrollEnabled
-            keyboardShouldPersistTaps="handled"
-            showsVerticalScrollIndicator
-          >
-          {optional && (
-            <Pressable style={[styles.acctMenuItem, styles.menuDivider]} onPress={() => { setPickedAcct(null); setAcctMenu(false); }}>
-              <View style={styles.acctPlaceholderIcon}>
-                <Ionicons name="remove" size={14} color={t.textMuted} />
-              </View>
-              <Text style={[styles.acctMenuText, { color: t.textMuted }]}>No source</Text>
-              {pickedAcct === null && <Ionicons name="checkmark-circle" size={16} color={t.emerald} />}
-            </Pressable>
-          )}
-          {accounts.map((a, i) => (
-            <Pressable
-              key={a.id}
-              style={[styles.acctMenuItem, i < accounts.length - 1 && styles.menuDivider]}
-              onPress={() => { setPickedAcct(a.id); setAcctMenu(false); }}
-            >
-              <AcctDot name={a.name} color={a.color} initial={a.initial} />
-              <Text style={styles.acctMenuText}>{a.nickname ? `${a.name} ${a.nickname}` : a.name}</Text>
-              <Text style={styles.acctMenuBal}>{peso(a.balance)}</Text>
-              {pickedAcct === a.id && <Ionicons name="checkmark-circle" size={16} color={t.emerald} />}
-            </Pressable>
-          ))}
-          {accounts.length === 0 && (
-            <Text style={styles.emptyMenu}>No accounts yet. Add one in the Wallet tab.</Text>
-          )}
-          </ScrollView>
-        </View>
-      )}
-    </View>
-  );
-
-  const backTo = (m: Mode) => { Keyboard.dismiss(); setAcctMenu(false); setMode(m); };
+  const backTo = (m: Mode) => { Keyboard.dismiss(); setAcctMenu(false); setBudgetMenu(false); setMode(m); };
 
   return (
     <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
@@ -340,24 +263,27 @@ export function CentsHub() {
                     )}
 
                     {entryStep === 'details' && mode === 'expense' && (
-                      <>
-                        <Text style={styles.fieldLabel}>BUDGET</Text>
-                        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipScroll} keyboardShouldPersistTaps="always">
-                          {categories.map((c) => {
-                            const active = pickedCat === c.name;
-                            return (
-                              <Pressable key={c.id} style={[styles.catChip, active && styles.catChipActive]} onPress={() => setPickedCat(c.name)}>
-                                <Ionicons name={(c.icon as any) || 'pricetag'} size={13} color={active ? t.onEmerald : t.emerald} />
-                                <Text style={[styles.catChipText, active && { color: t.onEmerald }]}>{c.name}</Text>
-                              </Pressable>
-                            );
-                          })}
-                          {categories.length === 0 && <Text style={styles.emptyMenu}>No budgets yet. Add one in Goals.</Text>}
-                        </ScrollView>
-                      </>
+                      <BudgetPicker
+                        t={t} styles={styles}
+                        categories={categories}
+                        picked={pickedCat}
+                        onPick={setPickedCat}
+                        onCreate={(name, limit, icon, base) => addBudget(name, limit, icon, base)}
+                        open={budgetMenu}
+                        setOpen={(v) => { setBudgetMenu(v); if (v) setAcctMenu(false); }}
+                      />
                     )}
 
-                    {entryStep === 'details' && <AccountPicker optional={mode === 'expense'} />}
+                    {entryStep === 'details' && (
+                      <AccountPicker
+                        t={t} styles={styles}
+                        accounts={accounts} country={country}
+                        picked={pickedAcct} onPick={setPickedAcct}
+                        optional={mode === 'expense'}
+                        open={acctMenu}
+                        setOpen={(v) => { setAcctMenu(v); if (v) setBudgetMenu(false); }}
+                      />
+                    )}
 
                     {entryStep === 'details' && (
                       <TextInput
@@ -400,6 +326,278 @@ export function CentsHub() {
           </Animated.View>
         </Animated.View>
       </KeyboardAvoidingView>
+    </View>
+  );
+}
+
+// v5.7: pickers moved to MODULE SCOPE (critical rule 4). The old render-body
+// AccountPicker survived only because it held no text input; the budget
+// picker below has a live search field, and a body-defined component
+// remounts on every keystroke, killing keyboard focus.
+function AcctDot({ country, name, color, initial, size = 26, t }: {
+  country: string; name: string; color?: string; initial?: string; size?: number; t: Palette;
+}) {
+  const inst = institutionFor(country, name);
+  const c = color ?? inst?.color ?? t.emerald;
+  return (
+    <View style={{
+      width: size, height: size, borderRadius: size * 0.34, alignItems: 'center', justifyContent: 'center',
+      backgroundColor: c + '22', borderWidth: 1, borderColor: c + '55',
+    }}>
+      <Text style={{ color: c, fontSize: size * 0.36, fontWeight: '800' }}>
+        {initial ?? inst?.initial ?? name.slice(0, 1).toUpperCase()}
+      </Text>
+    </View>
+  );
+}
+
+// Dropdown/picker for routing to a card or e-wallet
+function AccountPicker({ t, styles, accounts, country, picked, onPick, optional, open, setOpen }: {
+  t: Palette; styles: ReturnType<typeof makeStyles>;
+  accounts: Account[]; country: string;
+  picked: string | null; onPick: (id: string | null) => void;
+  optional?: boolean; open: boolean; setOpen: (v: boolean) => void;
+}) {
+  const acct = accounts.find((a) => a.id === picked) ?? null;
+  return (
+    <View style={{ zIndex: 30 }}>
+      <Text style={styles.fieldLabel}>{optional ? 'PAY FROM (OPTIONAL)' : 'ROUTE TO'}</Text>
+      <Pressable style={[styles.acctSelect, open && { borderColor: t.emeraldBorder, backgroundColor: t.emeraldTint }]} onPress={() => { Keyboard.dismiss(); setOpen(!open); }}>
+        {acct ? (
+          <>
+            <AcctDot t={t} country={country} name={acct.name} color={acct.color} initial={acct.initial} />
+            <Text style={styles.acctSelectText}>{acct.name}</Text>
+            <Text style={styles.acctSelectBal}>{peso(acct.balance)}</Text>
+          </>
+        ) : (
+          <>
+            <View style={styles.acctPlaceholderIcon}>
+              <Ionicons name="wallet-outline" size={14} color={t.textMuted} />
+            </View>
+            <Text style={[styles.acctSelectText, { color: t.textMuted }]}>
+              {optional ? 'No source, just track it' : 'Choose a card or e-wallet'}
+            </Text>
+          </>
+        )}
+        <Ionicons name={open ? 'chevron-up' : 'chevron-down'} size={15} color={t.emerald} />
+      </Pressable>
+      {open && (
+        <View style={styles.acctMenu}>
+          {/* Long lists scroll internally, capped at ~5.5 rows; the sheet
+              itself scrolls too since the menu now occupies real height. */}
+          <ScrollView
+            style={{ maxHeight: 250 }}
+            nestedScrollEnabled
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator
+          >
+          {optional && (
+            <Pressable style={[styles.acctMenuItem, styles.menuDivider]} onPress={() => { onPick(null); setOpen(false); }}>
+              <View style={styles.acctPlaceholderIcon}>
+                <Ionicons name="remove" size={14} color={t.textMuted} />
+              </View>
+              <Text style={[styles.acctMenuText, { color: t.textMuted }]}>No source</Text>
+              {picked === null && <Ionicons name="checkmark-circle" size={16} color={t.emerald} />}
+            </Pressable>
+          )}
+          {accounts.map((a, i) => (
+            <Pressable
+              key={a.id}
+              style={[styles.acctMenuItem, i < accounts.length - 1 && styles.menuDivider]}
+              onPress={() => { onPick(a.id); setOpen(false); }}
+            >
+              <AcctDot t={t} country={country} name={a.name} color={a.color} initial={a.initial} />
+              <Text style={styles.acctMenuText}>{a.nickname ? `${a.name} ${a.nickname}` : a.name}</Text>
+              <Text style={styles.acctMenuBal}>{peso(a.balance)}</Text>
+              {picked === a.id && <Ionicons name="checkmark-circle" size={16} color={t.emerald} />}
+            </Pressable>
+          ))}
+          {accounts.length === 0 && (
+            <Text style={styles.emptyMenu}>No accounts yet. Add one in the Wallet tab.</Text>
+          )}
+          </ScrollView>
+        </View>
+      )}
+    </View>
+  );
+}
+
+// Owner request: the budget chips row drowned in long lists (swipe and swipe).
+// This is a type-to-search dropdown over budgets AND their base categories,
+// with a pinned "create it right here" path so nobody detours to the planner.
+function BudgetPicker({ t, styles, categories, picked, onPick, onCreate, open, setOpen }: {
+  t: Palette; styles: ReturnType<typeof makeStyles>;
+  categories: Category[];
+  picked: string | null; onPick: (name: string) => void;
+  onCreate: (name: string, limit: number, icon: string, base: string) => void;
+  open: boolean; setOpen: (v: boolean) => void;
+}) {
+  const [query, setQuery] = useState('');
+  const [creating, setCreating] = useState(false);
+  const [newName, setNewName] = useState('');
+  const [newLimit, setNewLimit] = useState('');
+  const [newBase, setNewBase] = useState<string | null>(null);
+
+  const pickedBudget = categories.find((c) => c.name === picked) ?? null;
+  const q = query.trim().toLowerCase();
+  const filtered = q
+    ? categories.filter((c) =>
+        c.name.toLowerCase().includes(q) || (c.category ?? '').toLowerCase().includes(q))
+    : categories;
+
+  const reset = () => { setQuery(''); setCreating(false); setNewName(''); setNewLimit(''); setNewBase(null); };
+  const toggle = () => {
+    if (open) Keyboard.dismiss();
+    reset();
+    setOpen(!open);
+  };
+  const choose = (name: string) => {
+    onPick(name);
+    Keyboard.dismiss();
+    reset();
+    setOpen(false);
+  };
+  const startCreate = () => {
+    // The failed search is almost always the new budget's name.
+    setNewName(query.trim());
+    setNewBase(null);
+    setNewLimit('');
+    setCreating(true);
+  };
+  const limitNum = parseFloat(newLimit);
+  const canCreate = !!newBase && !Number.isNaN(limitNum) && limitNum > 0;
+  const submitCreate = () => {
+    if (!canCreate || !newBase) return;
+    const preset = BUDGET_CATEGORIES.find((c) => c.name === newBase);
+    const name = newName.trim() || newBase;
+    onCreate(name, limitNum, preset?.icon ?? 'pricetag', newBase);
+    choose(name);
+  };
+
+  return (
+    <View style={{ zIndex: 25 }}>
+      <Text style={styles.fieldLabel}>BUDGET</Text>
+      <Pressable style={[styles.acctSelect, open && { borderColor: t.emeraldBorder, backgroundColor: t.emeraldTint }]} onPress={toggle}>
+        {pickedBudget ? (
+          <>
+            <View style={styles.budgetSelIcon}>
+              <Ionicons name={(pickedBudget.icon as any) || 'pricetag'} size={14} color={t.emerald} />
+            </View>
+            <Text style={styles.acctSelectText}>{pickedBudget.name}</Text>
+            <Text style={styles.acctSelectBal}>{peso(Math.max(pickedBudget.limit - pickedBudget.spent, 0))} left</Text>
+          </>
+        ) : (
+          <>
+            <View style={styles.acctPlaceholderIcon}>
+              <Ionicons name="pricetag-outline" size={14} color={t.textMuted} />
+            </View>
+            <Text style={[styles.acctSelectText, { color: t.textMuted }]}>Choose a budget</Text>
+          </>
+        )}
+        <Ionicons name={open ? 'chevron-up' : 'chevron-down'} size={15} color={t.emerald} />
+      </Pressable>
+      {open && !creating && (
+        <View style={styles.acctMenu}>
+          <View style={styles.searchRow}>
+            <Ionicons name="search" size={14} color={t.textMuted} />
+            <TextInput
+              style={styles.searchInput}
+              placeholder="Search budgets or categories"
+              placeholderTextColor={t.textMuted}
+              value={query}
+              onChangeText={setQuery}
+              autoCorrect={false}
+              returnKeyType="search"
+            />
+            {query.length > 0 && (
+              <Pressable onPress={() => setQuery('')} hitSlop={8}>
+                <Ionicons name="close-circle" size={15} color={t.textMuted} />
+              </Pressable>
+            )}
+          </View>
+          <ScrollView
+            style={{ maxHeight: 230 }}
+            nestedScrollEnabled
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator
+          >
+            {filtered.map((c) => (
+              <Pressable key={c.id} style={[styles.acctMenuItem, styles.menuDivider]} onPress={() => choose(c.name)}>
+                <View style={styles.budgetSelIcon}>
+                  <Ionicons name={(c.icon as any) || 'pricetag'} size={14} color={t.emerald} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.acctMenuText}>{c.name}</Text>
+                  {!!c.category && c.category !== c.name && (
+                    <Text style={styles.budgetMenuBase}>{c.category}</Text>
+                  )}
+                </View>
+                <Text style={styles.acctMenuBal}>{peso(Math.max(c.limit - c.spent, 0))} left</Text>
+                {picked === c.name && <Ionicons name="checkmark-circle" size={16} color={t.emerald} />}
+              </Pressable>
+            ))}
+            {filtered.length === 0 && (
+              <Text style={styles.emptyMenu}>
+                {categories.length === 0 ? 'No budgets yet.' : `Nothing matches "${query.trim()}".`}
+              </Text>
+            )}
+          </ScrollView>
+          {/* Pinned path out of a dead end: create it right here. */}
+          <Pressable style={styles.createRow} onPress={startCreate}>
+            <View style={styles.createRowIcon}>
+              <Ionicons name="add" size={15} color={t.emerald} />
+            </View>
+            <Text style={styles.createRowText}>Can't find what you're looking for? Create a budget for this</Text>
+          </Pressable>
+        </View>
+      )}
+      {open && creating && (
+        <View style={styles.acctMenu}>
+          <View style={{ padding: 12, gap: 10 }}>
+            <Text style={styles.createTitle}>NEW BUDGET</Text>
+            <TextInput
+              style={styles.createInput}
+              placeholder="Name (e.g. Netflix)"
+              placeholderTextColor={t.textMuted}
+              value={newName}
+              onChangeText={setNewName}
+              returnKeyType="done"
+            />
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipScroll} keyboardShouldPersistTaps="always">
+              {BUDGET_CATEGORIES.map((c) => {
+                const active = newBase === c.name;
+                return (
+                  <Pressable key={c.name} style={[styles.catChip, active && styles.catChipActive]} onPress={() => setNewBase(c.name)}>
+                    <Ionicons name={(c.icon as any) || 'pricetag'} size={13} color={active ? t.onEmerald : t.emerald} />
+                    <Text style={[styles.catChipText, active && { color: t.onEmerald }]}>{c.name}</Text>
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+            <TextInput
+              style={styles.createInput}
+              placeholder="Monthly limit"
+              placeholderTextColor={t.textMuted}
+              value={newLimit}
+              onChangeText={(v) => setNewLimit(v.replace(/[^\d.]/g, ''))}
+              keyboardType="decimal-pad"
+              returnKeyType="done"
+            />
+            <View style={{ flexDirection: 'row', gap: 8 }}>
+              <Pressable style={styles.createCancel} onPress={() => setCreating(false)}>
+                <Text style={styles.createCancelText}>Back</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.createGo, { backgroundColor: canCreate ? t.emerald : t.inputFill }]}
+                disabled={!canCreate}
+                onPress={submitCreate}
+              >
+                <Text style={[styles.createGoText, !canCreate && { color: t.textMuted }]}>Create and use</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      )}
     </View>
   );
 }
@@ -503,6 +701,42 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   acctMenuText: { color: t.textPrimary, fontSize: 13.5, fontWeight: '700', flex: 1 },
   acctMenuBal: { color: t.textMuted, fontSize: 12, ...type.money },
   emptyMenu: { color: t.textMuted, fontSize: 12.5, padding: 12 },
+  // Budget picker (v5.7): search + create-in-place
+  budgetSelIcon: {
+    width: 26, height: 26, borderRadius: 9, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: t.emeraldTint, borderWidth: 1, borderColor: t.emeraldBorder,
+  },
+  budgetMenuBase: { color: t.textMuted, fontSize: 11, marginTop: 1 },
+  searchRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    paddingHorizontal: 13, paddingVertical: 4,
+    borderBottomWidth: 1, borderBottomColor: t.borderSoft,
+  },
+  searchInput: { flex: 1, height: 40, color: t.textPrimary, fontSize: 13.5 },
+  createRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    paddingHorizontal: 13, paddingVertical: 12,
+    borderTopWidth: 1, borderTopColor: t.borderSoft,
+    backgroundColor: t.emeraldTint,
+  },
+  createRowIcon: {
+    width: 24, height: 24, borderRadius: 8, alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, borderColor: t.emeraldBorder,
+  },
+  createRowText: { color: t.emerald, fontSize: 12.5, fontWeight: '700', flex: 1 },
+  createTitle: { ...type.eyebrow, color: t.textFaint },
+  createInput: {
+    height: 44, borderRadius: 12, paddingHorizontal: 12,
+    color: t.textPrimary, fontSize: 13.5,
+    backgroundColor: t.inputFill, borderWidth: 1, borderColor: t.borderSoft,
+  },
+  createCancel: {
+    paddingHorizontal: 16, height: 42, borderRadius: 12, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: t.inputFill, borderWidth: 1, borderColor: t.borderSoft,
+  },
+  createCancelText: { color: t.textMuted, fontSize: 13, fontWeight: '700' },
+  createGo: { flex: 1, height: 42, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
+  createGoText: { color: t.onEmerald, fontSize: 13, fontWeight: '800' },
   noteInput: {
     height: 46, borderRadius: 14, paddingHorizontal: 13, marginTop: 12,
     color: t.textPrimary, fontSize: 14,

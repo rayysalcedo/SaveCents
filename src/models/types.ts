@@ -12,6 +12,14 @@ export interface Account {
   kind?: 'debit' | 'credit';
   creditLimit?: number; // credit only
   billingDay?: number;  // credit only: statement day of month (1..31)
+  // Wallet v5 (owner request): the day of month the statement is DUE to be
+  // paid (1..31). When the billing day arrives, the app turns whatever is
+  // owed into a "<Card> Bill" budget carrying this due date with reminders
+  // on, so the bill shows up in the Budgets list like any other due.
+  dueDay?: number;
+  // YYYY-MM of the last statement budget generated, so the sweep runs once
+  // per card per month no matter how often the app opens.
+  lastStatement?: string;
   network?: 'visa' | 'mastercard' | 'none'; // card mark; defaults from the institution
   // v4.7: ISO currency code for this balance. Absent = the home currency.
   currency?: string;
@@ -45,6 +53,11 @@ export interface Category {
   autoPayAccountId?: string;
   autoPayLast?: string;         // YYYY-MM of the last successful auto-pay
   autoPayFailNotified?: string; // YYYY-MM we already flagged as short on balance
+  // Wallet v5: set = this budget IS a credit card's statement bill, created
+  // by runCreditStatementsIfDue for that card. Expenses logged to it from a
+  // DIFFERENT account count as payments and reduce the card's owed balance,
+  // so the budget and the card always tell the same story.
+  creditAccountId?: string;
 }
 
 export type SaveCadence = 'daily' | 'weekly' | 'monthly';
@@ -85,7 +98,10 @@ export type Sender = 'USER' | 'CENTS';
 export type ActionType =
   | { kind: 'UpdateBudget'; categoryName: string; newLimit: number }
   | { kind: 'LogTransaction'; amount: number; categoryName: string; accountName?: string; item?: string }
-  | { kind: 'AddCategory'; name: string; limit: number }
+  // v5.38: dueDay set = create a BILL (dated budget, monthly due, reminders
+  // on); absent = a plain spending envelope. Same discriminator the Budgets
+  // tabs use, so Cents-created budgets land in the right tab.
+  | { kind: 'AddCategory'; name: string; limit: number; dueDay?: number }
   | { kind: 'RemoveCategory'; name: string }
   | { kind: 'NegotiatePurchase'; item: string; amount: number; categoryName: string; accountName?: string }
   | { kind: 'CreateAndLog'; item: string; amount: number; accountName?: string }
@@ -96,7 +112,17 @@ export type ActionType =
   | { kind: 'AddToGoal'; goalName: string; amount: number; accountName?: string }
   | { kind: 'WithdrawFromGoal'; goalName: string; amount: number; accountName?: string }
   | { kind: 'AddAccount'; name: string; initial: number }
-  | { kind: 'SetAccountBalance'; accountName: string; amount: number };
+  | { kind: 'SetAccountBalance'; accountName: string; amount: number }
+  // M5.34 (Cents parity phase 1): ledger edits and budget due dates by chat
+  // or voice. Transactions are RESOLVED AT ASK TIME (buildReplyFromResult
+  // stamps the exact txId) so the confirmed action can never hit the wrong
+  // row; label carries the human description for acks.
+  | { kind: 'RemoveTransaction'; txId: string; label: string }
+  | { kind: 'UpdateTransaction'; txId: string; newAmount: number; label: string }
+  | { kind: 'SetBudgetDue'; categoryName: string; dueDay: number; remind?: boolean }
+  // v5.43: read-only - arms the Transactions tab's filters (search text
+  // and/or a budget) so "show my Grab expenses" lands on a filtered ledger.
+  | { kind: 'ShowTransactions'; query?: string; categoryName?: string };
 
 interface ChatBase {
   id: string;
@@ -114,6 +140,10 @@ export type ChatMessage =
   // delivered only AFTER the user confirms (ask first, coach after).
   | (ChatBase & { type: 'confirmation'; prompt: string; action: ActionType; confirmed: boolean; handled: boolean; lang?: 'en' | 'fil'; coachNote?: string })
   | (ChatBase & { type: 'negotiation'; prompt: string; action: ActionType; confirmed: boolean; handled: boolean; lang?: 'en' | 'fil'; coachNote?: string })
+  // M5.34 (owner request): a multi-item ask is ONE summary card. steps are
+  // the human lines shown as a numbered plan; actions execute in order on a
+  // single yes, through the same executeAction chokepoint as everything.
+  | (ChatBase & { type: 'batchConfirmation'; prompt: string; steps: string[]; actions: ActionType[]; confirmed: boolean; handled: boolean; lang?: 'en' | 'fil'; coachNote?: string })
   | (ChatBase & { type: 'receiptScan'; amount: number; store: string; confirmed: boolean; handled: boolean })
   | (ChatBase & { type: 'consultItem'; item: string; amount: number; delayWeeks: number; goalName: string; confirmed: boolean; handled: boolean })
   | (ChatBase & { type: 'mismatch'; item: string; amount: number; confirmed: boolean; handled: boolean });
@@ -178,6 +208,14 @@ export interface SplitBill {
   //   own share (if included) logs as an expense when they pay it.
   // Absent = a v3 legacy split: plain ticks, no money logging.
   mode?: 'me' | 'other';
+  // Planner v5: how shares were decided. 'even' divides the total equally
+  // (the only pre-v5 behavior, so absent = even); 'custom' means each person
+  // owes the specific amount typed in for them, with the payer covering the
+  // remainder of the total.
+  splitKind?: 'even' | 'custom';
+  // Planner v5: the user's own share in other mode. Absent = the even share
+  // (pre-v5 bills), which is what paySplitMyShare used to read off people[0].
+  myShareAmount?: number;
   payerEmail?: string;     // other mode
   payerAccountId?: string; // me mode: the account the bill came out of
   expenseTxId?: string;    // me mode: the logged total expense

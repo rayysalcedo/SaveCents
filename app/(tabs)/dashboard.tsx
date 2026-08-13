@@ -18,10 +18,11 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { GlassCard } from '../../src/components/GlassCard';
 import { AvatarBadge } from '../../src/components/Avatar';
 import { BankMark, MerchantBadge, NetworkMark } from '../../src/components/BrandBadge';
-import { MoMBars, PieChart, SpendBars, TrajectoryCurve } from '../../src/components/Charts';
+import { PieChart, SpendBars, TrajectoryCurve } from '../../src/components/Charts';
+import { TrendChart } from '../../src/components/TrendChart';
 import { C, Palette, radius, type, useTheme } from '../../src/theme/colors';
 import { useFinance } from '../../src/store/finance';
-import { fmtMoney, peso } from '../../src/models/types';
+import { Category, fmtMoney, peso } from '../../src/models/types';
 import { COUNTRIES, institutionFor } from '../../src/data/countries';
 import { savingsSeries, savingsNote as buildSavingsNote } from '../../src/utils/stats';
 
@@ -233,7 +234,8 @@ export default function Dashboard() {
 
   const rolloverBudgetsIfNeeded = useFinance((st) => st.rolloverBudgetsIfNeeded);
   const runAutoPayIfDue = useFinance((st) => st.runAutoPayIfDue);
-  React.useEffect(() => { rolloverBudgetsIfNeeded(); runAutoPayIfDue(); }, [rolloverBudgetsIfNeeded, runAutoPayIfDue]);
+  const runCreditStatementsIfDue = useFinance((st) => st.runCreditStatementsIfDue);
+  React.useEffect(() => { rolloverBudgetsIfNeeded(); runCreditStatementsIfDue(); runAutoPayIfDue(); }, [rolloverBudgetsIfNeeded, runCreditStatementsIfDue, runAutoPayIfDue]);
 
   // v4.1: the goal shown in Insights is the STARRED goal (set with the star
   // in Goals → Manage); falls back to the first goal.
@@ -289,14 +291,19 @@ export default function Dashboard() {
   // MOST pressing thing: ① overdue / due-soon bill → ② maxed budget →
   // ③ near-limit budget (≥85%) → ④ a far-off due date, else all clear.
   const attention = useMemo(() => {
-    const dues = categories.filter((c) => c.dueDate).sort((a, b) => a.dueDate! - b.dueDate!);
+    // v5.35 (owner: "Rent shows due in 4 days, P0 left, but I PAID it"): a
+    // dated budget is a BILL - spent reaching the limit means it's PAID for
+    // the month. Settled bills never need attention; the maxed alarm is for
+    // undated envelopes only, where hitting the limit really means stop.
+    const settled = (c: Category) => !!c.dueDate && c.limit > 0 && c.spent >= c.limit;
+    const dues = categories.filter((c) => c.dueDate && !settled(c)).sort((a, b) => a.dueDate! - b.dueDate!);
     const urgentDue = dues.find((c) => dueLabel(c.dueDate!).urgent);
     if (urgentDue) {
       const d = dueLabel(urgentDue.dueDate!);
       const remaining = Math.max(urgentDue.limit - urgentDue.spent, 0);
       return { kind: 'due' as const, name: urgentDue.name, line: `${d.text} · ${peso(remaining)} left`, amount: remaining, urgent: true, icon: urgentDue.icon };
     }
-    const maxed = categories.find((c) => c.limit > 0 && c.spent >= c.limit);
+    const maxed = categories.find((c) => c.limit > 0 && c.spent >= c.limit && !c.dueDate);
     if (maxed) {
       const over = maxed.spent - maxed.limit;
       return { kind: 'maxed' as const, name: maxed.name, line: over > 0 ? `Over budget by ${peso(over)}` : 'Budget fully used', amount: 0, urgent: true, icon: maxed.icon };
@@ -367,7 +374,9 @@ export default function Dashboard() {
   // so the co-pilot stays quiet.
   const centsNotes = useMemo(() => {
     const notes: { icon: keyof typeof Ionicons.glyphMap; tone: 'warn' | 'ok'; text: string }[] = [];
-    const maxed = categories.filter((c) => c.limit > 0 && c.spent >= c.limit);
+    // v5.35: dated budgets are BILLS. Hitting the limit there means PAID -
+    // celebrated below, never alarmed. The limit warning is envelope-only.
+    const maxed = categories.filter((c) => c.limit > 0 && c.spent >= c.limit && !c.dueDate);
     if (maxed.length > 0) {
       const worst = maxed.sort((a, b) => (b.spent - b.limit) - (a.spent - a.limit))[0];
       const over = worst.spent - worst.limit;
@@ -379,13 +388,23 @@ export default function Dashboard() {
       });
     }
     const dueSoon = categories
-      .filter((c) => c.dueDate && dueLabel(c.dueDate!).urgent)
+      .filter((c) => c.dueDate && dueLabel(c.dueDate!).urgent && c.limit - c.spent > 0)
       .sort((a, b) => a.dueDate! - b.dueDate!)[0];
     if (dueSoon) {
       const remaining = Math.max(dueSoon.limit - dueSoon.spent, 0);
       notes.push({
         icon: 'calendar-outline', tone: 'warn',
         text: `Your ${dueSoon.name} bill is ${dueLabel(dueSoon.dueDate!).text.toLowerCase()}. Keep ${peso(remaining)} ready for it.`,
+      });
+    }
+    // Fully paid bills read as the win they are.
+    const paidBills = categories.filter((c) => c.dueDate && c.limit > 0 && c.spent >= c.limit);
+    if (paidBills.length > 0) {
+      notes.push({
+        icon: 'checkmark-circle-outline', tone: 'ok',
+        text: paidBills.length === 1
+          ? `${paidBills[0].name} is fully paid for the month. Nice work.`
+          : `${paidBills.length} bills are fully paid for the month. Nice work.`,
       });
     }
     if (goal && goal.target > goal.current) {
@@ -654,7 +673,14 @@ export default function Dashboard() {
                       ))}
                     </View>
                   </View>
-                  <MoMBars key={savingsPeriod} data={savingsData} height={104} />
+                  {/* v5.45: same chart language as the Transactions tab -
+                      the smooth scrubbable line replaces the bars. Fixed
+                      mode (compact widget), tap or drag to pin a window. */}
+                  <TrendChart
+                    points={savingsData.map((d) => ({ label: d.label, sub: d.label, value: d.value }))}
+                    height={104}
+                    resetKey={savingsPeriod}
+                  />
                   <Text style={styles.insightNote}>{savingsNote}</Text>
                 </GlassCard>
               )}
@@ -695,7 +721,8 @@ export default function Dashboard() {
           ) : (() => {
             const limit = categories.reduce((a, c) => a + c.limit, 0);
             const spent = categories.reduce((a, c) => a + c.spent, 0);
-            const maxedCount = categories.filter((c) => c.limit > 0 && c.spent >= c.limit).length;
+            // v5.35: paid bills (dated, fully spent) are healthy, not maxed.
+            const maxedCount = categories.filter((c) => c.limit > 0 && c.spent >= c.limit && !c.dueDate).length;
             const pct = limit > 0 ? Math.min(spent / limit, 1) : 0;
             return (
               <Pressable

@@ -3,7 +3,7 @@
 // "truth & polish" work — no mocked series on this screen).
 import React, { useEffect, useMemo, useState } from 'react';
 import {
-  Alert, Animated, Keyboard, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View,
+  Alert, Animated, Image, Keyboard, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -11,11 +11,12 @@ import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import * as FileSystem from 'expo-file-system/legacy';
 import { GlassCard } from '../../src/components/GlassCard';
-import { MoMBars, SpendBars } from '../../src/components/Charts';
+import { TrendChart, TrendPoint } from '../../src/components/TrendChart';
 import { Palette, radius, type, useTheme } from '../../src/theme/colors';
 import { useFinance } from '../../src/store/finance';
 import { useDragToDismiss } from '../../src/hooks/useDragToDismiss';
-import { Transaction, peso } from '../../src/models/types';
+import { Category, Transaction, peso } from '../../src/models/types';
+import { BUDGET_CATEGORIES } from '../../src/data/countries';
 
 type Filter = 'all' | 'income' | 'expense';
 const FILTERS: { key: Filter; label: string }[] = [
@@ -30,10 +31,146 @@ const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', '
 // M5.6: tap a transaction to edit or delete it. Module scope per HANDOFF
 // rule 3.1. The store reverses the old effects and applies the new ones, so
 // account balances and budget spent stay truthful either way.
-function TxEditor({ t, styles, tx, categories, accounts, onSave, onDelete, onClose }: {
+
+// v5.45: the editor's budget picker - the last chip list in the app becomes
+// the house searchable dropdown, with "make this a budget" built in: any
+// transaction (an unassigned Jollibee, say) can mint its budget right here,
+// prefilled from the description, without leaving the sheet.
+function TxBudgetSelect({ t, styles, categories, value, onPick, seedName, onCreate }: {
+  t: Palette; styles: any;
+  categories: Category[];
+  value: string;
+  onPick: (name: string) => void;
+  seedName: string; // tx description, prefills the create form
+  onCreate: (name: string, limit: number, icon: string, base: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState('');
+  const [creating, setCreating] = useState(false);
+  const [newName, setNewName] = useState('');
+  const [newBase, setNewBase] = useState<string | null>(null);
+  const [newLimit, setNewLimit] = useState('');
+  const picked = categories.find((c) => c.name.toLowerCase() === value.toLowerCase()) ?? null;
+  const ql = q.trim().toLowerCase();
+  const list = ql
+    ? categories.filter((c) => c.name.toLowerCase().includes(ql) || (c.category ?? '').toLowerCase().includes(ql))
+    : categories;
+  const reset = () => { setQ(''); setCreating(false); setNewName(''); setNewBase(null); setNewLimit(''); };
+  const choose = (name: string) => { onPick(name); Keyboard.dismiss(); reset(); setOpen(false); };
+  const limitNum = parseFloat(newLimit);
+  const canCreate = !!newBase && !Number.isNaN(limitNum) && limitNum > 0;
+  const submitCreate = () => {
+    if (!canCreate || !newBase) return;
+    const preset = BUDGET_CATEGORIES.find((c) => c.name === newBase);
+    const name = newName.trim() || newBase;
+    onCreate(name, limitNum, preset?.icon ?? 'pricetag', newBase);
+    choose(name);
+  };
+  return (
+    <View>
+      <Pressable
+        style={[styles.txbSelect, open && { borderColor: t.emeraldBorder, backgroundColor: t.emeraldTint }]}
+        onPress={() => { Keyboard.dismiss(); if (open) reset(); setOpen(!open); }}
+      >
+        <View style={styles.txbIcon}>
+          <Ionicons name={(picked?.icon as any) || 'pricetag-outline'} size={14} color={picked ? t.emerald : t.textMuted} />
+        </View>
+        <Text style={[styles.txbSelectText, !picked && { color: t.textMuted }]} numberOfLines={1}>
+          {picked?.name ?? value ?? 'Choose a budget'}
+        </Text>
+        <Ionicons name={open ? 'chevron-up' : 'chevron-down'} size={15} color={t.emerald} />
+      </Pressable>
+      {open && !creating && (
+        <View style={styles.txbMenu}>
+          <View style={styles.txbSearchRow}>
+            <Ionicons name="search" size={14} color={t.textMuted} />
+            <TextInput
+              style={styles.txbSearchInput}
+              placeholder="Search budgets"
+              placeholderTextColor={t.textMuted}
+              value={q}
+              onChangeText={setQ}
+              autoCorrect={false}
+              returnKeyType="search"
+            />
+          </View>
+          <ScrollView style={{ maxHeight: 200 }} nestedScrollEnabled keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator>
+            {list.map((c) => (
+              <Pressable key={c.id} style={[styles.txbRow, styles.txbDivider]} onPress={() => choose(c.name)}>
+                <View style={styles.txbIcon}>
+                  <Ionicons name={(c.icon as any) || 'pricetag'} size={14} color={t.emerald} />
+                </View>
+                <Text style={styles.txbRowText} numberOfLines={1}>{c.name}</Text>
+                {value.toLowerCase() === c.name.toLowerCase() && <Ionicons name="checkmark-circle" size={15} color={t.emerald} />}
+              </Pressable>
+            ))}
+            {list.length === 0 && <Text style={styles.txbEmpty}>Nothing matches "{q.trim()}".</Text>}
+          </ScrollView>
+          <Pressable
+            style={styles.txbCreateRow}
+            onPress={() => { setNewName(seedName.trim()); setNewBase(null); setNewLimit(''); setCreating(true); }}
+          >
+            <View style={styles.txbCreateIcon}>
+              <Ionicons name="add" size={14} color={t.emerald} />
+            </View>
+            <Text style={styles.txbCreateText}>Make this a budget</Text>
+          </Pressable>
+        </View>
+      )}
+      {open && creating && (
+        <View style={[styles.txbMenu, { padding: 12, gap: 9 }]}>
+          <Text style={styles.txbCreateTitle}>NEW BUDGET</Text>
+          <TextInput
+            style={styles.txbCreateInput}
+            placeholder="Name"
+            placeholderTextColor={t.textMuted}
+            value={newName}
+            onChangeText={setNewName}
+            returnKeyType="done"
+          />
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }} keyboardShouldPersistTaps="always">
+            {BUDGET_CATEGORIES.map((c) => {
+              const on = newBase === c.name;
+              return (
+                <Pressable key={c.name} style={[styles.txbBaseChip, on && { backgroundColor: t.emerald, borderColor: t.emerald }]} onPress={() => setNewBase(c.name)}>
+                  <Ionicons name={c.icon as any} size={12} color={on ? t.onEmerald : t.emerald} />
+                  <Text style={[styles.txbBaseText, on && { color: t.onEmerald }]}>{c.name}</Text>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+          <TextInput
+            style={styles.txbCreateInput}
+            placeholder="Monthly limit"
+            placeholderTextColor={t.textMuted}
+            value={newLimit}
+            onChangeText={(v) => setNewLimit(v.replace(/[^\d.]/g, ''))}
+            keyboardType="decimal-pad"
+            returnKeyType="done"
+          />
+          <View style={{ flexDirection: 'row', gap: 8 }}>
+            <Pressable style={styles.txbCancel} onPress={() => setCreating(false)}>
+              <Text style={styles.txbCancelText}>Back</Text>
+            </Pressable>
+            <Pressable
+              style={[styles.txbGo, { backgroundColor: canCreate ? t.emerald : t.inputFill }]}
+              disabled={!canCreate}
+              onPress={submitCreate}
+            >
+              <Text style={[styles.txbGoText, !canCreate && { color: t.textMuted }]}>Create and use</Text>
+            </Pressable>
+          </View>
+        </View>
+      )}
+    </View>
+  );
+}
+
+function TxEditor({ t, styles, tx, categories, accounts, onSave, onDelete, onClose, onCreateBudget }: {
   t: Palette; styles: any; tx: Transaction;
-  categories: { id: string; name: string }[];
+  categories: Category[];
   accounts: { id: string; name: string }[];
+  onCreateBudget: (name: string, limit: number, icon: string, base: string) => void;
   onSave: (patch: { amount?: number; description?: string; categoryId?: string }) => void;
   onDelete: () => void;
   onClose: () => void;
@@ -127,20 +264,14 @@ function TxEditor({ t, styles, tx, categories, accounts, onSave, onDelete, onClo
             {!tx.isIncome && !tx.goalId && (
               <>
                 <Text style={styles.editLabel}>Budget</Text>
-                <View style={styles.editChips}>
-                  {categories.map((c) => {
-                    const active = c.name.toLowerCase() === categoryId.toLowerCase();
-                    return (
-                      <Pressable
-                        key={c.id}
-                        onPress={() => setCategoryId(c.name)}
-                        style={[styles.editChip, active && styles.editChipOn]}
-                      >
-                        <Text style={[styles.editChipText, active && styles.editChipTextOn]}>{c.name}</Text>
-                      </Pressable>
-                    );
-                  })}
-                </View>
+                <TxBudgetSelect
+                  t={t} styles={styles}
+                  categories={categories}
+                  value={categoryId}
+                  onPick={setCategoryId}
+                  seedName={description || tx.description}
+                  onCreate={onCreateBudget}
+                />
               </>
             )}
 
@@ -168,11 +299,29 @@ export default function AnalyticsScreen() {
 
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<Filter>('all');
+  // v5.43 (chunk 2): budget + source filters, applied via floating pickers.
+  const [catFilter, setCatFilter] = useState<string | null>(null);
+  const [acctFilter, setAcctFilter] = useState<string | null>(null);
+  const [catMenu, setCatMenu] = useState(false);
+  const [acctMenu, setAcctMenu] = useState(false);
+  // v5.43: Cents can arm these filters ("show my Grab expenses") - consume
+  // whatever is waiting and clear it.
+  const addBudget = useFinance((s2) => s2.addBudget);
+  const ledgerFilter = useFinance((s2) => s2.ledgerFilter);
+  const setLedgerFilter = useFinance((s2) => s2.setLedgerFilter);
+  useEffect(() => {
+    if (!ledgerFilter) return;
+    setQuery(ledgerFilter.query ?? '');
+    setCatFilter(ledgerFilter.categoryName ?? null);
+    setAcctFilter(null);
+    setFilter('all');
+    setLedgerFilter(null);
+  }, [ledgerFilter, setLedgerFilter]);
   const [exporting, setExporting] = useState<null | 'csv' | 'pdf'>(null);
+  const [exportMenu, setExportMenu] = useState(false);
+  const [spendShowAll, setSpendShowAll] = useState(false);
   const [editing, setEditing] = useState<Transaction | null>(null);
   // M5.27: long ledgers page instead of scrolling forever.
-  const PAGE_SIZE = 15;
-  const [page, setPage] = useState(0);
 
   // ---- Search + filter ----
   const filtered = useMemo(() => {
@@ -180,6 +329,8 @@ export default function AnalyticsScreen() {
     return transactions.filter((tx) => {
       if (filter === 'income' && !tx.isIncome) return false;
       if (filter === 'expense' && tx.isIncome) return false;
+      if (catFilter && tx.categoryId.toLowerCase() !== catFilter.toLowerCase()) return false;
+      if (acctFilter && tx.accountId !== acctFilter) return false;
       if (!q) return true;
       return (
         tx.description.toLowerCase().includes(q) ||
@@ -187,7 +338,7 @@ export default function AnalyticsScreen() {
         String(tx.amount).includes(q)
       );
     });
-  }, [transactions, query, filter]);
+  }, [transactions, query, filter, catFilter, acctFilter]);
 
   // ---- Real computed insights ----
   const totals = useMemo(() => {
@@ -198,73 +349,307 @@ export default function AnalyticsScreen() {
 
   // Net savings series, selectable D/W/M/Y like the dashboard's Savings
   // insight — but computed from REAL transactions (this screen's rule).
-  const [netPeriod, setNetPeriod] = useState<'D' | 'W' | 'M' | 'Y'>('M');
-  const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-  const netSeries = useMemo(() => {
+  // v5.39 (transactions tab redesign, chunk 1): the crypto-style trend
+  // chart. Calendar periods (this week / month / year), an anchor timestamp
+  // the chevrons and the month/year dropdown move, and a scrub index the
+  // chart reports so the header swaps to the pinned day. Values are HONEST:
+  // no Math.max clamp - a negative net day dips below the dashed zero line.
+  const [trendMetric, setTrendMetric] = useState<'net' | 'spent'>('net');
+  const [trendRange, setTrendRange] = useState<'W' | 'M' | 'Y'>('W');
+  const [trendAnchor, setTrendAnchor] = useState<number>(() => Date.now());
+  const [trendScrub, setTrendScrub] = useState<number | null>(null);
+  const [periodMenu, setPeriodMenu] = useState(false);
+  const DAY_SHORT = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  const dayStartTs = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const weekStartOf = (ts: number) => {
+    const d = new Date(ts);
+    const monIdx = (d.getDay() + 6) % 7; // Mon = 0
+    return new Date(d.getFullYear(), d.getMonth(), d.getDate() - monIdx);
+  };
+
+  const trend = useMemo(() => {
     const now = new Date();
-    const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-    const netBetween = (from: number, to: number) =>
-      transactions
-        .filter((x) => x.timestamp >= from && x.timestamp < to)
-        .reduce((a, x) => a + (x.isIncome ? x.amount : -x.amount), 0);
-    const out: { label: string; value: number }[] = [];
-    if (netPeriod === 'D') {
-      // Last 7 days, oldest → newest.
-      for (let i = 6; i >= 0; i--) {
-        const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
-        out.push({ label: DAY_NAMES[d.getDay()], value: Math.max(netBetween(startOfDay(d), startOfDay(d) + 86_400_000), 0) });
+    const todayStart = dayStartTs(now);
+    const flowBetween = (from: number, to: number) => {
+      let inc = 0, exp = 0;
+      for (const x of transactions) {
+        if (x.timestamp < from || x.timestamp >= to) continue;
+        if (x.isIncome) inc += x.amount; else exp += x.amount;
       }
-    } else if (netPeriod === 'W') {
-      // Last 5 seven-day windows ending today.
-      const todayEnd = startOfDay(now) + 86_400_000;
-      for (let i = 4; i >= 0; i--) {
-        const to = todayEnd - i * 7 * 86_400_000;
-        out.push({ label: `W${5 - i}`, value: Math.max(netBetween(to - 7 * 86_400_000, to), 0) });
+      return { net: inc - exp, spent: exp };
+    };
+    const pointsFor = (anchor: number) => {
+      const pts: (TrendPoint & { ghost: number })[] = [];
+      const push = (from: number, to: number, label: string, sub: string) => {
+        const f = flowBetween(from, to);
+        pts.push({
+          label, sub,
+          value: trendMetric === 'net' ? f.net : f.spent,
+          ghost: trendMetric === 'net' ? f.spent : f.net,
+        });
+      };
+      if (trendRange === 'W') {
+        const ws = weekStartOf(anchor);
+        for (let i = 0; i < 7; i++) {
+          const d = new Date(ws.getFullYear(), ws.getMonth(), ws.getDate() + i);
+          const from = d.getTime();
+          if (from > todayStart) break; // the future has no data yet
+          push(from, from + 86_400_000, DAY_SHORT[i],
+            d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }));
+        }
+      } else if (trendRange === 'M') {
+        const a = new Date(anchor);
+        const mStart = new Date(a.getFullYear(), a.getMonth(), 1);
+        const lastDay = new Date(a.getFullYear(), a.getMonth() + 1, 0).getDate();
+        const cap = mStart.getFullYear() === now.getFullYear() && mStart.getMonth() === now.getMonth()
+          ? now.getDate() : lastDay;
+        for (let day = 1; day <= cap; day++) {
+          const from = new Date(a.getFullYear(), a.getMonth(), day).getTime();
+          // v5.40: wheel mode shows EVERY day number - no more compressed
+          // colliding ticks; the user swipes through the month instead.
+          push(from, from + 86_400_000, String(day),
+            new Date(from).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }));
+        }
+      } else {
+        const a = new Date(anchor);
+        const cap = a.getFullYear() === now.getFullYear() ? now.getMonth() : 11;
+        for (let m = 0; m <= cap; m++) {
+          const from = new Date(a.getFullYear(), m, 1).getTime();
+          const to = new Date(a.getFullYear(), m + 1, 1).getTime();
+          // v5.40: full month names - the wheel gives them room.
+          push(from, to, MONTHS[m],
+            `${MONTHS[m]} ${a.getFullYear()}`);
+        }
       }
-    } else if (netPeriod === 'M') {
-      for (let i = 4; i >= 0; i--) {
-        const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-        const next = new Date(now.getFullYear(), now.getMonth() - i + 1, 1);
-        out.push({ label: MONTHS[d.getMonth()], value: Math.max(netBetween(d.getTime(), next.getTime()), 0) });
+      return pts;
+    };
+    const pts = pointsFor(trendAnchor);
+    const total = pts.reduce((acc, x) => acc + x.value, 0);
+    // Previous FULL period for the change chip.
+    const a = new Date(trendAnchor);
+    const prevAnchor = trendRange === 'W'
+      ? trendAnchor - 7 * 86_400_000
+      : trendRange === 'M'
+        ? new Date(a.getFullYear(), a.getMonth() - 1, 15).getTime()
+        : new Date(a.getFullYear() - 1, 6, 1).getTime();
+    const prevTotal = pointsFor(prevAnchor).reduce((acc, x) => acc + x.value, 0);
+    const changePct = prevTotal !== 0 ? ((total - prevTotal) / Math.abs(prevTotal)) * 100 : null;
+    // Period label + whether the forward chevron has anywhere to go.
+    const ws = weekStartOf(trendAnchor);
+    const fmtShort = (d: Date) => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    const isCurrent = trendRange === 'W'
+      ? weekStartOf(Date.now()).getTime() === ws.getTime()
+      : trendRange === 'M'
+        ? a.getFullYear() === now.getFullYear() && a.getMonth() === now.getMonth()
+        : a.getFullYear() === now.getFullYear();
+    const periodLabel = trendRange === 'W'
+      ? (isCurrent ? 'This week' : `${fmtShort(ws)} – ${fmtShort(new Date(ws.getFullYear(), ws.getMonth(), ws.getDate() + 6))}`)
+      : trendRange === 'M'
+        ? `${['January','February','March','April','May','June','July','August','September','October','November','December'][a.getMonth()]} ${a.getFullYear()}`
+        : String(a.getFullYear());
+    // v5.43: period bounds so the In/Out/Net chips sync to this view.
+    const from = trendRange === 'W'
+      ? weekStartOf(trendAnchor).getTime()
+      : trendRange === 'M'
+        ? new Date(a.getFullYear(), a.getMonth(), 1).getTime()
+        : new Date(a.getFullYear(), 0, 1).getTime();
+    const to = trendRange === 'W'
+      ? from + 7 * 86_400_000
+      : trendRange === 'M'
+        ? new Date(a.getFullYear(), a.getMonth() + 1, 1).getTime()
+        : new Date(a.getFullYear() + 1, 0, 1).getTime();
+    return { pts, total, changePct, periodLabel, isCurrent, from, to };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [transactions, trendMetric, trendRange, trendAnchor]);
+
+  // v5.40: the back chevron stops at the earliest transaction's period -
+  // no time-traveling into empty years the dropdown doesn't even list.
+  const earliestTs = useMemo(
+    () => (transactions.length
+      ? transactions.reduce((a2, x) => Math.min(a2, x.timestamp), Number.MAX_SAFE_INTEGER)
+      : Date.now()),
+    [transactions],
+  );
+  const canGoBack = useMemo(() => {
+    const a = new Date(trendAnchor);
+    const e = new Date(earliestTs);
+    if (trendRange === 'W') return weekStartOf(trendAnchor).getTime() > weekStartOf(earliestTs).getTime();
+    if (trendRange === 'M') {
+      return a.getFullYear() > e.getFullYear()
+        || (a.getFullYear() === e.getFullYear() && a.getMonth() > e.getMonth());
+    }
+    return a.getFullYear() > e.getFullYear();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trendAnchor, trendRange, earliestTs]);
+
+  const shiftPeriod = (dir: -1 | 1) => {
+    setTrendScrub(null);
+    setPeriodMenu(false);
+    const a = new Date(trendAnchor);
+    if (trendRange === 'W') setTrendAnchor(trendAnchor + dir * 7 * 86_400_000);
+    else if (trendRange === 'M') setTrendAnchor(new Date(a.getFullYear(), a.getMonth() + dir, 15).getTime());
+    else setTrendAnchor(new Date(a.getFullYear() + dir, 6, 1).getTime());
+  };
+  const pickRange = (r: 'W' | 'M' | 'Y') => {
+    setTrendRange(r); setTrendAnchor(Date.now()); setTrendScrub(null); setPeriodMenu(false);
+  };
+  // Dropdown options: every month (or year) from the earliest transaction to
+  // now, newest first, so "view a specific month/year" is one tap.
+  const periodOptions = useMemo(() => {
+    const now = new Date();
+    const earliest = transactions.length
+      ? transactions.reduce((a2, x) => Math.min(a2, x.timestamp), Number.MAX_SAFE_INTEGER)
+      : Date.now();
+    const e = new Date(earliest);
+    const out: { label: string; ts: number }[] = [];
+    if (trendRange === 'M') {
+      const cur = new Date(now.getFullYear(), now.getMonth(), 1);
+      const stop = new Date(e.getFullYear(), e.getMonth(), 1);
+      const d = new Date(cur);
+      while (d.getTime() >= stop.getTime() && out.length < 36) {
+        out.push({
+          label: `${['January','February','March','April','May','June','July','August','September','October','November','December'][d.getMonth()]} ${d.getFullYear()}`,
+          ts: new Date(d.getFullYear(), d.getMonth(), 15).getTime(),
+        });
+        d.setMonth(d.getMonth() - 1);
       }
-    } else {
-      for (let i = 4; i >= 0; i--) {
-        const y = now.getFullYear() - i;
-        out.push({ label: String(y), value: Math.max(netBetween(new Date(y, 0, 1).getTime(), new Date(y + 1, 0, 1).getTime()), 0) });
+    } else if (trendRange === 'Y') {
+      for (let y = now.getFullYear(); y >= e.getFullYear() && out.length < 12; y--) {
+        out.push({ label: String(y), ts: new Date(y, 6, 1).getTime() });
       }
     }
     return out;
+  }, [transactions, trendRange]);
+  // v5.41 (owner's #3): Cents reads the visible period and says what it
+  // sees - same quiet deterministic voice as the Home and Wallet strips.
+  const trendNote = useMemo(() => {
+    const pts = trend.pts;
+    if (!pts.length || pts.every((x) => x.value === 0 && x.ghost === 0)) return null;
+    const unit = trendRange === 'W' ? 'week' : trendRange === 'M' ? 'month' : 'year';
+    const where = trend.isCurrent ? `this ${unit}` : trendRange === 'Y' ? `in ${trend.periodLabel}` : `that ${unit}`;
+    const p = trend.changePct;
+    // v5.42: the comparison clause knows whether you're in the red - "40%
+    // ahead, keep the pace" while negative read like a bad joke.
+    const pctBit = (inRed: boolean) => {
+      if (p == null || !Number.isFinite(p)) return '';
+      const far = Math.abs(p) > 999;
+      const amt = far ? '' : `${Math.abs(p).toFixed(0)}% `;
+      if (trendMetric === 'spent') {
+        return p >= 0
+          ? ` That's ${far ? 'far ' : amt}more than the previous ${unit} - worth a peek at what changed.`
+          : ` That's ${amt}less than the previous ${unit}. Nice trim, keep it going.`;
+      }
+      if (inRed) {
+        return p >= 0
+          ? ` Still, that's ${far ? 'well ' : amt}better than the previous ${unit} - you're climbing out.`
+          : ` And it's ${amt}deeper than the previous ${unit} - a small course-correct now beats a big one later.`;
+      }
+      return p >= 0
+        ? ` That's ${far ? 'well ' : amt}ahead of the previous ${unit}. Keep the pace.`
+        : ` That's ${amt}behind the previous ${unit} - a small course-correct now beats a big one later.`;
+    };
+    if (trendMetric === 'spent') {
+      const peak = pts.reduce((a2, b) => (b.value > a2.value ? b : a2), pts[0]);
+      const peakBit = peak.value > 0 ? `, ${peak.sub} was the biggest at ${peso(peak.value)}` : '';
+      return `You've spent ${peso(trend.total)} ${where}${peakBit}.${pctBit(false)}`;
+    }
+    if (trend.total < 0) {
+      const worst = pts.reduce((a2, b) => (b.value < a2.value ? b : a2), pts[0]);
+      const worstBit = worst.value < 0 ? ` ${worst.sub} took the biggest bite (${peso(Math.abs(worst.value))}).` : '';
+      return `You're ${peso(Math.abs(trend.total))} in the red ${where}.${worstBit}${pctBit(true)}`;
+    }
+    const best = pts.reduce((a2, b) => (b.value > a2.value ? b : a2), pts[0]);
+    const bestBit = best.value > 0 ? `, ${best.sub} did the heavy lifting (+${peso(best.value)})` : '';
+    return `You're ${peso(trend.total)} up ${where}${bestBit}.${pctBit(false)}`;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [transactions, netPeriod]);
-  const netSub = { D: 'Last 7 days', W: 'Last 5 weeks', M: 'Last 5 months', Y: 'Last 5 years' }[netPeriod];
-  const hasNetData = netSeries.some((m) => m.value > 0);
+  }, [trend, trendMetric, trendRange]);
 
-  // M5.27: pagination window over the filtered ledger (15 rows per page).
+  // v5.43 (owner decision a): the In/Out/Net chips read the SAME period the
+  // Trends chart is showing - one tab, one story. Exports keep mirroring the
+  // active filter via `totals`, unchanged.
+  const periodTotals = useMemo(() => {
+    let income = 0, spent = 0;
+    for (const x of transactions) {
+      if (x.timestamp < trend.from || x.timestamp >= trend.to) continue;
+      if (x.isIncome) income += x.amount; else spent += x.amount;
+    }
+    return { income, spent, net: income - spent };
+  }, [transactions, trend.from, trend.to]);
+
+  const scrubbed = trendScrub != null && trendScrub < trend.pts.length ? trend.pts[trendScrub] : null;
+  const hasNetData = transactions.length > 0;
+
+  // v5.44 (owner call): long ledgers PAGE - the ‹ 1 2 3 4 5 › pager from
+  // M5.27 stays, now over the redesigned timeline.
+  const PAGE_SIZE = 15;
+  const [page, setPage] = useState(0);
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const safePage = Math.min(page, totalPages - 1);
   const pageSlice = useMemo(
     () => filtered.slice(safePage * PAGE_SIZE, (safePage + 1) * PAGE_SIZE),
     [filtered, safePage],
   );
-  useEffect(() => { setPage(0); }, [filter, query]); // new view starts at page 1
+  useEffect(() => { setPage(0); }, [filter, query, catFilter, acctFilter]);
+  // v5.45 (owner): the pager scales with the list - first and last page
+  // always visible, a window around the current one, ellipsis for the gaps:
+  // 1 … 6 7 8 … 23. Seven or fewer pages just show them all.
+  const pageItems = useMemo<(number | 'gap')[]>(() => {
+    if (totalPages <= 7) return Array.from({ length: totalPages }, (_, i) => i);
+    const items: (number | 'gap')[] = [0];
+    const start = Math.max(1, safePage - 1);
+    const end = Math.min(totalPages - 2, safePage + 1);
+    if (start > 1) items.push('gap');
+    for (let i = start; i <= end; i++) items.push(i);
+    if (end < totalPages - 2) items.push('gap');
+    items.push(totalPages - 1);
+    return items;
+  }, [safePage, totalPages]);
 
   // Group the visible page by day for the list.
-  const grouped = useMemo(() => {
-    const map = new Map<string, Transaction[]>();
-    for (const tx of pageSlice) {
-      const key = dayLabel(tx.timestamp);
-      const arr = map.get(key) ?? [];
-      arr.push(tx);
-      map.set(key, arr);
+  // v5.43: the timeline - day groups carrying their net, with month
+  // dividers (label + that month's spend from the FULL filtered set) when
+  // scrolling crosses into an older month.
+  const timeline = useMemo(() => {
+    const monthSpent = new Map<string, number>();
+    for (const tx of filtered) {
+      if (tx.isIncome) continue;
+      const d = new Date(tx.timestamp);
+      const mk = `${d.getFullYear()}-${d.getMonth()}`;
+      monthSpent.set(mk, (monthSpent.get(mk) ?? 0) + tx.amount);
     }
-    return Array.from(map.entries());
-  }, [pageSlice]);
-
-  // Page numbers: a window of up to five, current centered where possible.
-  const pageNumbers = useMemo(() => {
-    const start = Math.max(0, Math.min(safePage - 2, totalPages - 5));
-    return Array.from({ length: Math.min(5, totalPages) }, (_, i) => start + i);
-  }, [safePage, totalPages]);
+    type Item =
+      | { type: 'month'; key: string; label: string; spent: number }
+      | { type: 'day'; key: string; label: string; net: number; txs: Transaction[] };
+    const items: Item[] = [];
+    let curMonth: string | null = null;
+    let firstMonth: string | null = null;
+    let curDay: string | null = null;
+    for (const tx of pageSlice) {
+      const d = new Date(tx.timestamp);
+      const mk = `${d.getFullYear()}-${d.getMonth()}`;
+      if (firstMonth === null) firstMonth = mk;
+      if (mk !== curMonth) {
+        curMonth = mk;
+        curDay = null;
+        if (mk !== firstMonth) {
+          items.push({
+            type: 'month', key: `m-${mk}`,
+            label: `${MONTHS[d.getMonth()].toUpperCase()} ${d.getFullYear()}`,
+            spent: monthSpent.get(mk) ?? 0,
+          });
+        }
+      }
+      const dk = dayLabel(tx.timestamp);
+      if (dk !== curDay) {
+        curDay = dk;
+        items.push({ type: 'day', key: `d-${mk}-${dk}`, label: dk, net: 0, txs: [] });
+      }
+      const day = items[items.length - 1] as Extract<Item, { type: 'day' }>;
+      day.txs.push(tx);
+      day.net += tx.isIncome ? tx.amount : -tx.amount;
+    }
+    return items;
+  }, [pageSlice, filtered]);
 
   // ---- Export ----
   // Files are named SAVECENTS-{REPORT|INCOME|EXPENSES}-DD-MM-YYYY.{ext}
@@ -345,48 +730,287 @@ export default function AnalyticsScreen() {
       >
         <View style={styles.titleRow}>
           <View style={{ flex: 1 }}>
-            <Text style={styles.title}>Analytics</Text>
+            <Text style={styles.title}>Transactions</Text>
             <Text style={styles.subtitle}>See where your money really goes</Text>
           </View>
-          <View style={styles.titleBadge}>
-            <Ionicons name="stats-chart" size={22} color={t.emerald} />
-          </View>
+          <Pressable style={styles.titleBadge} onPress={() => setExportMenu(true)} accessibilityLabel="Export">
+            <Ionicons name="download-outline" size={21} color={t.emerald} />
+          </Pressable>
         </View>
+        {/* v5.44 (chunk 3): export lives in the header now */}
+        <Modal visible={exportMenu} transparent animationType="fade" onRequestClose={() => setExportMenu(false)}>
+          <Pressable style={styles.trendMenuScrim} onPress={() => setExportMenu(false)}>
+            <Pressable style={styles.trendMenuPop} onPress={() => {}}>
+              <Text style={styles.trendMenuTitle}>Export</Text>
+              <Pressable
+                style={[styles.trendMenuItem, styles.trendMenuDivider]}
+                disabled={exporting !== null}
+                onPress={() => { setExportMenu(false); exportCSV(); }}
+              >
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                  <Ionicons name="grid-outline" size={16} color={t.emerald} />
+                  <Text style={styles.trendMenuText}>{exporting === 'csv' ? 'Preparing…' : 'CSV spreadsheet'}</Text>
+                </View>
+              </Pressable>
+              <Pressable
+                style={styles.trendMenuItem}
+                disabled={exporting !== null}
+                onPress={() => { setExportMenu(false); exportPDF(); }}
+              >
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                  <Ionicons name="document-text" size={16} color={t.emerald} />
+                  <Text style={styles.trendMenuText}>{exporting === 'pdf' ? 'Preparing…' : 'PDF report'}</Text>
+                </View>
+              </Pressable>
+              <Text style={styles.exportMenuHint}>
+                Follows your current search and filters ({filtered.length} transaction{filtered.length === 1 ? '' : 's'}).
+              </Text>
+            </Pressable>
+          </Pressable>
+        </Modal>
 
         {/* Summary strip */}
         <View style={styles.statRow}>
-          <StatPill styles={styles} t={t} icon="arrow-down-circle" label="In" value={peso(totals.income)} color={t.emerald} />
-          <StatPill styles={styles} t={t} icon="arrow-up-circle" label="Out" value={peso(totals.spent)} color={t.red} />
-          <StatPill styles={styles} t={t} icon="leaf" label="Net" value={peso(totals.net)} color={totals.net >= 0 ? t.emerald : t.red} />
+          <StatPill styles={styles} t={t} icon="arrow-down-circle" label="In" value={peso(periodTotals.income)} color={t.emerald} />
+          <StatPill styles={styles} t={t} icon="arrow-up-circle" label="Out" value={peso(periodTotals.spent)} color={t.red} />
+          <StatPill styles={styles} t={t} icon="leaf" label="Net" value={peso(periodTotals.net)} color={periodTotals.net >= 0 ? t.emerald : t.red} />
         </View>
 
         {/* Charts */}
         {hasNetData && (
+          <>
+            {/* v5.43: Cents reads the graph - ABOVE the card, standalone,
+                exactly like the Home strip sits above its content. */}
+            {!!trendNote && (
+              <View style={styles.trendCentsBlock}>
+                <View style={styles.trendCentsHead}>
+                  <Image source={require('../../assets/cents-mark.png')} style={{ width: 13, height: 13 }} resizeMode="contain" />
+                  <Text style={styles.trendCentsEyebrow}>CENTS</Text>
+                </View>
+                <Text style={styles.trendCentsMsg}>{trendNote}</Text>
+              </View>
+            )}
           <GlassCard style={{ marginBottom: 14 }}>
-            <View style={styles.insightHead}>
-              <CardHeader styles={styles} t={t} icon="stats-chart" title="Net saved" sub={netSub} />
-              <View style={styles.periodSeg}>
-                {(['D', 'W', 'M', 'Y'] as const).map((p) => (
+            {/* v5.40: rebuilt metric switcher - sized to its labels, nothing
+                clips or overlaps. */}
+            <View style={styles.trendTopRow}>
+              <Text style={styles.trendEyebrow}>TRENDS</Text>
+              <View style={styles.trendSwitch}>
+                {([['net', 'Net saved'], ['spent', 'Spent']] as const).map(([k, lbl]) => (
                   <Pressable
-                    key={p}
-                    style={[styles.periodBtn, netPeriod === p && styles.periodBtnActive]}
-                    onPress={() => setNetPeriod(p)}
+                    key={k}
+                    style={[styles.trendSwitchBtn, trendMetric === k && styles.trendSwitchBtnActive]}
+                    onPress={() => { setTrendMetric(k); setTrendScrub(null); }}
                   >
-                    <Text style={[styles.periodText, netPeriod === p && { color: t.onEmerald }]}>{p}</Text>
+                    <Text style={[styles.trendSwitchText, trendMetric === k && { color: t.onEmerald }]} numberOfLines={1}>
+                      {lbl}
+                    </Text>
                   </Pressable>
                 ))}
               </View>
             </View>
-            <MoMBars key={netPeriod} data={netSeries} height={100} />
-            <Text style={styles.chartFootnote}>Computed from your real transactions</Text>
+            {/* Hero: period total + change chip; swaps to the pinned day
+                while a scrub selection is live. */}
+            <View style={styles.trendHero}>
+              {scrubbed ? (
+                <>
+                  <Text style={[styles.trendAmount, scrubbed.value < 0 && { color: t.red }]}>
+                    {scrubbed.value < 0 ? `-${peso(Math.abs(scrubbed.value))}` : peso(scrubbed.value)}
+                  </Text>
+                  <View style={styles.trendChipNeutral}>
+                    <Text style={styles.trendChipNeutralText}>{scrubbed.sub}</Text>
+                  </View>
+                </>
+              ) : (
+                <>
+                  <Text style={[styles.trendAmount, trend.total < 0 && { color: t.red }]}>
+                    {trend.total < 0 ? `-${peso(Math.abs(trend.total))}` : peso(trend.total)}
+                  </Text>
+                  {trend.changePct != null && Number.isFinite(trend.changePct) && (() => {
+                    // v5.41 (owner's #2): direction is not virtue. Spending
+                    // going UP is bad news and reads red; on Net saved, up
+                    // is genuinely good. Silly percents cap at >999%.
+                    const up = trend.changePct >= 0;
+                    const good = trendMetric === 'net' ? up : !up;
+                    const pctText = Math.abs(trend.changePct) > 999
+                      ? `${up ? '+' : '-'}999%+`
+                      : `${up ? '+' : ''}${trend.changePct.toFixed(1)}%`;
+                    return (
+                      <View style={[styles.trendChip, { backgroundColor: good ? t.emeraldTint : t.redTint }]}>
+                        <Ionicons name={up ? 'trending-up' : 'trending-down'} size={12} color={good ? t.emerald : t.red} />
+                        <Text style={[styles.trendChipText, { color: good ? t.emerald : t.red }]}>{pctText}</Text>
+                      </View>
+                    );
+                  })()}
+                </>
+              )}
+            </View>
+            {/* Period stepper: ‹ label › — the label opens the month/year
+                picker on those ranges. */}
+            <View style={styles.trendNavRow}>
+              <Pressable
+                style={[styles.trendNavBtn, !canGoBack && { opacity: 0.3 }]}
+                onPress={() => shiftPeriod(-1)}
+                disabled={!canGoBack}
+                hitSlop={6}
+              >
+                <Ionicons name="chevron-back" size={16} color={t.emerald} />
+              </Pressable>
+              <Pressable
+                style={[styles.trendPeriodLabelWrap, periodMenu && { backgroundColor: t.emeraldTint, borderColor: t.emeraldBorder }]}
+                disabled={trendRange === 'W'}
+                onPress={() => setPeriodMenu((v) => !v)}
+              >
+                <Text style={styles.trendPeriodLabel}>{trend.periodLabel}</Text>
+                {trendRange !== 'W' && (
+                  <Ionicons name={periodMenu ? 'chevron-up' : 'chevron-down'} size={13} color={t.emerald} />
+                )}
+              </Pressable>
+              <Pressable
+                style={[styles.trendNavBtn, trend.isCurrent && { opacity: 0.3 }]}
+                onPress={() => shiftPeriod(1)}
+                disabled={trend.isCurrent}
+                hitSlop={6}
+              >
+                <Ionicons name="chevron-forward" size={16} color={t.emerald} />
+              </Pressable>
+            </View>
+            {/* v5.40: the picker FLOATS - tap-outside closes, the chart
+                never moves underneath it. */}
+            <Modal visible={periodMenu} transparent animationType="fade" onRequestClose={() => setPeriodMenu(false)}>
+              <Pressable style={styles.trendMenuScrim} onPress={() => setPeriodMenu(false)}>
+                <Pressable style={styles.trendMenuPop} onPress={() => {}}>
+                  <Text style={styles.trendMenuTitle}>
+                    {trendRange === 'M' ? 'Jump to a month' : 'Jump to a year'}
+                  </Text>
+                  <ScrollView style={{ maxHeight: 320 }} showsVerticalScrollIndicator>
+                    {periodOptions.map((o, i) => (
+                      <Pressable
+                        key={o.ts}
+                        style={[styles.trendMenuItem, i < periodOptions.length - 1 && styles.trendMenuDivider]}
+                        onPress={() => { setTrendAnchor(o.ts); setTrendScrub(null); setPeriodMenu(false); }}
+                      >
+                        <Text style={styles.trendMenuText}>{o.label}</Text>
+                        {trend.periodLabel === o.label && <Ionicons name="checkmark-circle" size={15} color={t.emerald} />}
+                      </Pressable>
+                    ))}
+                  </ScrollView>
+                </Pressable>
+              </Pressable>
+            </Modal>
+            <TrendChart
+              points={trend.pts}
+              ghost={trend.pts.map((x) => x.ghost)}
+              height={150}
+              color={trendMetric === 'spent' ? t.red : t.emerald}
+              onScrub={setTrendScrub}
+              pointGap={trendRange === 'M' ? 48 : trendRange === 'Y' ? 58 : undefined}
+              resetKey={`${trendMetric}-${trendRange}-${trend.periodLabel}`}
+            />
+            {/* Range pills, bottom center like the reference */}
+            <View style={styles.trendRangeRow}>
+              {([['W', 'Weekly'], ['M', 'Monthly'], ['Y', 'Yearly']] as const).map(([k, lbl]) => (
+                <Pressable
+                  key={k}
+                  style={[styles.trendRangeBtn, trendRange === k && styles.trendRangeBtnActive]}
+                  onPress={() => pickRange(k)}
+                >
+                  <Text style={[styles.trendRangeText, trendRange === k && { color: t.onEmerald }]}>{lbl}</Text>
+                </Pressable>
+              ))}
+            </View>
           </GlassCard>
+          </>
         )}
-        {categories.length > 0 && (
-          <GlassCard style={{ marginBottom: 20 }}>
-            <CardHeader styles={styles} t={t} icon="flame" title="Spend by budget" sub="This month" />
-            <SpendBars data={categories.map((c) => ({ name: c.name, spent: c.spent, limit: c.limit }))} />
-          </GlassCard>
-        )}
+        {categories.length > 0 && (() => {
+          // v5.44 (owner decision b): the card respects the bill/envelope
+          // split. A PAID bill is a win (emerald, "Paid" chip) - red is
+          // reserved for genuinely over-limit SPENDING envelopes. Tapping a
+          // row filters the ledger below to that budget.
+          const bills = categories
+            .filter((c) => !!c.dueDate || !!c.creditAccountId)
+            .sort((a, b) => b.spent - a.spent);
+          const envs = categories
+            .filter((c) => !c.dueDate && !c.creditAccountId)
+            .sort((a, b) => b.spent - a.spent);
+          const topEnv = envs[0];
+          const CAP = 5;
+          const showBills = spendShowAll ? bills : bills.slice(0, CAP);
+          const showEnvs = spendShowAll ? envs : envs.slice(0, CAP);
+          const hiddenCount = (bills.length - showBills.length) + (envs.length - showEnvs.length);
+          const row = (c: Category, kind: 'bill' | 'env') => {
+            const pct = c.limit > 0 ? Math.min(c.spent / c.limit, 1) : 0;
+            const settled = kind === 'bill' && c.limit > 0 && c.spent >= c.limit;
+            const over = kind === 'env' && c.limit > 0 && c.spent >= c.limit;
+            const barColor = over ? t.red : t.emerald;
+            const active = catFilter === c.name;
+            return (
+              <Pressable
+                key={c.id}
+                style={[styles.spendRow, active && { backgroundColor: t.emeraldTint, borderRadius: 12 }]}
+                onPress={() => setCatFilter(active ? null : c.name)}
+              >
+                <View style={styles.spendTop}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 }}>
+                    <Text style={styles.spendName} numberOfLines={1}>{c.name}</Text>
+                    {settled && (
+                      <View style={styles.spendPaidChip}>
+                        <Text style={styles.spendPaidText}>Paid</Text>
+                      </View>
+                    )}
+                    {kind === 'env' && topEnv && c.id === topEnv.id && topEnv.spent > 0 && (
+                      <View style={styles.spendTopChip}>
+                        <Ionicons name="flame" size={9} color={t.red} />
+                        <Text style={styles.spendTopText}>TOP</Text>
+                      </View>
+                    )}
+                  </View>
+                  <Text style={[styles.spendAmt, over && { color: t.red }]}>
+                    {peso(c.spent)} / {peso(c.limit)}
+                  </Text>
+                </View>
+                <View style={styles.spendTrack}>
+                  <View style={[styles.spendFill, { width: `${Math.max(pct * 100, 2)}%`, backgroundColor: barColor }]} />
+                </View>
+              </Pressable>
+            );
+          };
+          return (
+            <GlassCard style={{ marginBottom: 20 }}>
+              <CardHeader styles={styles} t={t} icon="flame" title="Spend by budget" sub="This month · tap a row to filter the ledger" />
+              {showBills.length > 0 && (
+                <>
+                  <View style={styles.spendSectionHead}>
+                    <Text style={styles.spendSectionLabel}>BILLS</Text>
+                    <Text style={styles.spendSectionTotal}>
+                      {peso(bills.reduce((a, c) => a + c.spent, 0))} of {peso(bills.reduce((a, c) => a + c.limit, 0))} paid
+                    </Text>
+                  </View>
+                  {showBills.map((c) => row(c, 'bill'))}
+                </>
+              )}
+              {showEnvs.length > 0 && (
+                <>
+                  <View style={[styles.spendSectionHead, showBills.length > 0 && { marginTop: 10 }]}>
+                    <Text style={styles.spendSectionLabel}>SPENDING</Text>
+                    <Text style={styles.spendSectionTotal}>
+                      {peso(envs.reduce((a, c) => a + c.spent, 0))} of {peso(envs.reduce((a, c) => a + c.limit, 0))} spent
+                    </Text>
+                  </View>
+                  {showEnvs.map((c) => row(c, 'env'))}
+                </>
+              )}
+              {(hiddenCount > 0 || spendShowAll) && (
+                <Pressable style={styles.spendMoreBtn} onPress={() => setSpendShowAll((v) => !v)}>
+                  <Text style={styles.spendMoreText}>
+                    {spendShowAll ? 'Show less' : `Show all · ${hiddenCount} more`}
+                  </Text>
+                  <Ionicons name={spendShowAll ? 'chevron-up' : 'chevron-down'} size={13} color={t.emerald} />
+                </Pressable>
+              )}
+            </GlassCard>
+          );
+        })()}
 
         {/* Search + filters */}
         <Text style={styles.eyebrow}>TRANSACTIONS</Text>
@@ -407,6 +1031,7 @@ export default function AnalyticsScreen() {
             </Pressable>
           )}
         </View>
+        <Text style={styles.syncNote}>{trend.periodLabel} · synced with the chart</Text>
         <View style={styles.filterRow}>
           {FILTERS.map((f) => {
             const active = filter === f.key;
@@ -423,9 +1048,78 @@ export default function AnalyticsScreen() {
           <View style={{ flex: 1 }} />
           <Text style={styles.countText}>{filtered.length} result{filtered.length === 1 ? '' : 's'}</Text>
         </View>
+        {/* v5.43: budget + source pickers (floating, house pattern) */}
+        <View style={styles.pickerRow}>
+          <Pressable
+            style={[styles.pickerChip, catFilter != null && styles.pickerChipOn]}
+            onPress={() => setCatMenu(true)}
+          >
+            <Ionicons name="pricetag-outline" size={13} color={catFilter != null ? t.onEmerald : t.emerald} />
+            <Text style={[styles.pickerChipText, catFilter != null && { color: t.onEmerald }]} numberOfLines={1}>
+              {catFilter ?? 'All budgets'}
+            </Text>
+            <Ionicons name="chevron-down" size={12} color={catFilter != null ? t.onEmerald : t.emerald} />
+          </Pressable>
+          <Pressable
+            style={[styles.pickerChip, acctFilter != null && styles.pickerChipOn]}
+            onPress={() => setAcctMenu(true)}
+          >
+            <Ionicons name="wallet-outline" size={13} color={acctFilter != null ? t.onEmerald : t.emerald} />
+            <Text style={[styles.pickerChipText, acctFilter != null && { color: t.onEmerald }]} numberOfLines={1}>
+              {acctFilter ? (accounts.find((a) => a.id === acctFilter)?.name ?? 'Source') : 'All sources'}
+            </Text>
+            <Ionicons name="chevron-down" size={12} color={acctFilter != null ? t.onEmerald : t.emerald} />
+          </Pressable>
+        </View>
+        <Modal visible={catMenu} transparent animationType="fade" onRequestClose={() => setCatMenu(false)}>
+          <Pressable style={styles.trendMenuScrim} onPress={() => setCatMenu(false)}>
+            <Pressable style={styles.trendMenuPop} onPress={() => {}}>
+              <Text style={styles.trendMenuTitle}>Filter by budget</Text>
+              <ScrollView style={{ maxHeight: 340 }} showsVerticalScrollIndicator>
+                <Pressable style={[styles.trendMenuItem, styles.trendMenuDivider]} onPress={() => { setCatFilter(null); setCatMenu(false); }}>
+                  <Text style={styles.trendMenuText}>All budgets</Text>
+                  {catFilter == null && <Ionicons name="checkmark-circle" size={15} color={t.emerald} />}
+                </Pressable>
+                {categories.map((c, i) => (
+                  <Pressable
+                    key={c.id}
+                    style={[styles.trendMenuItem, i < categories.length - 1 && styles.trendMenuDivider]}
+                    onPress={() => { setCatFilter(c.name); setCatMenu(false); }}
+                  >
+                    <Text style={styles.trendMenuText}>{c.name}</Text>
+                    {catFilter === c.name && <Ionicons name="checkmark-circle" size={15} color={t.emerald} />}
+                  </Pressable>
+                ))}
+              </ScrollView>
+            </Pressable>
+          </Pressable>
+        </Modal>
+        <Modal visible={acctMenu} transparent animationType="fade" onRequestClose={() => setAcctMenu(false)}>
+          <Pressable style={styles.trendMenuScrim} onPress={() => setAcctMenu(false)}>
+            <Pressable style={styles.trendMenuPop} onPress={() => {}}>
+              <Text style={styles.trendMenuTitle}>Filter by source</Text>
+              <ScrollView style={{ maxHeight: 340 }} showsVerticalScrollIndicator>
+                <Pressable style={[styles.trendMenuItem, styles.trendMenuDivider]} onPress={() => { setAcctFilter(null); setAcctMenu(false); }}>
+                  <Text style={styles.trendMenuText}>All sources</Text>
+                  {acctFilter == null && <Ionicons name="checkmark-circle" size={15} color={t.emerald} />}
+                </Pressable>
+                {accounts.map((a, i) => (
+                  <Pressable
+                    key={a.id}
+                    style={[styles.trendMenuItem, i < accounts.length - 1 && styles.trendMenuDivider]}
+                    onPress={() => { setAcctFilter(a.id); setAcctMenu(false); }}
+                  >
+                    <Text style={styles.trendMenuText}>{a.nickname ? `${a.name} ${a.nickname}` : a.name}</Text>
+                    {acctFilter === a.id && <Ionicons name="checkmark-circle" size={15} color={t.emerald} />}
+                  </Pressable>
+                ))}
+              </ScrollView>
+            </Pressable>
+          </Pressable>
+        </Modal>
 
-        {/* Grouped list */}
-        {grouped.length === 0 ? (
+        {/* v5.43: the timeline - month dividers, day nets, upgraded rows */}
+        {timeline.length === 0 ? (
           <GlassCard style={{ marginBottom: 20 }}>
             <View style={styles.empty}>
               <View style={styles.emptyBadge}>
@@ -433,48 +1127,65 @@ export default function AnalyticsScreen() {
               </View>
               <Text style={styles.emptyTitle}>Nothing here</Text>
               <Text style={styles.emptyText}>
-                {query ? `No transactions match "${query}".` : 'Log an expense with Cents and it will show up here.'}
+                {query || catFilter || acctFilter ? 'Nothing matches these filters.' : 'Log an expense with Cents and it will show up here.'}
               </Text>
             </View>
           </GlassCard>
         ) : (
-          grouped.map(([day, txs]) => (
-            <View key={day} style={{ marginBottom: 14 }}>
-              <Text style={styles.dayLabel}>{day}</Text>
+          timeline.map((item) => item.type === 'month' ? (
+            <View key={item.key} style={styles.monthHead}>
+              <Text style={styles.monthLabel}>{item.label}</Text>
+              <Text style={styles.monthTotal}>spent {peso(item.spent)}</Text>
+            </View>
+          ) : (
+            <View key={item.key} style={{ marginBottom: 14 }}>
+              <View style={styles.dayHead}>
+                <Text style={styles.dayLabel}>{item.label}</Text>
+                <Text style={[styles.dayNet, { color: item.net >= 0 ? t.emerald : t.textMuted }]}>
+                  {item.net >= 0 ? '+' : '-'}{peso(Math.abs(item.net))}
+                </Text>
+              </View>
               <GlassCard pad={8}>
-                {txs.map((tx, i, arr) => (
-                  <Pressable
-                    key={tx.id}
-                    onPress={() => setEditing(tx)}
-                    style={({ pressed }) => [styles.txRow, i < arr.length - 1 && styles.txDivider, pressed && { backgroundColor: t.inputFill }]}
-                  >
-                    <View style={[styles.txIcon, tx.isIncome && { backgroundColor: t.emeraldTint, borderColor: t.emeraldBorder }]}>
-                      <Ionicons
-                        name={tx.isIncome ? 'trending-up' : 'pricetag'}
-                        size={16}
-                        color={tx.isIncome ? t.emerald : t.textMuted}
-                      />
-                    </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.txName} numberOfLines={1}>{tx.description}</Text>
-                      <Text style={styles.txCat} numberOfLines={1}>
-                        {tx.categoryId}
-                        {' · '}
-                        {accounts.find((a) => a.id === tx.accountId)?.name ?? new Date(tx.timestamp).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}
-                      </Text>
-                    </View>
-                    <Text style={[styles.txAmount, tx.isIncome && { color: t.emerald }]}>
-                      {tx.isIncome ? '+' : '-'}{peso(tx.amount)}
-                    </Text>
-                    <Ionicons name="chevron-forward" size={14} color={t.textFaint} />
-                  </Pressable>
-                ))}
+                {item.txs.map((tx, i, arr) => {
+                  const cat = categories.find((c) => c.name.toLowerCase() === tx.categoryId.toLowerCase());
+                  const isBillPay = !tx.isIncome && !!cat?.creditAccountId;
+                  const icon = tx.isIncome ? 'trending-up' : tx.goalId ? 'flag' : ((cat?.icon as any) || 'pricetag');
+                  return (
+                    <Pressable
+                      key={tx.id}
+                      onPress={() => setEditing(tx)}
+                      style={({ pressed }) => [styles.txRow, i < arr.length - 1 && styles.txDivider, pressed && { backgroundColor: t.inputFill }]}
+                    >
+                      <View style={[styles.txIcon, (tx.isIncome || tx.goalId) && { backgroundColor: t.emeraldTint, borderColor: t.emeraldBorder }]}>
+                        <Ionicons name={icon} size={16} color={tx.isIncome || tx.goalId ? t.emerald : t.textMuted} />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.txName} numberOfLines={1}>{tx.description}</Text>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                          {isBillPay && <Ionicons name="card" size={11} color={t.emerald} />}
+                          <Text style={styles.txCat} numberOfLines={1}>
+                            {tx.isIncome ? 'Income' : tx.categoryId}
+                            {' · '}
+                            {accounts.find((a) => a.id === tx.accountId)?.name ?? 'No source'}
+                          </Text>
+                        </View>
+                      </View>
+                      <View style={{ alignItems: 'flex-end' }}>
+                        <Text style={[styles.txAmount, tx.isIncome && { color: t.emerald }]}>
+                          {tx.isIncome ? '+' : '-'}{peso(tx.amount)}
+                        </Text>
+                        <Text style={styles.txTime}>
+                          {new Date(tx.timestamp).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}
+                        </Text>
+                      </View>
+                    </Pressable>
+                  );
+                })}
               </GlassCard>
             </View>
           ))
         )}
 
-        {/* M5.27: pager for long ledgers - ‹ 1 2 3 4 5 › */}
         {totalPages > 1 && (
           <View style={styles.pagerRow}>
             <Pressable
@@ -483,7 +1194,9 @@ export default function AnalyticsScreen() {
             >
               <Ionicons name="chevron-back" size={15} color={t.textMuted} />
             </Pressable>
-            {pageNumbers.map((n) => (
+            {pageItems.map((n, idx) => n === 'gap' ? (
+              <Text key={`gap-${idx}`} style={styles.pagerGap}>…</Text>
+            ) : (
               <Pressable
                 key={n}
                 style={[styles.pagerBtn, n === safePage && styles.pagerBtnOn]}
@@ -502,29 +1215,13 @@ export default function AnalyticsScreen() {
         )}
 
         {/* Export */}
-        <Text style={styles.eyebrow}>EXPORT</Text>
-        <View style={styles.exportRow}>
-          <Pressable style={{ flex: 1 }} onPress={exportCSV} disabled={exporting !== null}>
-            <View style={[styles.exportBtn, exporting === 'csv' && { opacity: 0.6 }]}>
-              <Ionicons name="grid-outline" size={18} color={t.emerald} />
-              <Text style={styles.exportText}>{exporting === 'csv' ? 'Preparing…' : 'CSV'}</Text>
-            </View>
-          </Pressable>
-          <Pressable style={{ flex: 1 }} onPress={exportPDF} disabled={exporting !== null}>
-            <View style={[styles.exportBtnSolid, { backgroundColor: t.emerald }, exporting === 'pdf' && { opacity: 0.7 }]}>
-              <Ionicons name="document-text" size={18} color={t.onEmerald} />
-              <Text style={[styles.exportText, { color: t.onEmerald }]}>{exporting === 'pdf' ? 'Preparing…' : 'PDF report'}</Text>
-            </View>
-          </Pressable>
-        </View>
-        <Text style={styles.exportHint}>Exports follow your current search and filters ({filtered.length} transaction{filtered.length === 1 ? '' : 's'}).</Text>
-
         <View style={{ height: 140 }} />
       </ScrollView>
 
       {editing && (
         <TxEditor
           t={t}
+          onCreateBudget={(name, limit, icon, base) => addBudget(name, limit, icon, base)}
           styles={styles}
           tx={editing}
           categories={categories}
@@ -757,6 +1454,71 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   periodBtnActive: { backgroundColor: t.emerald },
   periodText: { color: t.textMuted, fontSize: 11, fontWeight: '800' },
   chartFootnote: { color: t.textFaint, fontSize: 11, marginTop: 10 },
+  // v5.39: trend card
+  trendTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 },
+  trendEyebrow: { ...type.eyebrow, color: t.textFaint },
+  trendHero: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 10 },
+  trendAmount: { color: t.textPrimary, fontSize: 30, fontWeight: '800', ...type.money },
+  trendChip: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 9, paddingVertical: 5, borderRadius: 999 },
+  trendChipText: { fontSize: 12, fontWeight: '800' },
+  trendChipNeutral: {
+    paddingHorizontal: 9, paddingVertical: 5, borderRadius: 999,
+    backgroundColor: t.inputFill, borderWidth: 1, borderColor: t.borderSoft,
+  },
+  trendChipNeutralText: { color: t.textMuted, fontSize: 12, fontWeight: '700' },
+  trendNavRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 },
+  trendNavBtn: {
+    width: 30, height: 30, borderRadius: 10, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: t.inputFill, borderWidth: 1, borderColor: t.borderSoft,
+  },
+  trendPeriodLabelWrap: {
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    paddingHorizontal: 12, paddingVertical: 7, borderRadius: 12,
+    borderWidth: 1, borderColor: 'transparent',
+  },
+  trendPeriodLabel: { color: t.textPrimary, fontSize: 13.5, fontWeight: '800' },
+  // v5.41: Cents strip (mirrors the dashboard centsBlock)
+  trendCentsBlock: {
+    marginBottom: 14, borderRadius: 16, padding: 14,
+    backgroundColor: t.mode === 'dark' ? 'rgba(46,158,91,0.10)' : t.sageSoft,
+  },
+  trendCentsHead: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 6 },
+  trendCentsEyebrow: { ...type.eyebrow, fontSize: 10, color: t.textFaint },
+  trendCentsMsg: { color: t.textMuted, fontSize: 12.5, lineHeight: 18 },
+  // v5.40: metric switcher sized to its labels
+  trendSwitch: {
+    flexDirection: 'row', gap: 4, padding: 3, borderRadius: 999,
+    backgroundColor: t.inputFill, borderWidth: 1, borderColor: t.borderSoft,
+  },
+  trendSwitchBtn: { paddingHorizontal: 13, paddingVertical: 7, borderRadius: 999 },
+  trendSwitchBtnActive: { backgroundColor: t.emerald },
+  trendSwitchText: { color: t.textMuted, fontSize: 12.5, fontWeight: '800' },
+  // v5.40: floating month/year picker
+  trendMenuScrim: {
+    flex: 1, backgroundColor: 'rgba(10,14,12,0.45)',
+    alignItems: 'center', justifyContent: 'center', padding: 28,
+  },
+  trendMenuPop: {
+    alignSelf: 'stretch', maxWidth: 420, borderRadius: 20,
+    backgroundColor: t.menuBg, borderWidth: 1, borderColor: t.border,
+    paddingVertical: 6, overflow: 'hidden',
+    shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 24, shadowOffset: { width: 0, height: 10 },
+    elevation: 12,
+  },
+  trendMenuTitle: {
+    ...type.eyebrow, color: t.textFaint,
+    paddingHorizontal: 16, paddingTop: 10, paddingBottom: 6,
+  },
+  trendMenuItem: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 14, paddingVertical: 12 },
+  trendMenuDivider: { borderBottomWidth: 1, borderBottomColor: t.borderSoft },
+  trendMenuText: { color: t.textPrimary, fontSize: 13.5, fontWeight: '700' },
+  trendRangeRow: { flexDirection: 'row', justifyContent: 'center', gap: 8, marginTop: 12 },
+  trendRangeBtn: {
+    paddingHorizontal: 16, paddingVertical: 8, borderRadius: 999,
+    backgroundColor: t.inputFill, borderWidth: 1, borderColor: t.borderSoft,
+  },
+  trendRangeBtnActive: { backgroundColor: t.emerald, borderColor: t.emerald },
+  trendRangeText: { color: t.emerald, fontSize: 12.5, fontWeight: '800' },
   searchBox: {
     flexDirection: 'row', alignItems: 'center', gap: 9,
     height: 48, borderRadius: 16, paddingHorizontal: 14,
@@ -787,6 +1549,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   },
   pagerBtnOn: { backgroundColor: t.emerald, borderColor: t.emerald },
   pagerText: { color: t.textMuted, fontSize: 13.5, fontWeight: '700' },
+  pagerGap: { color: t.textFaint, fontSize: 13.5, fontWeight: '700', paddingHorizontal: 2 },
   pagerTextOn: { color: t.onEmerald },
 
   // M5.26 receipt sheet
@@ -804,10 +1567,109 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   txName: { color: t.textPrimary, fontSize: 15.5, fontWeight: '700' },
   txCat: { color: t.textMuted, fontSize: 12.5, marginTop: 2 },
   txAmount: { color: t.textPrimary, fontSize: 15.5, fontWeight: '800', ...type.money },
+  // v5.43: timeline
+  txTime: { color: t.textFaint, fontSize: 10.5, marginTop: 2 },
+  syncNote: { color: t.textFaint, fontSize: 11, textAlign: 'right', marginTop: -6, marginBottom: 10 },
+  dayHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6, paddingHorizontal: 2 },
+  dayNet: { fontSize: 12, fontWeight: '800', ...type.money },
+  monthHead: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    marginTop: 6, marginBottom: 12, paddingTop: 12, paddingHorizontal: 2,
+    borderTopWidth: 1, borderTopColor: t.borderSoft,
+  },
+  monthLabel: { ...type.eyebrow, color: t.textFaint },
+  monthTotal: { color: t.textMuted, fontSize: 11.5, fontWeight: '700', ...type.money },
+  pickerRow: { flexDirection: 'row', gap: 8, marginBottom: 12 },
+  pickerChip: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    paddingVertical: 9, paddingHorizontal: 10, borderRadius: 999,
+    backgroundColor: t.inputFill, borderWidth: 1, borderColor: t.borderSoft,
+  },
+  pickerChipOn: { backgroundColor: t.emerald, borderColor: t.emerald },
+  pickerChipText: { color: t.emerald, fontSize: 12, fontWeight: '800', maxWidth: 120 },
+  showMoreBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    paddingVertical: 12, borderRadius: 14, marginBottom: 20,
+    backgroundColor: t.inputFill, borderWidth: 1, borderColor: t.borderSoft,
+  },
+  showMoreText: { color: t.emerald, fontSize: 12.5, fontWeight: '800' },
   empty: { alignItems: 'center', padding: 18, gap: 10 },
   emptyTitle: { color: t.textPrimary, fontSize: 16, fontWeight: '800', marginTop: 4 },
   emptyText: { color: t.textMuted, fontSize: 13, textAlign: 'center', lineHeight: 18 },
   exportRow: { flexDirection: 'row', gap: 12 },
+  exportMenuHint: { color: t.textFaint, fontSize: 11, paddingHorizontal: 16, paddingTop: 8, paddingBottom: 12 },
+  // v5.45: TxEditor budget dropdown
+  txbSelect: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    borderRadius: 14, paddingHorizontal: 12, paddingVertical: 11,
+    backgroundColor: t.inputFill, borderWidth: 1, borderColor: t.borderSoft,
+  },
+  txbSelectText: { color: t.textPrimary, fontSize: 13.5, fontWeight: '700', flex: 1 },
+  txbIcon: {
+    width: 26, height: 26, borderRadius: 9, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: t.emeraldTint, borderWidth: 1, borderColor: t.emeraldBorder,
+  },
+  txbMenu: {
+    marginTop: 8, borderRadius: 14, borderWidth: 1, borderColor: t.border,
+    backgroundColor: t.menuBg, overflow: 'hidden',
+  },
+  txbSearchRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 12,
+    borderBottomWidth: 1, borderBottomColor: t.borderSoft,
+  },
+  txbSearchInput: { flex: 1, height: 38, color: t.textPrimary, fontSize: 13 },
+  txbRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 12, paddingVertical: 10 },
+  txbDivider: { borderBottomWidth: 1, borderBottomColor: t.borderSoft },
+  txbRowText: { color: t.textPrimary, fontSize: 13, fontWeight: '700', flex: 1 },
+  txbEmpty: { color: t.textMuted, fontSize: 12, padding: 12 },
+  txbCreateRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 12, paddingVertical: 11,
+    borderTopWidth: 1, borderTopColor: t.borderSoft, backgroundColor: t.emeraldTint,
+  },
+  txbCreateIcon: {
+    width: 22, height: 22, borderRadius: 8, alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, borderColor: t.emeraldBorder,
+  },
+  txbCreateText: { color: t.emerald, fontSize: 12.5, fontWeight: '800' },
+  txbCreateTitle: { ...type.eyebrow, fontSize: 10, color: t.textFaint },
+  txbCreateInput: {
+    height: 42, borderRadius: 12, paddingHorizontal: 12, color: t.textPrimary, fontSize: 13,
+    backgroundColor: t.inputFill, borderWidth: 1, borderColor: t.borderSoft,
+  },
+  txbBaseChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 10, paddingVertical: 7,
+    borderRadius: 999, backgroundColor: t.inputFill, borderWidth: 1, borderColor: t.borderSoft,
+  },
+  txbBaseText: { color: t.emerald, fontSize: 11.5, fontWeight: '700' },
+  txbCancel: {
+    paddingHorizontal: 14, height: 40, borderRadius: 12, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: t.inputFill, borderWidth: 1, borderColor: t.borderSoft,
+  },
+  txbCancelText: { color: t.textMuted, fontSize: 12.5, fontWeight: '700' },
+  txbGo: { flex: 1, height: 40, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
+  txbGoText: { color: t.onEmerald, fontSize: 12.5, fontWeight: '800' },
+  // v5.44: spend by budget sections
+  spendSectionHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6, marginTop: 2 },
+  spendSectionLabel: { ...type.eyebrow, fontSize: 10, color: t.textFaint },
+  spendSectionTotal: { color: t.textMuted, fontSize: 11, fontWeight: '700', ...type.money },
+  spendRow: { paddingVertical: 8, paddingHorizontal: 4 },
+  spendTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 5 },
+  spendName: { color: t.textPrimary, fontSize: 13.5, fontWeight: '700', flexShrink: 1 },
+  spendAmt: { color: t.textMuted, fontSize: 12, fontWeight: '700', ...type.money },
+  spendTrack: { height: 7, borderRadius: 4, backgroundColor: t.trackBg, overflow: 'hidden' },
+  spendFill: { height: '100%', borderRadius: 4 },
+  spendPaidChip: {
+    paddingHorizontal: 7, paddingVertical: 2, borderRadius: 999,
+    backgroundColor: t.emeraldTint, borderWidth: 1, borderColor: t.emeraldBorder,
+  },
+  spendPaidText: { color: t.emerald, fontSize: 9.5, fontWeight: '800' },
+  spendTopChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 3,
+    paddingHorizontal: 7, paddingVertical: 2, borderRadius: 999, backgroundColor: t.redTint,
+  },
+  spendTopText: { color: t.red, fontSize: 9.5, fontWeight: '800' },
+  spendMoreBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, paddingTop: 10 },
+  spendMoreText: { color: t.emerald, fontSize: 12.5, fontWeight: '800' },
   exportBtn: {
     height: 52, borderRadius: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
     backgroundColor: t.emeraldTint, borderWidth: 1, borderColor: t.emeraldBorder,

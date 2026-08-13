@@ -16,8 +16,11 @@ export interface SplitEmailPayload {
   payerName: string;  // who covered the bill
   title: string;      // what the bill was
   totalFmt: string;   // preformatted, e.g. P1,240.00
-  shareFmt: string;   // preformatted share
+  shareFmt: string;   // preformatted share (per person: already their own)
   headcount: number;
+  // Planner v5: false = custom amounts, so the copy must not claim the total
+  // was divided equally. Absent = even (pre-v5 senders and worker).
+  even?: boolean;
 }
 
 export async function sendSplitEmail(p: SplitEmailPayload): Promise<'sent' | 'failed'> {
@@ -52,7 +55,9 @@ export function splitMailto(p: SplitEmailPayload): string {
     '',
     `${p.userName} split the bill for ${p.title}.`,
     '',
-    `The math: ${p.totalFmt} divided by ${p.headcount} people = ${p.shareFmt} each.`,
+    p.even === false
+      ? `The bill came to ${p.totalFmt}, split by what each person got.`
+      : `The math: ${p.totalFmt} divided by ${p.headcount} people = ${p.shareFmt} each.`,
     `Your share: ${p.shareFmt}`,
     '',
     `${p.payerName} covered the whole bill. Once you have paid your part, message ${p.payerName} directly to let them know.`,
@@ -78,11 +83,15 @@ export interface RemoteSplitInput {
   userName: string;
   title: string;
   totalFmt: string;
-  shareFmt: string;
+  shareFmt: string; // even share; on custom bills a display fallback only
   headcount: number;
-  people: { id: string; name: string }[];
+  // Planner v5: per-person shareFmt so the manage page shows each person
+  // their own amount. Older workers ignore the extra field harmlessly.
+  people: { id: string; name: string; shareFmt?: string }[];
   includeUser: boolean;
   userLabel: string;
+  userShareFmt?: string; // the user's own share when included (custom)
+  even?: boolean;        // false = custom amounts; absent = even
 }
 
 export async function createRemoteSplit(input: RemoteSplitInput): Promise<{ token: string; url: string; emailed: boolean } | null> {

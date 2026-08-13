@@ -221,6 +221,24 @@ const Bubble = memo(function Bubble({ msg, styles, t, confirmAction, profile, is
             <Text style={styles.centsText}>{msg.prompt}</Text>
           </>
         );
+      case 'batchConfirmation':
+        // M5.34: one card for the whole plan - numbered steps, single yes.
+        return (
+          <>
+            <CardLabel styles={styles} t={t} icon="list" label={msg.lang === 'fil' ? 'Buong plano' : 'The plan'} />
+            <Text style={styles.centsText}>{msg.prompt}</Text>
+            <View style={styles.batchSteps}>
+              {msg.steps.map((step, i) => (
+                <View key={i} style={styles.batchStepRow}>
+                  <View style={styles.batchStepNum}>
+                    <Text style={styles.batchStepNumText}>{i + 1}</Text>
+                  </View>
+                  <Text style={styles.batchStepText}>{step}</Text>
+                </View>
+              ))}
+            </View>
+          </>
+        );
       case 'receiptScan':
         return (
           <>
@@ -252,8 +270,9 @@ const Bubble = memo(function Bubble({ msg, styles, t, confirmAction, profile, is
 
   const fil = 'lang' in msg && msg.lang === 'fil';
   const isNegotiate = msg.type === 'negotiation' || msg.type === 'consultItem';
+  const isBatch = msg.type === 'batchConfirmation';
   const noLabel = fil ? 'Huwag muna' : isNegotiate ? "Don't buy" : 'Cancel';
-  const yesLabel = fil ? 'Sige' : isNegotiate ? 'Proceed' : 'Confirm';
+  const yesLabel = isBatch ? (fil ? 'Sige, lahat' : 'Do it all') : fil ? 'Sige' : isNegotiate ? 'Proceed' : 'Confirm';
 
   return (
     <View style={styles.bubbleRow}>
@@ -740,6 +759,16 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   confirmText: { color: t.onEmerald, fontWeight: '800', fontSize: 14 },
   declineBtn: { backgroundColor: t.inputFill, borderWidth: 1, borderColor: t.borderSoft },
   declineText: { color: t.textMuted, fontWeight: '700', fontSize: 14 },
+  // M5.34: batch plan card steps
+  batchSteps: { marginTop: 10, gap: 8 },
+  batchStepRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 9 },
+  batchStepNum: {
+    width: 20, height: 20, borderRadius: 7, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: t.emeraldTint, borderWidth: 1, borderColor: t.emeraldBorder, marginTop: 1,
+  },
+  batchStepNumText: { color: t.emerald, fontSize: 11, fontWeight: '800' },
+  batchStepText: { color: t.textPrimary, fontSize: 13.5, lineHeight: 19, flex: 1 },
+
   handledChip: {
     flexDirection: 'row', alignItems: 'center', gap: 5, alignSelf: 'flex-start',
     borderRadius: 999, paddingHorizontal: 10, paddingVertical: 5, marginTop: 12, borderWidth: 1,

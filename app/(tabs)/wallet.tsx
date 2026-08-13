@@ -9,7 +9,7 @@
 // relying on KeyboardAvoidingView, so fields sit flush above the keys.
 import React, { useMemo, useRef, useState } from 'react';
 import {
-  Animated, Image, Keyboard, LayoutAnimation, Modal, PanResponder, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, UIManager, View,
+  Animated, Dimensions, Image, Keyboard, LayoutAnimation, Modal, PanResponder, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, UIManager, View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -191,7 +191,7 @@ function StackCard({ acct, inst, t, styles, index, expanded, onToggle, onMenu, o
                     <View style={[styles.cardFill, { width: `${Math.max((1 - used) * 100, 3)}%`, backgroundColor: used >= 0.9 ? '#FCA5A5' : 'rgba(255,255,255,0.92)' }]} />
                   </View>
                   <Text style={styles.cardCredit} numberOfLines={1}>
-                    {fmt(acct.balance)} used of {fmt(acct.creditLimit!)} limit{acct.billingDay ? ` · bills ${ordinal(acct.billingDay)}` : ''}
+                    {fmt(acct.balance)} used of {fmt(acct.creditLimit!)} limit{acct.billingDay ? ` · bills ${ordinal(acct.billingDay)}` : ''}{acct.dueDay ? ` · due ${ordinal(acct.dueDay)}` : ''}
                   </Text>
                 </>
               )}
@@ -368,6 +368,7 @@ export default function WalletScreen() {
   const [newBalance, setNewBalance] = useState('');
   const [newLimit, setNewLimit] = useState('');
   const [newBillDay, setNewBillDay] = useState('');
+  const [newDueDay, setNewDueDay] = useState('');
   const [newCurrency, setNewCurrency] = useState('PHP');
   const [newNickname, setNewNickname] = useState('');
 
@@ -383,7 +384,7 @@ export default function WalletScreen() {
 
   const resetAdd = () => {
     setPick(null); setCustomMode(false); setCustomName('');
-    setNewKind('debit'); setNewBalance(''); setNewLimit(''); setNewBillDay('');
+    setNewKind('debit'); setNewBalance(''); setNewLimit(''); setNewBillDay(''); setNewDueDay('');
     setNewCurrency(homeCode); setNewNickname('');
     setInstSearch(''); setInstFilter('all');
   };
@@ -399,6 +400,7 @@ export default function WalletScreen() {
       balance: newKind === 'credit' ? Math.max(limit - Math.min(entered, limit), 0) : entered,
       creditLimit: newKind === 'credit' ? limit : undefined,
       billingDay: newKind === 'credit' ? parseInt(newBillDay, 10) || undefined : undefined,
+      dueDay: newKind === 'credit' ? parseInt(newDueDay, 10) || undefined : undefined,
       network: institutionFor(country, pick.name)?.network ?? 'none',
       currency: newCurrency === homeCode ? undefined : newCurrency,
       nickname: newNickname,
@@ -414,6 +416,7 @@ export default function WalletScreen() {
   const [eBalance, setEBalance] = useState('');
   const [eLimit, setELimit] = useState('');
   const [eBillDay, setEBillDay] = useState('');
+  const [eDueDay, setEDueDay] = useState('');
   const [eNetwork, setENetwork] = useState<'visa' | 'mastercard' | 'none'>('none');
   const [eCurrency, setECurrency] = useState('PHP');
   const [eNickname, setENickname] = useState('');
@@ -426,6 +429,7 @@ export default function WalletScreen() {
     setENickname(a.nickname ?? '');
     setELimit(a.creditLimit ? String(a.creditLimit) : '');
     setEBillDay(a.billingDay ? String(a.billingDay) : '');
+    setEDueDay(a.dueDay ? String(a.dueDay) : '');
     setENetwork(a.network ?? institutionFor(country, a.name)?.network ?? 'none');
     setEditing(a);
   };
@@ -449,6 +453,9 @@ export default function WalletScreen() {
       ...(editing.kind === 'credit' ? {
         creditLimit: limit,
         billingDay: Math.min(Math.max(parseInt(eBillDay, 10) || editing.billingDay || 1, 1), 31),
+        // Wallet v5: the day the statement must be PAID; drives the bill
+        // budget's due date. Cleared by leaving the field empty.
+        dueDay: eDueDay ? Math.min(Math.max(parseInt(eDueDay, 10) || 1, 1), 31) : undefined,
       } : {}),
     });
     Haptics.selectionAsync().catch(() => {});
@@ -469,6 +476,12 @@ export default function WalletScreen() {
   );
 
   // ── Exact keyboard tracking: sheets sit flush above the keys ───────────
+  // v5.35 (owner screenshot: gap between the sheet and the keys): the
+  // reported endCoordinates.height over-lifts when an input accessory bar
+  // (MoneyInput's chips) inflates the frame and focus then moves to a plain
+  // field. Measuring what the keyboard actually COVERS (window height minus
+  // its top edge) is the goals.tsx-proven math and stays exact through
+  // accessory changes, floating keyboards and frame animations.
   const [kbH, setKbH] = useState(0);
   const kbHRef = useRef(0);
   React.useEffect(() => {
@@ -480,8 +493,16 @@ export default function WalletScreen() {
       LayoutAnimation.configureNext(LayoutAnimation.create(duration, 'keyboard' as any, 'opacity'));
       setKbH(h);
     };
+    const coveredHeight = (e: any): number => {
+      if (Platform.OS === 'ios') {
+        const winH = Dimensions.get('window').height;
+        const top = e?.endCoordinates?.screenY ?? winH;
+        return Math.max(0, winH - top);
+      }
+      return Math.max(e?.endCoordinates?.height ?? 0, 0);
+    };
     const sub1 = Keyboard.addListener(showEvt as any, (e: any) =>
-      apply(Math.max(e?.endCoordinates?.height ?? 0, 0), e?.duration || 220));
+      apply(coveredHeight(e), e?.duration || 220));
     const sub2 = Keyboard.addListener(hideEvt as any, (e: any) => apply(0, e?.duration || 220));
     return () => { sub1.remove(); sub2.remove(); };
   }, []);
@@ -851,6 +872,19 @@ export default function WalletScreen() {
                         keyboardType="number-pad"
                         returnKeyType="done"
                       />
+                      <Text style={styles.fieldLabel}>BILL DUE DAY OF MONTH</Text>
+                      <TextInput
+                        style={styles.dayInput}
+                        placeholder="25"
+                        placeholderTextColor={t.textFaint}
+                        value={newDueDay}
+                        onChangeText={(v) => setNewDueDay(v.replace(/[^\d]/g, '').slice(0, 2))}
+                        keyboardType="number-pad"
+                        returnKeyType="done"
+                      />
+                      <Text style={styles.dueDayHint}>
+                        On the billing day, whatever the card owes becomes a bill in your Budgets, due this day, reminders on.
+                      </Text>
                     </>
                   )}
 
@@ -941,6 +975,19 @@ export default function WalletScreen() {
                       keyboardType="number-pad"
                       returnKeyType="done"
                     />
+                    <Text style={styles.fieldLabel}>BILL DUE DAY OF MONTH</Text>
+                    <TextInput
+                      style={styles.dayInput}
+                      value={eDueDay}
+                      onChangeText={(v) => setEDueDay(v.replace(/[^\d]/g, '').slice(0, 2))}
+                      placeholder="25"
+                      placeholderTextColor={t.textFaint}
+                      keyboardType="number-pad"
+                      returnKeyType="done"
+                    />
+                    <Text style={styles.dueDayHint}>
+                      On the billing day, whatever the card owes becomes a bill in your Budgets, due this day, reminders on.
+                    </Text>
                   </>
                 )}
 
@@ -1194,6 +1241,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     backgroundColor: t.inputFill, borderWidth: 1, borderColor: t.border, marginBottom: 12,
     ...type.money,
   },
+  dueDayHint: { color: t.textMuted, fontSize: 11.5, lineHeight: 16, marginTop: -6, marginBottom: 12, paddingHorizontal: 2 },
   typeRow: { flexDirection: 'row', gap: 8, marginBottom: 14 },
   typeBtn: {
     flex: 1, height: 44, borderRadius: radius.input, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7,

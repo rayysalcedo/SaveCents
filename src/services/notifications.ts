@@ -254,8 +254,18 @@ export function notifyBudgetCrossings(prev: Category[], next: Category[], enable
     if (c.limit <= 0) continue;
     const old = before.get(c.id);
     if (!old || old.limit <= 0) continue;
-    const wasBelow = old.spent / old.limit < 0.9;
     const ratio = c.spent / c.limit;
+    // v5.35: a DATED budget is a bill. Reaching the limit means it's PAID -
+    // that's an announcement, not an alarm - and the 90 percent warning is
+    // just payment-progress noise there, so bills skip it entirely.
+    if (c.dueDate) {
+      const wasBelowFull = old.spent / old.limit < 1;
+      if (ratio >= 1 && wasBelowFull) {
+        fireNow(`${c.name} paid in full`, `${peso(c.spent)} settled for the month. One less thing.`);
+      }
+      continue;
+    }
+    const wasBelow = old.spent / old.limit < 0.9;
     if (!wasBelow || ratio < 0.9) continue;
     const pct = Math.min(Math.round(ratio * 100), 100);
     const remaining = Math.max(c.limit - c.spent, 0);

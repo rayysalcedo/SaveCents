@@ -19,6 +19,10 @@ export type CentsIntent =
   | 'WithdrawFromGoal'
   | 'AddAccount'
   | 'SetAccountBalance'
+  | 'RemoveTransaction'
+  | 'UpdateTransaction'
+  | 'SetBudgetDue'
+  | 'ShowTransactions'
   | 'CategoryMismatch'
   | 'Unknown';
 
@@ -31,6 +35,7 @@ export interface CentsSubAction {
   item: string;
   accountName?: string; // payment source/destination if the user said one; '' otherwise
   targetDate?: string; // AddGoal deadline, ISO YYYY-MM-DD or ''
+  dueDay?: number; // SetBudgetDue: day of month (1-31); 0 when not applicable
 }
 
 export interface CentsResult {
@@ -40,6 +45,7 @@ export interface CentsResult {
   item: string;
   accountName?: string; // M5.22: source/destination account named by the user ('' if none)
   targetDate?: string; // M5.28: goal deadline as ISO YYYY-MM-DD ('' when not stated)
+  dueDay?: number; // M5.34: SetBudgetDue day of month (1-31); 0 when not applicable
   reply: string; // conversational answer, used for Unknown / general questions
   details: string; // scan analysis: what Cents saw and figured out (may be '')
   priceIsEstimate: boolean; // true when amount was estimated, not read off the photo
@@ -95,7 +101,7 @@ const modelCache = new Map<string, ReturnType<typeof getGenerativeModel>>();
 
 const INTENT_ENUM = [
   'LogTransaction', 'PrePurchaseCheck', 'AddCategory', 'AddIncome', 'AddGoal', 'AddToGoal', 'WithdrawFromGoal', 'AddAccount', 'SetAccountBalance',
-  'RemoveCategory', 'UpdateBudget', 'CategoryMismatch', 'Unknown',
+  'RemoveCategory', 'UpdateBudget', 'RemoveTransaction', 'UpdateTransaction', 'SetBudgetDue', 'ShowTransactions', 'CategoryMismatch', 'Unknown',
 ];
 
 const responseSchema = Schema.object({
@@ -106,6 +112,7 @@ const responseSchema = Schema.object({
     item: Schema.string(),
     accountName: Schema.string(),
     targetDate: Schema.string(),
+    dueDay: Schema.number(),
     reply: Schema.string(),
     details: Schema.string(),
     priceIsEstimate: Schema.boolean(),
@@ -124,6 +131,7 @@ const responseSchema = Schema.object({
           item: Schema.string(),
           accountName: Schema.string(),
           targetDate: Schema.string(),
+          dueDay: Schema.number(),
         },
       }),
     }),
@@ -156,7 +164,19 @@ function getModel(name: string) {
 // knows who it's talking to, what they have, and what was just said.
 function buildSharedContext(ctx: CentsContext): string {
   const cats = ctx.categories
-    .map((c) => `${c.name}${c.category && c.category !== c.name ? ` [${c.category}]` : ''} (limit ${c.limit}, spent ${c.spent})`)
+    .map((c) => {
+      const base = `${c.name}${c.category && c.category !== c.name ? ` [${c.category}]` : ''}`;
+      // v5.38: bills (dated budgets) are labeled as such, with due info and
+      // paid state, so the brain distinguishes them from spending envelopes.
+      if (c.dueDate) {
+        const due = c.dueType === 'once'
+          ? `due ${new Date(c.dueDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`
+          : `due every ${c.dueDay ?? new Date(c.dueDate).getDate()}`;
+        const state = c.spent >= c.limit ? 'PAID' : `paid ${c.spent} of ${c.limit}`;
+        return `${base} (BILL ${c.limit}, ${due}, ${state})`;
+      }
+      return `${base} (spending limit ${c.limit}, spent ${c.spent})`;
+    })
     .join('; ');
   const goals = ctx.goals
     .map((g) => `${g.name} (target ${g.target}, saved ${g.current}, by ${g.date})`)
@@ -185,7 +205,7 @@ The user might speak English or Taglish (e.g. 'Kakabili ko lang ng dog food 800'
 ${buildSharedContext(ctx)}
 
 Extract the intent(s) from the user's message.
-Valid intents: "LogTransaction", "PrePurchaseCheck", "AddCategory", "RemoveCategory", "UpdateBudget", "AddIncome", "AddGoal", "AddToGoal", "WithdrawFromGoal", "AddAccount", "SetAccountBalance", "CategoryMismatch", "Unknown".
+Valid intents: "LogTransaction", "PrePurchaseCheck", "AddCategory", "RemoveCategory", "UpdateBudget", "AddIncome", "AddGoal", "AddToGoal", "WithdrawFromGoal", "AddAccount", "SetAccountBalance", "RemoveTransaction", "UpdateTransaction", "SetBudgetDue", "ShowTransactions", "CategoryMismatch", "Unknown".
 MULTI-STEP REQUESTS: a single message can ask for several things at once, e.g. "add a groceries budget of 9000 and log that receipt there" is TWO actions: AddCategory(Groceries, 9000) then LogTransaction(3670.97, Groceries). Fill 'actions' with EVERY requested action, in the order they should happen, each with its own intent/amount/categoryName/item. A later action may use a category created by an earlier action in the same list. Mirror the FIRST action into the top-level intent/amount/categoryName/item fields. If there is exactly one action, 'actions' has exactly one entry. For "Unknown", 'actions' is an empty list.
 REFERENCES TO THE CONVERSATION: when the user says "that receipt", "log it", "the item you scanned", "yun kanina" and similar, resolve the amount, item and store from the recent conversation above. Never ask again for a number that is already in the conversation.
 - For LogTransaction: extract 'amount', 'item' (what they bought), and 'categoryName', matching the closest existing budget by the MEANING of its name AND its [base category] (dog food goes to a pets budget, jeepney fare to transport, a Netflix payment to the "Netflix" budget, an electricity bill to a Utilities-based budget like "Meralco"). When several budgets share a base category, pick the one whose NAME fits the specific item; if none fits it specifically, use a general budget of that base category if one exists, otherwise "Others". 'categoryName' must always be a budget's exact NAME as listed, never a bracketed base category by itself. Only match when the fit is natural; if the fit would be a stretch or nothing fits, use "Others".
@@ -202,6 +222,12 @@ REFERENCES TO THE CONVERSATION: when the user says "that receipt", "log it", "th
 - For AddToGoal (set aside / add money to an EXISTING goal): 'amount' and 'item' = that goal's exact name from the goals list.
 - For WithdrawFromGoal (take money OUT of a goal, use savings: "get 5,000 from my Hong Kong savings", "bawiin yung 1,000 sa goal"): 'amount' and 'item' = that goal's exact name. MANDATORY: if they are withdrawing to PAY for something (tuition, a bill, the dog's medication), the SAME actions list MUST also contain that expense - forgetting the expense is a critical failure. Add it as a further action in the SAME list: LogTransaction with the real item ("tuition"), the right base-category budget (create it per the rule above if missing), and accountName = wherever the withdrawal money lands once known. Example: "remove 5,000 from my Computer goal because I need to pay tuition" and there is no Education-base budget → actions: WithdrawFromGoal(Computer, 5000), AddCategory(Education, 7500), LogTransaction(5000, Education, item "tuition").
 - For SetAccountBalance (the user STATES an account's current balance: "I have 5,000 in BPI now", "BPI has 5,000", "I sent money to BPI, there's 5,000 there"): 'accountName' = that account, 'amount' = the stated balance. A stated balance is SetAccountBalance; use AddIncome only for money RECEIVED (salary, got paid, someone sent money to the user). CANONICAL EXAMPLE OF A PAST FAILURE, never repeat it: OPEN QUESTION asked which account should fund a move; user said "add money to BPI, I have 5000 there"; the WRONG response was a text reply "I have updated your BPI balance" (nothing actually happened); the CORRECT response is intent SetAccountBalance(BPI, 5000) with an empty reply - the confirmation card and the app do the updating, and the waiting move resumes by itself after.
+- BILLS vs SPENDING budgets (the Budgets section has two tabs): a BILL is a budget WITH a due date (rent, utilities, subscriptions, credit card statements) - an obligation where spent reaching the limit means PAID, which is good. A SPENDING budget has no due date - a ceiling where the limit means stop. Never warn that a bill "hit its limit"; that means it is settled.
+- Creating budgets: when the user asks for a bill, mentions a due day, or names an obviously dated obligation ("add my internet bill, 1,500 every 5th"), use AddCategory WITH 'dueDay' set to the day of month (1-31) - the app makes it a dated bill with reminders on. A plain spending budget ("budget 3,000 for dining") is AddCategory with dueDay 0. If they call it a bill but give no day, ask which day of the month it is due in ONE short question instead of guessing.
+- For ShowTransactions (the user wants to SEE or FIND transactions, not change them: "show my Grab expenses", "find the jollibee ones", "ipakita ang mga gastos ko sa food"): 'item' = the search words, and 'categoryName' = the exact budget name IF they named one of their budgets ('' otherwise). The app filters the Transactions tab's ledger to match.
+- For RemoveTransaction (delete a logged transaction: "delete the jacket expense", "remove yesterday's 250 coffee", "burahin yung na-log na load"): 'item' = what the transaction was for (its name or category), and 'amount' = the stated amount when they said one (0 otherwise). The app finds the newest matching transaction and asks before deleting.
+- For UpdateTransaction (fix a logged transaction's amount: "the jacket was actually 1,200 not 1,500", "change the coffee to 180"): 'item' = what the transaction was for, 'amount' = the NEW correct amount. The app finds the newest matching transaction, shows old and new, and asks. A correction of a PENDING question is still CORRECTIONS WIN, not this intent; UpdateTransaction is for already-logged history.
+- For SetBudgetDue (give a budget a due date and reminders: "make rent due every 5th", "remind me about the Meralco bill on the 20th"): 'categoryName' = that budget's exact name, 'dueDay' = the day of month (1-31). Turning reminders OFF for a budget ("stop reminding me about rent") is also SetBudgetDue with dueDay 0.
 - Saying "I have updated/added/logged/created..." in 'reply' or 'speechReply' WITHOUT a matching action in 'actions' is a CRITICAL FAILURE. You never change anything by talking; only confirmed action cards change things.
 - For AddAccount (a NEW wallet/card/money source that is not in the Accounts list: "add my UnionBank card", "I paid with a card that isn't listed, it has 10,000 in it"): 'item' = the account's name, 'amount' = its current balance (0 if unknown). Combine with a LogTransaction (accountName = that new account) when they also want to log a purchase from it.
 - AMOUNTS ARE ALWAYS POSITIVE. Never output a negative amount: to reduce a goal use WithdrawFromGoal; to lower a budget use UpdateBudget.
@@ -222,7 +248,7 @@ REFERENCES TO THE CONVERSATION: when the user says "that receipt", "log it", "th
 - ASK FIRST, ALWAYS: actions only happen after the user confirms. When your response proposes an action, 'speechReply' must be a QUESTION asking permission ("Want me to log 10,000 pesos for the laptop under Others?") - NEVER speak as if the action already happened ("Got it, logging..."), and save any advice for 'coachNote'.
 - 'coachNote': ONE short coach line delivered only AFTER the user confirms: a specific insight or recommended next step tied to this action (spending pace, what is left of the relevant budget, a smarter alternative, a goal tie-in). Conversational, speakable (amounts as "10,000 pesos"), one sentence. '' when you have nothing genuinely useful to add.
 - VOICE MESSAGES: the user's message may arrive as an audio clip instead of text. If it does, put the EXACT transcription in 'transcript' (keep the original language and casual spelling, amounts as digits) and treat that transcription as the user's message for everything else. For text messages, 'transcript' is "".
-- APP MAP, so you never misdirect the user: Home tab = total balance, Today card, insights. Wallet tab = money sources and cards (add, edit balances, reorder). Goals and Budgets tab (flag icon) = savings goals and monthly budgets. Analytics tab = spending charts. Profile (avatar, top right of Home) = name, notifications, Cents voice and accent, theme. Cards/wallets are NEVER in "account settings" - they live in the Wallet tab. But when an action intent exists for the job, DO it via the action instead of sending the user somewhere.
+- APP MAP, so you never misdirect the user: Home tab = total balance, Today card, insights (the Savings insight is the same scrubbable line chart as the Transactions tab - tap or drag to pin a point). Wallet tab = money sources, debit cards and CREDIT cards (credit cards carry a limit, a billing day and a bill due day; on the billing day whatever is owed automatically becomes a "<Card> Bill" budget with that due date and reminders on, and paying that budget from another source pays the card down; to pay by chat, log an expense to the bill budget BY ITS NAME, e.g. \"log 8,450 for my BPI Bill from GCash\" - and if the bill budget ever gets deleted mid-cycle, the app recreates it automatically on the next Home visit with whatever is still owed). Planner tab (flag icon) opens with a Cents comment above the four section cards (it flags the next open bill with its due date, settled bills, a maxed spending budget, or the starred goal). It has FOUR sections: Goals (savings targets), Budgets (TWO tabs - Bills: dated obligations sorted by due date where full = PAID, credit card statements auto-land here, reminder-only, never auto-paid; and Spending: undated envelopes where full = stop; each tab has its own add button and totals), Split a bill (divide a charge evenly OR with custom per-person amounts, email each share, track who paid), and Lend (money lent out with due dates and 7-3-1 borrower reminders). Transactions tab (formerly Analytics; the bar-chart icon) = the transaction ledger (searchable, filterable by budget and by source account, day-grouped with daily nets and month dividers, paged with numbered page buttons, edit and delete by tapping a row (the editor's budget picker is a searchable dropdown with a \"Make this a budget\" shortcut that creates a budget prefilled from the transaction's name); export (CSV or PDF, following the active filters) lives behind the download icon in the header. The Spend by budget card splits into BILLS (paid = emerald with a Paid chip, a win) and SPENDING (red only when genuinely over limit; the TOP flame marks the biggest spender) and tapping any row filters the ledger to that budget; the In/Out/Net chips and the ledger read the SAME period the Trends chart is showing) plus the Trends chart: a line chart with Weekly, Monthly, and Yearly views and a Net saved / Spent toggle. Weekly fits on screen - tap or drag to pin a day. Monthly and Yearly are swipe-through timelines (every day number / full month name shown): swipe left-right to glide through the period, TAP a point to pin it, or HOLD briefly then drag to scrub the marker along the line; the pinned amount shows in a bubble and the card header. Chevrons step to past periods (stopping at the earliest transaction) and tapping the period label on Monthly/Yearly opens a popup to jump to a specific month or year. The Spent view draws in red (spending up = warning, not progress) while Net saved draws emerald; the faint grey line behind the main one is the other metric on the SAME scale, so toggling just swaps which is in front. Above the chart, a Cents comment summarizes the visible period (total, biggest day or month, change vs the previous period) with a short suggestion. Profile (avatar, top right of Home) = name, notifications, Cents voice and accent, theme. Cards/wallets are NEVER in "account settings" - they live in the Wallet tab. When an action intent exists for the job, DO it via the action instead of sending the user somewhere; creating splits and lends has no action yet, so for those point the user to the Planner tab honestly.
 - NEVER claim you noted, saved, created or changed anything yourself. Every change happens through an action the user confirms. If nothing you can do fits, say plainly what you cannot do and offer what you can.
 Always fill every field; use 0, "" or false when not applicable.`;
 }
@@ -323,12 +349,14 @@ async function generateStructured(parts: ContentPart[], system: string): Promise
           item: titleCase((a as CentsSubAction).item ?? ''),
           accountName: typeof (a as CentsSubAction).accountName === 'string' ? (a as CentsSubAction).accountName : '',
           targetDate: typeof (a as CentsSubAction).targetDate === 'string' ? (a as CentsSubAction).targetDate : '',
+          dueDay: typeof (a as CentsSubAction).dueDay === 'number' ? (a as CentsSubAction).dueDay : 0,
         }))
         .filter((a) => a.intent !== 'Unknown')
     : [];
   return {
     accountName: typeof parsed.accountName === 'string' ? parsed.accountName : '',
     targetDate: typeof parsed.targetDate === 'string' ? parsed.targetDate : '',
+    dueDay: typeof parsed.dueDay === 'number' ? parsed.dueDay : 0,
     intent: okIntent(parsed.intent),
     // (item/categoryName Title-Cased below via the spread overrides)
     amount: typeof parsed.amount === 'number' ? parsed.amount : 0,

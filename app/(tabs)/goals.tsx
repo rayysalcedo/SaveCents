@@ -14,7 +14,7 @@
 // notifications (25/50/75/100) were already wired through addToGoal.
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Alert, Animated, Dimensions, Easing, Keyboard, KeyboardAvoidingView, LayoutAnimation, Modal, Platform, Pressable, ScrollView, Share, StyleSheet, Text, TextInput, UIManager, View,
+  Alert, Animated, Dimensions, Easing, Image, Keyboard, KeyboardAvoidingView, LayoutAnimation, Modal, Platform, Pressable, ScrollView, Share, StyleSheet, Text, TextInput, UIManager, View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams } from 'expo-router';
@@ -23,16 +23,17 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import { GlassCard } from '../../src/components/GlassCard';
 import { MoneyInput } from '../../src/components/MoneyInput';
 import { TrajectoryCurve } from '../../src/components/Charts';
-import { Palette, radius, useTheme } from '../../src/theme/colors';
+import { Palette, radius, useTheme, type } from '../../src/theme/colors';
 import { useFinance } from '../../src/store/finance';
 import { CADENCE_NOUN, cadenceAsk, cadenceRate, goalPlan, paceLabel, weeklySavingsRate } from '../../src/utils/stats';
 import { useDragToDismiss } from '../../src/hooks/useDragToDismiss';
-import { Lend, peso, SaveCadence, SplitBill, uid } from '../../src/models/types';
+import { Lend, peso, SaveCadence, SplitBill, uid, Category } from '../../src/models/types';
 import { openLendMail, payloadFor, sendLendReminder } from '../../src/services/lend';
 import {
   createRemoteSplit, fetchRemoteSplitState, openSplitMail, pushRemoteSplitTick, remoteSplitUrl, sendSplitEmail, SplitEmailPayload,
 } from '../../src/services/split';
 import { BUDGET_CATEGORIES } from '../../src/data/countries';
+import { AccountSelect } from '../../src/components/AccountSelect';
 
 const CARD_W = Dimensions.get('window').width - 48;
 
@@ -88,6 +89,7 @@ export default function PlannerScreen() {
   // re-renders when data IT shows changes, not on every chat or sync tick.
   const goals = useFinance((s) => s.goals);
   const accounts = useFinance((s) => s.accounts);
+  const country = useFinance((s) => s.country);
   const categories = useFinance((s) => s.categories);
   const transactions = useFinance((s) => s.transactions);
   const selectedGoalId = useFinance((s) => s.selectedGoalId);
@@ -207,9 +209,12 @@ export default function PlannerScreen() {
   const [bError, setBError] = useState<string | null>(null);
   const [showBPicker, setShowBPicker] = useState(false);
 
-  const openNewBudget = () => {
+  // v5.38: the add button is segment-aware - Bills preset the due toggle
+  // on (a bill without a due date is not a bill), Spending preset it off.
+  // The sheet's own toggle still lets the user change their mind.
+  const openNewBudget = (flavor: 'bills' | 'spending' = 'spending') => {
     setEditingId(null); setPickedCat(null); setBName(''); setBLimit('');
-    setBHasDue(false); setBDueMode('monthly'); setBDueDay(new Date().getDate());
+    setBHasDue(flavor === 'bills'); setBDueMode('monthly'); setBDueDay(new Date().getDate());
     setBDate(new Date(Date.now() + 14 * 86400000)); setBRemind(true); setBAutoPay(false); setBAutoAcct(null); setBError(null); setShowBPicker(false);
     setBudgetSheet(true);
   };
@@ -264,7 +269,12 @@ export default function PlannerScreen() {
   const [sPayer, setSPayer] = useState('');
   const [sPayerEmail, setSPayerEmail] = useState('');
   const [sIncludeMe, setSIncludeMe] = useState(true);
-  const [sPeople, setSPeople] = useState<{ id: string; name: string; email: string }[]>([{ id: uid(), name: '', email: '' }]);
+  // Planner v5 (owner request): people are not always splitting evenly. In
+  // 'custom' each owing person gets their own amount and the payer covers
+  // whatever is left of the total.
+  const [sKind, setSKind] = useState<'even' | 'custom'>('even');
+  const [sMyShare, setSMyShare] = useState('');
+  const [sPeople, setSPeople] = useState<{ id: string; name: string; email: string; amount: string }[]>([{ id: uid(), name: '', email: '', amount: '' }]);
   const [sError, setSError] = useState<string | null>(null);
   const splitDrag = useDragToDismiss(() => setSplitSheet(false));
   const [sendingKey, setSendingKey] = useState<string | null>(null);
@@ -285,7 +295,7 @@ export default function PlannerScreen() {
     const want = owingRowsFor(count, mode, includeMe);
     setSPeople((rows) => {
       if (rows.length === want) return rows;
-      if (rows.length < want) return [...rows, ...Array.from({ length: want - rows.length }, () => ({ id: uid(), name: '', email: '' }))];
+      if (rows.length < want) return [...rows, ...Array.from({ length: want - rows.length }, () => ({ id: uid(), name: '', email: '', amount: '' }))];
       return rows.slice(0, want);
     });
   };
@@ -294,7 +304,8 @@ export default function PlannerScreen() {
     setEditingSplitId(null);
     setSTitle(''); setSTotal(''); setSCount(2); setSMode('me'); setSAcct(null);
     setSPayer(''); setSPayerEmail(''); setSIncludeMe(true);
-    setSPeople([{ id: uid(), name: '', email: '' }]);
+    setSKind('even'); setSMyShare('');
+    setSPeople([{ id: uid(), name: '', email: '', amount: '' }]);
     setSError(null);
     setSplitSheet(true);
   };
@@ -310,7 +321,10 @@ export default function PlannerScreen() {
     setSPayer(mode === 'other' ? bill.payerName : '');
     setSPayerEmail(bill.payerEmail ?? '');
     setSIncludeMe(mode === 'other' ? !!bill.myShare?.included : true);
-    setSPeople(bill.people.map((pp) => ({ id: pp.id, name: pp.name, email: pp.email ?? '' })));
+    const custom = bill.splitKind === 'custom';
+    setSKind(custom ? 'custom' : 'even');
+    setSMyShare(custom && bill.myShareAmount != null ? String(bill.myShareAmount) : '');
+    setSPeople(bill.people.map((pp) => ({ id: pp.id, name: pp.name, email: pp.email ?? '', amount: custom ? String(pp.share) : '' })));
     setSError(null);
     setSplitSheet(true);
   };
@@ -335,7 +349,8 @@ export default function PlannerScreen() {
   // After saving an other-mode split, mint (or refresh) its manage link.
   const mintRemote = async (billId: string, input: {
     title: string; total: number; headcount: number; payerName: string; payerEmail?: string;
-    includeMe: boolean; people: { id: string; name: string }[];
+    includeMe: boolean; people: { id: string; name: string; share?: number }[];
+    even: boolean; myShareAmount?: number;
   }) => {
     const share = Math.round((input.total / input.headcount) * 100) / 100;
     const res = await createRemoteSplit({
@@ -346,9 +361,11 @@ export default function PlannerScreen() {
       totalFmt: peso(input.total),
       shareFmt: peso(share),
       headcount: input.headcount,
-      people: input.people,
+      people: input.people.map((p) => ({ id: p.id, name: p.name, shareFmt: peso(p.share ?? share) })),
       includeUser: input.includeMe,
       userLabel: myName,
+      userShareFmt: input.includeMe ? peso(input.myShareAmount ?? share) : undefined,
+      even: input.even,
     });
     if (res) {
       setSplitRemote(billId, res.token);
@@ -373,10 +390,24 @@ export default function PlannerScreen() {
     if (sMode === 'other' && sPayerEmail.trim() && !emailOk(sPayerEmail.trim())) {
       setSError('The payer email does not look right.'); return;
     }
-    const rows = sPeople.map((r) => ({ id: r.id, name: r.name.trim(), email: r.email.trim() }));
+    const rows = sPeople.map((r) => ({ id: r.id, name: r.name.trim(), email: r.email.trim(), amount: parseFloat(r.amount) || 0 }));
     if (rows.some((r) => !r.name)) { setSError('Every person needs at least a name.'); return; }
     const badMail = rows.find((r) => r.email && !emailOk(r.email));
     if (badMail) { setSError(`${badMail.name}'s email does not look right.`); return; }
+    // Planner v5: custom shares must be real and must fit inside the total;
+    // the payer absorbs whatever is left.
+    const custom = sKind === 'custom';
+    const myShareNum = parseFloat(sMyShare) || 0;
+    if (custom) {
+      const noAmount = rows.find((r) => !(r.amount > 0));
+      if (noAmount) { setSError(`Put in the amount ${noAmount.name} is paying.`); return; }
+      if (sMode === 'other' && sIncludeMe && !(myShareNum > 0)) { setSError('Put in your own share.'); return; }
+      const assigned = rows.reduce((a, r) => a + r.amount, 0) + (sMode === 'other' && sIncludeMe ? myShareNum : 0);
+      if (assigned > total + 0.005) {
+        setSError(`The shares add up to ${peso(assigned)}, more than the ${peso(total)} total.`);
+        return;
+      }
+    }
 
     const id = editingSplitId ?? uid();
     const input = {
@@ -389,14 +420,20 @@ export default function PlannerScreen() {
       payerEmail: sMode === 'other' ? sPayerEmail.trim() || undefined : undefined,
       payerAccountId: sMode === 'me' ? sAcct ?? undefined : undefined,
       includeMe: sMode === 'other' ? sIncludeMe : undefined,
-      people: rows.map((r) => ({ id: r.id, name: r.name, email: r.email || undefined })),
+      splitKind: sKind,
+      myShareAmount: custom && sMode === 'other' && sIncludeMe ? myShareNum : undefined,
+      people: rows.map((r) => ({ id: r.id, name: r.name, email: r.email || undefined, share: custom ? r.amount : undefined })),
     };
     if (editingSplitId) updateSplit(editingSplitId, input);
     else addSplit(input);
     setSplitSheet(false);
     if (sMode === 'other') {
       // Fire and forget; failures alert with a retry path on the card.
-      mintRemote(id, { title: input.title, total, headcount: sCount, payerName: payer, payerEmail: input.payerEmail, includeMe: sIncludeMe, people: rows.map((r) => ({ id: r.id, name: r.name })) });
+      mintRemote(id, {
+        title: input.title, total, headcount: sCount, payerName: payer, payerEmail: input.payerEmail,
+        includeMe: sIncludeMe, people: rows.map((r) => ({ id: r.id, name: r.name, share: custom ? r.amount : undefined })),
+        even: !custom, myShareAmount: custom ? myShareNum : undefined,
+      });
     }
   };
 
@@ -421,7 +458,8 @@ export default function PlannerScreen() {
 
   const onTickMyShare = (bill: SplitBill) => {
     if (!bill.myShare) return;
-    const share = bill.people[0]?.share ?? Math.round((bill.total / bill.headcount) * 100) / 100;
+    // Planner v5: custom bills store the user's own share explicitly.
+    const share = bill.myShareAmount ?? bill.people[0]?.share ?? Math.round((bill.total / bill.headcount) * 100) / 100;
     if (!bill.myShare.paid) {
       setPickAcct(accounts[0]?.id ?? null);
       setPickTarget({ kind: 'myshare', splitId: bill.id, amount: share });
@@ -484,6 +522,7 @@ export default function PlannerScreen() {
       totalFmt: peso(bill.total),
       shareFmt: peso(person.share),
       headcount: bill.headcount,
+      even: bill.splitKind !== 'custom',
     };
     const result = await sendSplitEmail(payload);
     if (result === 'sent') {
@@ -633,10 +672,30 @@ export default function PlannerScreen() {
   // Budgets grouped under their base category, in first-seen order, so a
   // "Netflix" budget files visually under SUBSCRIPTIONS (and "Meralco" under
   // UTILITIES) instead of reading like its own top-level category.
+  // v5.38 (owner decision): the Budgets view splits into two segments.
+  // A BILL is a budget with a due date (or a credit card statement, which
+  // always gets one) - an obligation where hitting the limit means PAID.
+  // SPENDING is the undated envelope - a ceiling where the limit means stop.
+  // The due date IS the discriminator: no new data field, so Cents intents,
+  // rollover, sync and the statement sweep all keep working untouched, and
+  // adding/removing a due date in the editor moves a budget between tabs.
+  const billCats = useMemo(
+    () => categories
+      .filter((c) => !!c.dueDate || !!c.creditAccountId)
+      .sort((a, b) => (a.dueDate ?? Number.MAX_SAFE_INTEGER) - (b.dueDate ?? Number.MAX_SAFE_INTEGER)),
+    [categories],
+  );
+  const spendCats = useMemo(
+    () => categories.filter((c) => !c.dueDate && !c.creditAccountId),
+    [categories],
+  );
+  const [budgetSegPick, setBudgetSegPick] = useState<'bills' | 'spending' | null>(null);
+  const budgetSeg: 'bills' | 'spending' = budgetSegPick ?? (billCats.length > 0 ? 'bills' : 'spending');
+
   const budgetGroups = useMemo(() => {
     const order: string[] = [];
     const map = new Map<string, typeof categories>();
-    for (const c of categories) {
+    for (const c of spendCats) {
       const parent = c.category ?? c.name;
       if (!map.has(parent)) {
         map.set(parent, []);
@@ -645,10 +704,40 @@ export default function PlannerScreen() {
       map.get(parent)!.push(c);
     }
     return order.map((parent) => ({ parent, items: map.get(parent)! }));
-  }, [categories]);
+  }, [spendCats]);
 
   // Hub summaries: live one-liners so the hub reads like a status board
   const starredGoal = goals.find((g) => g.id === starredId);
+  // v5.42 (owner request): the planner speaks in the same Cents strip as
+  // Home and Trends, above the section cards. Findings first, nudges last.
+  const plannerNote = useMemo(() => {
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const openBills = billCats
+      .filter((c) => c.dueDate && c.spent < c.limit)
+      .sort((a, b) => a.dueDate! - b.dueDate!);
+    if (openBills.length > 0) {
+      const b = openBills[0];
+      const left = peso(Math.max(b.limit - b.spent, 0));
+      const days = Math.round((new Date(b.dueDate!).setHours(0, 0, 0, 0) - today.getTime()) / 86_400_000);
+      const when = days < 0
+        ? `was due ${new Date(b.dueDate!).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} and is still open`
+        : days === 0 ? 'is due today'
+        : days === 1 ? 'is due tomorrow'
+        : `is due ${new Date(b.dueDate!).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`;
+      return `Your ${b.name} bill (${left} left) ${when}. That's the next one to knock out.`;
+    }
+    if (billCats.length > 0) {
+      const maxedEnv = spendCats.find((c) => c.limit > 0 && c.spent >= c.limit);
+      if (maxedEnv) return `Bills are all settled, but your ${maxedEnv.name} budget is maxed - anything more spills into next month.`;
+      return 'All bills are settled for the month. Breathe easy.';
+    }
+    const maxedEnv = spendCats.find((c) => c.limit > 0 && c.spent >= c.limit);
+    if (maxedEnv) return `Your ${maxedEnv.name} budget just hit its limit. Anything more spills into next month.`;
+    if (goals.length === 0) return 'Start with a goal: a name, an amount and a date. Cents plans the saving around it.';
+    if (starredGoal) return `Cents is defending ${starredGoal.name}. Everything here feeds that finish line.`;
+    return 'Star a goal and Cents will defend it against impulse buys.';
+  }, [billCats, spendCats, goals, starredGoal]);
+
   const goalsSummary = goals.length === 0
     ? 'Set your first target'
     : starredGoal
@@ -679,6 +768,10 @@ export default function PlannerScreen() {
   const thisMonthKey = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`;
   const totalSpent = categories.reduce((a, c) => a + c.spent, 0);
   const totalLimit = categories.reduce((a, c) => a + c.limit, 0);
+  const billSpent = billCats.reduce((a, c) => a + c.spent, 0);
+  const billLimit = billCats.reduce((a, c) => a + c.limit, 0);
+  const spendSpent = spendCats.reduce((a, c) => a + c.spent, 0);
+  const spendLimit = spendCats.reduce((a, c) => a + c.limit, 0);
   const dueSoon = categories.filter((c) => c.dueDate && c.dueDate > Date.now() && c.dueDate < Date.now() + 7 * 86400000).length;
   const budgetsSummary = categories.length === 0
     ? 'Give every peso a job'
@@ -686,12 +779,70 @@ export default function PlannerScreen() {
 
   const headerAdd = () => {
     if (view === 'goals') setGoalSheet(true);
-    else if (view === 'budgets') openNewBudget();
+    else if (view === 'budgets') openNewBudget(budgetSeg);
     else if (view === 'split') openNewSplit();
     else if (view === 'lend') openNewLend();
   };
 
   const meta = view === 'hub' ? null : SECTION_META[view];
+
+  // Shared card renderer for both segments (plain function, not a component).
+  const renderBudgetCard = (c: Category) => {
+    const pct = Math.min(c.spent / c.limit, 1);
+    const maxed = pct >= 1;
+    // v5.35: a dated budget is a bill - fully spent = PAID, a win, never
+    // the red alarm undated envelopes get.
+    const paid = maxed && !!c.dueDate;
+    const alarm = maxed && !paid;
+    return (
+      <Pressable key={c.id} onPress={() => openEditBudget(c.id)}>
+        <GlassCard pad={16}>
+          <View style={styles.budgetRow}>
+            <View style={[styles.budgetIcon, alarm && { backgroundColor: t.redTint, borderColor: 'rgba(255,77,77,0.35)' }]}>
+              <Ionicons name={(c.icon as any) || 'pricetag'} size={18} color={alarm ? t.red : t.emerald} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+                <Text style={styles.budgetName} numberOfLines={1}>{c.name}</Text>
+                {!!c.dueDate && c.remind !== false && (
+                  <Ionicons name="notifications" size={12} color={t.textFaint} />
+                )}
+                {c.autoPay && (
+                  <Ionicons name="flash" size={12} color={t.emerald} />
+                )}
+              </View>
+              <Text style={styles.budgetSub}>
+                {peso(c.spent)} of {peso(c.limit)} monthly
+                {c.dueDate
+                  ? c.dueType === 'once'
+                    ? ` · due ${new Date(c.dueDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`
+                    : ` · due every ${ordinal(c.dueDay ?? new Date(c.dueDate).getDate())}`
+                  : ''}
+              </Text>
+              {/* Auto-pay flagged this month but not yet settled: it is
+                  waiting on balance. */}
+              {c.autoPay && c.autoPayFailNotified === thisMonthKey && c.autoPayLast !== thisMonthKey && (
+                <Text style={styles.autoWaitText}>
+                  Auto-pay waiting, {accounts.find((a) => a.id === c.autoPayAccountId)?.name ?? 'its account'} cannot cover it yet
+                </Text>
+              )}
+            </View>
+            <Text style={[styles.budgetLeft, alarm && { color: t.red }, paid && { color: t.emerald }]}>
+              {paid ? 'Paid' : maxed ? 'Maxed' : `${peso(c.limit - c.spent)} left`}
+            </Text>
+            <Pressable style={styles.trash} onPress={() => removeBudget(c.id)}>
+              <Ionicons name="trash-outline" size={15} color={t.red} />
+            </Pressable>
+          </View>
+          <View style={styles.track}>
+            <View
+              style={[styles.fill, { width: `${Math.max(pct * 100, 2)}%`, backgroundColor: alarm ? t.red : t.emerald }]}
+            />
+          </View>
+        </GlassCard>
+      </Pressable>
+    );
+  };
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
@@ -718,6 +869,13 @@ export default function PlannerScreen() {
         <Animated.View style={{ opacity: fade }}>
           {view === 'hub' && (
             <View style={{ paddingBottom: 132 }}>
+              <View style={styles.plannerCentsBlock}>
+                <View style={styles.plannerCentsHead}>
+                  <Image source={require('../../assets/cents-mark.png')} style={{ width: 13, height: 13 }} resizeMode="contain" />
+                  <Text style={styles.plannerCentsEyebrow}>CENTS</Text>
+                </View>
+                <Text style={styles.plannerCentsMsg}>{plannerNote}</Text>
+              </View>
               <View style={styles.hubGrid}>
                 <HubCard
                   styles={styles} t={t}
@@ -740,21 +898,6 @@ export default function PlannerScreen() {
                   onPress={() => go('lend')}
                 />
               </View>
-              {/* A quiet nudge tying the hub back to the app's whole point. */}
-              <GlassCard pad={16}>
-                <View style={styles.hubHintRow}>
-                  <View style={styles.hubHintIcon}>
-                    <Ionicons name="sparkles" size={16} color={t.emerald} />
-                  </View>
-                  <Text style={styles.hubHintText}>
-                    {goals.length === 0
-                      ? 'Start with a goal: a name, an amount and a date. Cents plans the saving around it.'
-                      : starredGoal
-                        ? `Cents is defending ${starredGoal.name}. Everything here feeds that finish line.`
-                        : 'Star a goal and Cents will defend it against impulse buys.'}
-                  </Text>
-                </View>
-              </GlassCard>
             </View>
           )}
 
@@ -878,11 +1021,104 @@ export default function PlannerScreen() {
 
           {view === 'budgets' && (
             <View style={{ gap: 12, paddingBottom: 132 }}>
-              {categories.length === 0 && (
+              {/* v5.38 (owner decision): Bills and Spending are different
+                  animals - obligations vs ceilings - so they get their own
+                  segments instead of one mixed list. */}
+              <View style={styles.segRow}>
+                <Pressable
+                  style={[styles.segChip, budgetSeg === 'bills' && styles.segChipSel]}
+                  onPress={() => setBudgetSegPick('bills')}
+                >
+                  <Ionicons name="calendar" size={14} color={budgetSeg === 'bills' ? t.onEmerald : t.emerald} />
+                  <Text style={[styles.segText, budgetSeg === 'bills' && { color: t.onEmerald }]}>Bills</Text>
+                  {billCats.length > 0 && (
+                    <Text style={[styles.segCount, budgetSeg === 'bills' && { color: t.onEmerald, opacity: 0.85 }]}>{billCats.length}</Text>
+                  )}
+                </Pressable>
+                <Pressable
+                  style={[styles.segChip, budgetSeg === 'spending' && styles.segChipSel]}
+                  onPress={() => setBudgetSegPick('spending')}
+                >
+                  <Ionicons name="wallet" size={14} color={budgetSeg === 'spending' ? t.onEmerald : t.emerald} />
+                  <Text style={[styles.segText, budgetSeg === 'spending' && { color: t.onEmerald }]}>Spending</Text>
+                  {spendCats.length > 0 && (
+                    <Text style={[styles.segCount, budgetSeg === 'spending' && { color: t.onEmerald, opacity: 0.85 }]}>{spendCats.length}</Text>
+                  )}
+                </Pressable>
+              </View>
+
+              {budgetSeg === 'bills' && billCats.length > 0 && (() => {
+                const pct = billLimit > 0 ? Math.min(billSpent / billLimit, 1) : 1;
+                const done = billLimit > 0 && billSpent >= billLimit;
+                return (
+                  <GlassCard pad={16} glow={done}>
+                    <View style={styles.totalsHead}>
+                      <Text style={styles.totalsTitle}>THIS MONTH</Text>
+                      <Text style={styles.totalsPct}>
+                        {billLimit > 0 ? `${Math.round((billSpent / billLimit) * 100)}%` : ''}
+                      </Text>
+                    </View>
+                    <Text style={styles.totalsLine}>
+                      <Text style={styles.totalsPaid}>{peso(billSpent)}</Text>
+                      <Text style={styles.totalsOf}> paid of </Text>
+                      <Text style={styles.totalsBudgeted}>{peso(billLimit)}</Text>
+                      <Text style={styles.totalsOf}> in bills</Text>
+                    </Text>
+                    <View style={styles.track}>
+                      <View style={[styles.fill, { width: `${Math.max(pct * 100, 2)}%`, backgroundColor: t.emerald }]} />
+                    </View>
+                    <Text style={styles.totalsSub}>
+                      {done ? 'All bills paid for the month. Breathe easy.' : `${peso(billLimit - billSpent)} left to pay`}
+                    </Text>
+                  </GlassCard>
+                );
+              })()}
+              {budgetSeg === 'spending' && spendCats.length > 0 && (() => {
+                const over = spendSpent > spendLimit;
+                const pct = spendLimit > 0 ? Math.min(spendSpent / spendLimit, 1) : 1;
+                return (
+                  <GlassCard pad={16}>
+                    <View style={styles.totalsHead}>
+                      <Text style={styles.totalsTitle}>THIS MONTH</Text>
+                      <Text style={[styles.totalsPct, over && { color: t.red }]}>
+                        {spendLimit > 0 ? `${Math.round((spendSpent / spendLimit) * 100)}%` : ''}
+                      </Text>
+                    </View>
+                    <Text style={styles.totalsLine}>
+                      <Text style={[styles.totalsPaid, over && { color: t.red }]}>{peso(spendSpent)}</Text>
+                      <Text style={styles.totalsOf}> spent of </Text>
+                      <Text style={styles.totalsBudgeted}>{peso(spendLimit)}</Text>
+                      <Text style={styles.totalsOf}> planned</Text>
+                    </Text>
+                    <View style={styles.track}>
+                      <View style={[styles.fill, { width: `${Math.max(pct * 100, 2)}%`, backgroundColor: over ? t.red : t.emerald }]} />
+                    </View>
+                    <Text style={styles.totalsSub}>
+                      {over
+                        ? `${peso(spendSpent - spendLimit)} over the plan`
+                        : `${peso(spendLimit - spendSpent)} left to spend`}
+                    </Text>
+                  </GlassCard>
+                );
+              })()}
+
+              {budgetSeg === 'bills' && billCats.length === 0 && (
                 <GlassCard>
-                  <Text style={styles.emptyTitle}>No budgets yet</Text>
+                  <Text style={styles.emptyTitle}>No bills yet</Text>
+                  <Text style={styles.emptySub}>Rent, utilities, subscriptions - anything with a deadline. A credit card with a billing day lands its statement here on its own.</Text>
+                  <Pressable onPress={() => openNewBudget('bills')}>
+                    <View style={[styles.emptyBtn, { backgroundColor: t.emerald }]}>
+                      <Ionicons name="calendar" size={15} color={t.onEmerald} />
+                      <Text style={styles.emptyBtnText}>Add your first bill</Text>
+                    </View>
+                  </Pressable>
+                </GlassCard>
+              )}
+              {budgetSeg === 'spending' && spendCats.length === 0 && (
+                <GlassCard>
+                  <Text style={styles.emptyTitle}>No spending budgets yet</Text>
                   <Text style={styles.emptySub}>Pick a category and give every peso a job.</Text>
-                  <Pressable onPress={openNewBudget}>
+                  <Pressable onPress={() => openNewBudget('spending')}>
                     <View style={[styles.emptyBtn, { backgroundColor: t.emerald }]}>
                       <Ionicons name="wallet" size={15} color={t.onEmerald} />
                       <Text style={styles.emptyBtnText}>Create a budget</Text>
@@ -890,7 +1126,9 @@ export default function PlannerScreen() {
                   </Pressable>
                 </GlassCard>
               )}
-              {budgetGroups.map(({ parent, items }) => {
+
+              {budgetSeg === 'bills' && billCats.map((c) => renderBudgetCard(c))}
+              {budgetSeg === 'spending' && budgetGroups.map(({ parent, items }) => {
                 // Header only when the group is a real family: multiple
                 // budgets, or one whose name differs from its base category
                 // (e.g. "Netflix" under SUBSCRIPTIONS). A plain "Gaming"
@@ -906,61 +1144,11 @@ export default function PlannerScreen() {
                         <Text style={styles.groupTotals}>{peso(groupSpent)} of {peso(groupLimit)}</Text>
                       </View>
                     )}
-                    {items.map((c) => {
-                      const pct = Math.min(c.spent / c.limit, 1);
-                      const maxed = pct >= 1;
-                      return (
-                        <Pressable key={c.id} onPress={() => openEditBudget(c.id)}>
-                          <GlassCard pad={16}>
-                            <View style={styles.budgetRow}>
-                              <View style={[styles.budgetIcon, maxed && { backgroundColor: t.redTint, borderColor: 'rgba(255,77,77,0.35)' }]}>
-                                <Ionicons name={(c.icon as any) || 'pricetag'} size={18} color={maxed ? t.red : t.emerald} />
-                              </View>
-                              <View style={{ flex: 1 }}>
-                                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
-                                  <Text style={styles.budgetName} numberOfLines={1}>{c.name}</Text>
-                                  {!!c.dueDate && c.remind !== false && (
-                                    <Ionicons name="notifications" size={12} color={t.textFaint} />
-                                  )}
-                                  {c.autoPay && (
-                                    <Ionicons name="flash" size={12} color={t.emerald} />
-                                  )}
-                                </View>
-                                <Text style={styles.budgetSub}>
-                                  {peso(c.spent)} of {peso(c.limit)} monthly
-                                  {c.dueDate
-                                    ? c.dueType === 'once'
-                                      ? ` · due ${new Date(c.dueDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`
-                                      : ` · due every ${ordinal(c.dueDay ?? new Date(c.dueDate).getDate())}`
-                                    : ''}
-                                </Text>
-                                {/* Auto-pay flagged this month but not yet
-                                    settled: it is waiting on balance. */}
-                                {c.autoPay && c.autoPayFailNotified === thisMonthKey && c.autoPayLast !== thisMonthKey && (
-                                  <Text style={styles.autoWaitText}>
-                                    Auto-pay waiting, {accounts.find((a) => a.id === c.autoPayAccountId)?.name ?? 'its account'} cannot cover it yet
-                                  </Text>
-                                )}
-                              </View>
-                              <Text style={[styles.budgetLeft, maxed && { color: t.red }]}>
-                                {maxed ? 'Maxed' : `${peso(c.limit - c.spent)} left`}
-                              </Text>
-                              <Pressable style={styles.trash} onPress={() => removeBudget(c.id)}>
-                                <Ionicons name="trash-outline" size={15} color={t.red} />
-                              </Pressable>
-                            </View>
-                            <View style={styles.track}>
-                              <View
-                                style={[styles.fill, { width: `${Math.max(pct * 100, 2)}%`, backgroundColor: maxed ? t.red : t.emerald }]}
-                              />
-                            </View>
-                          </GlassCard>
-                        </Pressable>
-                      );
-                    })}
+                    {items.map((c) => renderBudgetCard(c))}
                   </View>
                 );
               })}
+
             </View>
           )}
 
@@ -983,7 +1171,9 @@ export default function PlannerScreen() {
                 const settled = b.people.filter((pp) => pp.paid).length + (myRow && b.myShare?.paid ? 1 : 0);
                 const totalRows = b.people.length + myRow;
                 const allDone = totalRows > 0 && settled === totalRows;
+                const custom = b.splitKind === 'custom';
                 const share = b.people[0]?.share ?? Math.round((b.total / b.headcount) * 100) / 100;
+                const myShareAmt = b.myShareAmount ?? share;
                 const paidLine = b.mode === 'me'
                   ? `you paid from ${accounts.find((a) => a.id === b.payerAccountId)?.name ?? 'your account'}`
                   : `${b.payerName} paid`;
@@ -993,7 +1183,9 @@ export default function PlannerScreen() {
                       <View style={{ flex: 1 }}>
                         <Text style={styles.goalName}>{b.title}</Text>
                         <Text style={styles.goalDate}>
-                          {peso(b.total)} ÷ {b.headcount} = {peso(share)} each · {paidLine}
+                          {custom
+                            ? `${peso(b.total)} · custom shares · ${paidLine}`
+                            : `${peso(b.total)} ÷ ${b.headcount} = ${peso(share)} each · ${paidLine}`}
                         </Text>
                       </View>
                       {allDone ? (
@@ -1023,7 +1215,7 @@ export default function PlannerScreen() {
                               <Text style={styles.splitPersonMail}>tap to pay {b.payerName} your part</Text>
                             )}
                           </View>
-                          <Text style={[styles.splitShare, b.myShare.paid && styles.splitPersonPaid]}>{peso(share)}</Text>
+                          <Text style={[styles.splitShare, b.myShare.paid && styles.splitPersonPaid]}>{peso(myShareAmt)}</Text>
                         </View>
                       )}
                       {b.people.map((pp) => {
@@ -1059,7 +1251,13 @@ export default function PlannerScreen() {
                       ) : (
                         <Pressable
                           style={styles.linkRow}
-                          onPress={() => mintRemote(b.id, { title: b.title, total: b.total, headcount: b.headcount, payerName: b.payerName, payerEmail: b.payerEmail, includeMe: !!b.myShare?.included, people: b.people.map((pp) => ({ id: pp.id, name: pp.name })) })}
+                          onPress={() => mintRemote(b.id, {
+                            title: b.title, total: b.total, headcount: b.headcount, payerName: b.payerName, payerEmail: b.payerEmail,
+                            includeMe: !!b.myShare?.included,
+                            people: b.people.map((pp) => ({ id: pp.id, name: pp.name, share: pp.share })),
+                            even: b.splitKind !== 'custom',
+                            myShareAmount: b.myShareAmount,
+                          })}
                         >
                           <Ionicons name="link" size={14} color={t.amber} />
                           <Text style={[styles.linkRowText, { color: t.amber }]}>Get manage link</Text>
@@ -1345,30 +1543,12 @@ export default function PlannerScreen() {
                 </Pressable>
               )}
               <Text style={styles.sourceLabel}>TAKE IT FROM</Text>
-              <View style={styles.sourceGrid}>
-                <Pressable
-                  style={[styles.sourceChip, sourceId === null && styles.sourceChipSel]}
-                  onPress={() => setSourceId(null)}
-                >
-                  <Ionicons name="create-outline" size={14} color={sourceId === null ? t.onEmerald : t.emerald} />
-                  <Text style={[styles.sourceChipText, sourceId === null && { color: t.onEmerald }]}>Track only</Text>
-                </Pressable>
-                {accounts.map((a) => {
-                  const selected = sourceId === a.id;
-                  return (
-                    <Pressable
-                      key={a.id}
-                      style={[styles.sourceChip, selected && styles.sourceChipSel]}
-                      onPress={() => setSourceId(a.id)}
-                    >
-                      <Text style={[styles.sourceChipText, selected && { color: t.onEmerald }]}>{a.name}</Text>
-                      <Text style={[styles.sourceChipBal, selected && { color: t.onEmerald, opacity: 0.85 }]}>
-                        {peso(availOf(a))}{a.kind === 'credit' ? ' left' : ''}
-                      </Text>
-                    </Pressable>
-                  );
-                })}
-              </View>
+              <AccountSelect
+                accounts={accounts} country={country}
+                value={sourceId} onChange={setSourceId}
+                noneLabel="Track only"
+                style={{ marginBottom: 12 }}
+              />
               {sourceAcct && saveVal > availOf(sourceAcct) && (
                 <Text style={styles.sourceWarn}>
                   That's more than {sourceAcct.name} can cover. It will stop at zero.
@@ -1431,14 +1611,49 @@ export default function PlannerScreen() {
                     </Pressable>
                   </View>
                 </View>
+                {/* Planner v5 (owner request): not every bill splits evenly.
+                    Custom lets each person owe exactly what they got; the
+                    payer covers whatever is left of the total. */}
+                <Text style={styles.sourceLabel}>HOW TO SPLIT</Text>
+                <View style={styles.dueModeRow}>
+                  <Pressable style={[styles.dueModeChip, sKind === 'even' && styles.dueModeChipSel]} onPress={() => { setSKind('even'); setSError(null); }}>
+                    <Ionicons name="reorder-four" size={14} color={sKind === 'even' ? t.onEmerald : t.emerald} />
+                    <Text style={[styles.dueModeText, sKind === 'even' && { color: t.onEmerald }]}>Evenly</Text>
+                  </Pressable>
+                  <Pressable style={[styles.dueModeChip, sKind === 'custom' && styles.dueModeChipSel]} onPress={() => { setSKind('custom'); setSError(null); }}>
+                    <Ionicons name="options" size={14} color={sKind === 'custom' ? t.onEmerald : t.emerald} />
+                    <Text style={[styles.dueModeText, sKind === 'custom' && { color: t.onEmerald }]}>Custom amounts</Text>
+                  </Pressable>
+                </View>
                 {(() => {
                   const total = parseFloat(sTotal) || 0;
                   if (!(total > 0)) return null;
-                  const share = Math.round((total / sCount) * 100) / 100;
+                  if (sKind === 'even') {
+                    const share = Math.round((total / sCount) * 100) / 100;
+                    return (
+                      <View style={styles.splitMathBox}>
+                        <Text style={styles.splitMathText}>
+                          {peso(total)} ÷ {sCount} = <Text style={{ color: t.emerald, fontWeight: '800' }}>{peso(share)} each</Text>
+                        </Text>
+                      </View>
+                    );
+                  }
+                  // Custom: live tally of assigned amounts vs the total. The
+                  // remainder is what the payer is covering out of their own
+                  // pocket (me mode: you; other mode: the named payer).
+                  const assigned = sPeople.reduce((a, r) => a + (parseFloat(r.amount) || 0), 0)
+                    + (sMode === 'other' && sIncludeMe ? parseFloat(sMyShare) || 0 : 0);
+                  const remainder = total - assigned;
+                  const over = remainder < -0.005;
+                  const payerLabel = sMode === 'me' ? 'you cover' : `${sPayer.trim() || 'the payer'} covers`;
                   return (
                     <View style={styles.splitMathBox}>
-                      <Text style={styles.splitMathText}>
-                        {peso(total)} ÷ {sCount} = <Text style={{ color: t.emerald, fontWeight: '800' }}>{peso(share)} each</Text>
+                      <Text style={[styles.splitMathText, over && { color: t.red }]}>
+                        {over
+                          ? `Shares add up to ${peso(assigned)}, over the ${peso(total)} total`
+                          : <>
+                              {peso(assigned)} of {peso(total)} assigned · <Text style={{ color: t.emerald, fontWeight: '800' }}>{payerLabel} {peso(Math.max(remainder, 0))}</Text>
+                            </>}
                       </Text>
                     </View>
                   );
@@ -1459,19 +1674,12 @@ export default function PlannerScreen() {
                 {sMode === 'me' && (
                   <>
                     <Text style={styles.sourceLabel}>PAID FROM</Text>
-                    <View style={styles.sourceGrid}>
-                      {accounts.map((a) => {
-                        const sel = sAcct === a.id;
-                        return (
-                          <Pressable key={a.id} style={[styles.sourceChip, sel && styles.sourceChipSel]} onPress={() => { setSAcct(a.id); setSError(null); }}>
-                            <Text style={[styles.sourceChipText, sel && { color: t.onEmerald }]}>{a.name}</Text>
-                            <Text style={[styles.sourceChipBal, sel && { color: t.onEmerald, opacity: 0.85 }]}>
-                              {peso(availOf(a))}{a.kind === 'credit' ? ' left' : ''}
-                            </Text>
-                          </Pressable>
-                        );
-                      })}
-                    </View>
+                    <AccountSelect
+                      accounts={accounts} country={country}
+                      value={sAcct} onChange={(id) => { setSAcct(id); setSError(null); }}
+                      placeholder="Which account paid the bill?"
+                      style={{ marginBottom: 12 }}
+                    />
                     <Text style={styles.remindHintFull}>
                       The full amount logs as an expense now. Each repayment logs as income when you tick it.
                     </Text>
@@ -1506,6 +1714,22 @@ export default function PlannerScreen() {
                         <Text style={[styles.dueToggleText, sIncludeMe && { color: t.onEmerald }]}>I owe a share too</Text>
                       </Pressable>
                     </View>
+                    {sIncludeMe && sKind === 'custom' && (
+                      <View style={styles.splitPersonInputs}>
+                        <View style={[styles.input, styles.splitNameInput, styles.splitFakeField]}>
+                          <Text style={styles.splitFakeFieldText}>Your share</Text>
+                        </View>
+                        <TextInput
+                          style={[styles.input, styles.splitAmtInput]}
+                          placeholder="Amount"
+                          placeholderTextColor={t.textMuted}
+                          value={sMyShare}
+                          onChangeText={(v) => { setSMyShare(v.replace(/[^\d.]/g, '')); setSError(null); }}
+                          keyboardType="decimal-pad"
+                          returnKeyType="done"
+                        />
+                      </View>
+                    )}
                     <Text style={styles.remindHintFull}>
                       They get a private link to tick people off as they get paid. Your share logs here when you pay it.
                     </Text>
@@ -1514,25 +1738,51 @@ export default function PlannerScreen() {
 
                 {owingRowsFor(sCount, sMode, sIncludeMe) > 0 && <Text style={styles.sourceLabel}>WHO ELSE OWES</Text>}
                 {sPeople.map((row, i) => (
-                  <View key={row.id} style={styles.splitPersonInputs}>
-                    <TextInput
-                      style={[styles.input, styles.splitNameInput]}
-                      placeholder={`Person ${i + 1}`}
-                      placeholderTextColor={t.textMuted}
-                      value={row.name}
-                      onChangeText={(v) => { setSPeople((rs) => rs.map((r) => (r.id === row.id ? { ...r, name: v } : r))); setSError(null); }}
-                      returnKeyType="done"
-                    />
-                    <TextInput
-                      style={[styles.input, styles.splitMailInput]}
-                      placeholder="Email (optional)"
-                      placeholderTextColor={t.textMuted}
-                      value={row.email}
-                      onChangeText={(v) => { setSPeople((rs) => rs.map((r) => (r.id === row.id ? { ...r, email: v } : r))); setSError(null); }}
-                      autoCapitalize="none"
-                      keyboardType="email-address"
-                      returnKeyType="done"
-                    />
+                  <View key={row.id} style={sKind === 'custom' ? styles.splitPersonBlock : undefined}>
+                    <View style={styles.splitPersonInputs}>
+                      <TextInput
+                        style={[styles.input, styles.splitNameInput]}
+                        placeholder={`Person ${i + 1}`}
+                        placeholderTextColor={t.textMuted}
+                        value={row.name}
+                        onChangeText={(v) => { setSPeople((rs) => rs.map((r) => (r.id === row.id ? { ...r, name: v } : r))); setSError(null); }}
+                        returnKeyType="done"
+                      />
+                      {sKind === 'custom' ? (
+                        <TextInput
+                          style={[styles.input, styles.splitAmtInput]}
+                          placeholder="Amount"
+                          placeholderTextColor={t.textMuted}
+                          value={row.amount}
+                          onChangeText={(v) => { setSPeople((rs) => rs.map((r) => (r.id === row.id ? { ...r, amount: v.replace(/[^\d.]/g, '') } : r))); setSError(null); }}
+                          keyboardType="decimal-pad"
+                          returnKeyType="done"
+                        />
+                      ) : (
+                        <TextInput
+                          style={[styles.input, styles.splitMailInput]}
+                          placeholder="Email (optional)"
+                          placeholderTextColor={t.textMuted}
+                          value={row.email}
+                          onChangeText={(v) => { setSPeople((rs) => rs.map((r) => (r.id === row.id ? { ...r, email: v } : r))); setSError(null); }}
+                          autoCapitalize="none"
+                          keyboardType="email-address"
+                          returnKeyType="done"
+                        />
+                      )}
+                    </View>
+                    {sKind === 'custom' && (
+                      <TextInput
+                        style={[styles.input, styles.splitMailFull]}
+                        placeholder="Email (optional)"
+                        placeholderTextColor={t.textMuted}
+                        value={row.email}
+                        onChangeText={(v) => { setSPeople((rs) => rs.map((r) => (r.id === row.id ? { ...r, email: v } : r))); setSError(null); }}
+                        autoCapitalize="none"
+                        keyboardType="email-address"
+                        returnKeyType="done"
+                      />
+                    )}
                   </View>
                 ))}
                 {sError && <Text style={styles.sheetError}>{sError}</Text>}
@@ -1625,23 +1875,12 @@ export default function PlannerScreen() {
                   </View>
                 )}
                 <Text style={styles.sourceLabel}>THE MONEY LEFT FROM</Text>
-                <View style={styles.sourceGrid}>
-                  <Pressable style={[styles.sourceChip, lAcct === null && styles.sourceChipSel]} onPress={() => setLAcct(null)}>
-                    <Ionicons name="create-outline" size={14} color={lAcct === null ? t.onEmerald : t.emerald} />
-                    <Text style={[styles.sourceChipText, lAcct === null && { color: t.onEmerald }]}>Track only</Text>
-                  </Pressable>
-                  {accounts.map((a) => {
-                    const sel = lAcct === a.id;
-                    return (
-                      <Pressable key={a.id} style={[styles.sourceChip, sel && styles.sourceChipSel]} onPress={() => { setLAcct(a.id); setLError(null); }}>
-                        <Text style={[styles.sourceChipText, sel && { color: t.onEmerald }]}>{a.name}</Text>
-                        <Text style={[styles.sourceChipBal, sel && { color: t.onEmerald, opacity: 0.85 }]}>
-                          {peso(availOf(a))}{a.kind === 'credit' ? ' left' : ''}
-                        </Text>
-                      </Pressable>
-                    );
-                  })}
-                </View>
+                <AccountSelect
+                  accounts={accounts} country={country}
+                  value={lAcct} onChange={(id) => { setLAcct(id); setLError(null); }}
+                  noneLabel="Track only"
+                  style={{ marginBottom: 12 }}
+                />
                 <Text style={styles.remindHintFull}>
                   Pick an account and the amount logs as money out now, then back in when repaid. Track only skips the balances.
                 </Text>
@@ -1679,25 +1918,12 @@ export default function PlannerScreen() {
               <Text style={styles.sheetSub}>
                 {pickTarget?.kind === 'myshare' ? 'Which account did it come from?' : 'Which account did it land in?'}
               </Text>
-              <View style={styles.sourceGrid}>
-                {pickTarget?.kind === 'lendRepaid' && (
-                  <Pressable style={[styles.sourceChip, pickAcct === 'none' && styles.sourceChipSel]} onPress={() => setPickAcct('none')}>
-                    <Ionicons name="create-outline" size={14} color={pickAcct === 'none' ? t.onEmerald : t.emerald} />
-                    <Text style={[styles.sourceChipText, pickAcct === 'none' && { color: t.onEmerald }]}>Track only</Text>
-                  </Pressable>
-                )}
-                {accounts.map((a) => {
-                  const sel = pickAcct === a.id;
-                  return (
-                    <Pressable key={a.id} style={[styles.sourceChip, sel && styles.sourceChipSel]} onPress={() => setPickAcct(a.id)}>
-                      <Text style={[styles.sourceChipText, sel && { color: t.onEmerald }]}>{a.name}</Text>
-                      <Text style={[styles.sourceChipBal, sel && { color: t.onEmerald, opacity: 0.85 }]}>
-                        {peso(availOf(a))}{a.kind === 'credit' ? ' left' : ''}
-                      </Text>
-                    </Pressable>
-                  );
-                })}
-              </View>
+              <AccountSelect
+                accounts={accounts} country={country}
+                value={pickAcct} onChange={setPickAcct}
+                {...(pickTarget?.kind === 'lendRepaid' ? { noneLabel: 'Track only', noneValue: 'none' } : {})}
+                style={{ marginBottom: 12 }}
+              />
               <Pressable onPress={confirmPick} disabled={!pickAcct}>
                 <View style={[styles.submit, { backgroundColor: pickAcct ? t.emerald : t.borderSoft }]}>
                   <Text style={styles.submitText}>{pickTarget?.kind === 'myshare' ? 'Log my payment' : 'Confirm received'}</Text>
@@ -1719,7 +1945,7 @@ export default function PlannerScreen() {
                 <View style={styles.handle} />
               </View>
               <View style={styles.sheetHead}>
-                <Text style={styles.sheetTitle}>{editingId ? 'Edit budget' : 'New budget'}</Text>
+                <Text style={styles.sheetTitle}>{editingId ? (bHasDue ? 'Edit bill' : 'Edit budget') : bHasDue ? 'New bill' : 'New budget'}</Text>
                 <Pressable style={styles.closeBtn} onPress={() => setBudgetSheet(false)} hitSlop={8} accessibilityLabel="Close">
                   <Ionicons name="close" size={18} color={t.textMuted} />
                 </Pressable>
@@ -1728,21 +1954,7 @@ export default function PlannerScreen() {
               {/* v2.4: the whole form scrolls (it outgrew small screens), the
                   save button stays pinned below. */}
               <ScrollView style={{ flexGrow: 0, flexShrink: 1 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" keyboardDismissMode="interactive" nestedScrollEnabled>
-                <View style={styles.catGrid}>
-                  {BUDGET_CATEGORIES.map((c) => {
-                    const selected = pickedCat === c.name;
-                    return (
-                      <Pressable
-                        key={c.name}
-                        onPress={() => pickCategory(c.name)}
-                        style={[styles.catChip, selected && styles.catChipSel]}
-                      >
-                        <Ionicons name={c.icon as any} size={14} color={selected ? t.onEmerald : t.emerald} />
-                        <Text style={[styles.catChipText, selected && { color: t.onEmerald }]}>{c.name}</Text>
-                      </Pressable>
-                    );
-                  })}
-                </View>
+                <PresetSelect t={t} styles={styles} value={pickedCat} onPick={pickCategory} />
               <TextInput
                 style={styles.input}
                 placeholder={pickedCat ? `Budget name (${pickedCat})` : 'Budget name'}
@@ -1822,23 +2034,12 @@ export default function PlannerScreen() {
                   {bAutoPay && (
                     <>
                       <Text style={styles.sourceLabel}>PAID FROM</Text>
-                      <View style={styles.sourceGrid}>
-                        {accounts.map((a) => {
-                          const sel = bAutoAcct === a.id;
-                          return (
-                            <Pressable
-                              key={a.id}
-                              style={[styles.sourceChip, sel && styles.sourceChipSel]}
-                              onPress={() => { setBAutoAcct(a.id); setBError(null); }}
-                            >
-                              <Text style={[styles.sourceChipText, sel && { color: t.onEmerald }]}>{a.name}</Text>
-                              <Text style={[styles.sourceChipBal, sel && { color: t.onEmerald, opacity: 0.85 }]}>
-                                {peso(availOf(a))}{a.kind === 'credit' ? ' left' : ''}
-                              </Text>
-                            </Pressable>
-                          );
-                        })}
-                      </View>
+                      <AccountSelect
+                        accounts={accounts} country={country}
+                        value={bAutoAcct} onChange={(id) => { setBAutoAcct(id); setBError(null); }}
+                        placeholder="Which account pays it?"
+                        style={{ marginBottom: 12 }}
+                      />
                       <Text style={styles.remindHintFull}>
                         Pays what's left from {bAutoAcct ? accounts.find((a) => a.id === bAutoAcct)?.name : 'the account you pick'} on the {ordinal(bDueDay)}. Short on balance? It waits and tells you.
                       </Text>
@@ -1918,6 +2119,67 @@ function ordinal(n: number): string {
   return `${n}${rem10 === 1 ? 'st' : rem10 === 2 ? 'nd' : rem10 === 3 ? 'rd' : 'th'}`;
 }
 
+
+// v5.45: the last chip grid falls - the budget sheet's category presets are
+// a searchable dropdown now (owner's rule: long lists are dropdowns).
+// Module scope (rule 4: it has a search TextInput).
+function PresetSelect({ t, styles, value, onPick }: {
+  t: Palette; styles: any;
+  value: string | null;
+  onPick: (name: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState('');
+  const picked = BUDGET_CATEGORIES.find((c) => c.name === value) ?? null;
+  const ql = q.trim().toLowerCase();
+  const list = ql ? BUDGET_CATEGORIES.filter((c) => c.name.toLowerCase().includes(ql)) : BUDGET_CATEGORIES;
+  const choose = (name: string) => { onPick(name); Keyboard.dismiss(); setQ(''); setOpen(false); };
+  return (
+    <View style={{ marginBottom: 12 }}>
+      <Pressable
+        style={[styles.presetSelect, open && { borderColor: t.emeraldBorder, backgroundColor: t.emeraldTint }]}
+        onPress={() => { Keyboard.dismiss(); setQ(''); setOpen(!open); }}
+      >
+        <View style={styles.presetIcon}>
+          <Ionicons name={(picked?.icon as any) ?? 'grid-outline'} size={14} color={picked ? t.emerald : t.textMuted} />
+        </View>
+        <Text style={[styles.presetText, !picked && { color: t.textMuted }]}>
+          {picked?.name ?? 'Choose a category'}
+        </Text>
+        <Ionicons name={open ? 'chevron-up' : 'chevron-down'} size={15} color={t.emerald} />
+      </Pressable>
+      {open && (
+        <View style={styles.presetMenu}>
+          <View style={styles.presetSearchRow}>
+            <Ionicons name="search" size={14} color={t.textMuted} />
+            <TextInput
+              style={styles.presetSearchInput}
+              placeholder="Search categories"
+              placeholderTextColor={t.textMuted}
+              value={q}
+              onChangeText={setQ}
+              autoCorrect={false}
+              returnKeyType="search"
+            />
+          </View>
+          <ScrollView style={{ maxHeight: 230 }} nestedScrollEnabled keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator>
+            {list.map((c) => (
+              <Pressable key={c.name} style={[styles.presetRow, styles.presetDivider]} onPress={() => choose(c.name)}>
+                <View style={styles.presetIcon}>
+                  <Ionicons name={c.icon as any} size={14} color={t.emerald} />
+                </View>
+                <Text style={styles.presetRowText}>{c.name}</Text>
+                {value === c.name && <Ionicons name="checkmark-circle" size={15} color={t.emerald} />}
+              </Pressable>
+            ))}
+            {list.length === 0 && <Text style={styles.presetEmpty}>Nothing matches "{q.trim()}".</Text>}
+          </ScrollView>
+        </View>
+      )}
+    </View>
+  );
+}
+
 // Hub card: a tappable section tile with a live one-line summary
 function HubCard({ styles, t, icon, title, summary, soon, onPress }: {
   styles: ReturnType<typeof makeStyles>;
@@ -1955,6 +2217,39 @@ const makeStyles = (t: Palette) => StyleSheet.create({
 
   // Hub
   hubGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12, marginBottom: 16 },
+  // v5.45: preset category dropdown
+  presetSelect: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    borderRadius: 14, paddingHorizontal: 12, paddingVertical: 11,
+    backgroundColor: t.inputFill, borderWidth: 1, borderColor: t.borderSoft,
+  },
+  presetText: { color: t.textPrimary, fontSize: 13.5, fontWeight: '700', flex: 1 },
+  presetIcon: {
+    width: 26, height: 26, borderRadius: 9, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: t.emeraldTint, borderWidth: 1, borderColor: t.emeraldBorder,
+  },
+  presetMenu: {
+    marginTop: 8, borderRadius: 14, borderWidth: 1, borderColor: t.border,
+    backgroundColor: t.menuBg, overflow: 'hidden',
+  },
+  presetSearchRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 12,
+    borderBottomWidth: 1, borderBottomColor: t.borderSoft,
+  },
+  presetSearchInput: { flex: 1, height: 38, color: t.textPrimary, fontSize: 13 },
+  presetRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 12, paddingVertical: 10 },
+  presetDivider: { borderBottomWidth: 1, borderBottomColor: t.borderSoft },
+  presetRowText: { color: t.textPrimary, fontSize: 13, fontWeight: '700', flex: 1 },
+  presetEmpty: { color: t.textMuted, fontSize: 12, padding: 12 },
+
+  // v5.42: Cents strip (mirrors the dashboard centsBlock)
+  plannerCentsBlock: {
+    marginBottom: 14, borderRadius: 16, padding: 14,
+    backgroundColor: t.mode === 'dark' ? 'rgba(46,158,91,0.10)' : t.sageSoft,
+  },
+  plannerCentsHead: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 6 },
+  plannerCentsEyebrow: { ...type.eyebrow, fontSize: 10, color: t.textFaint },
+  plannerCentsMsg: { color: t.textMuted, fontSize: 12.5, lineHeight: 18 },
   hubCard: {
     width: (Dimensions.get('window').width - 48 - 12) / 2,
     borderRadius: 20, padding: 16, minHeight: 128,
@@ -2055,6 +2350,27 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   },
   groupName: { color: t.textFaint, fontSize: 11, fontWeight: '800', letterSpacing: 1.2 },
   groupTotals: { color: t.textMuted, fontSize: 11, fontWeight: '700' },
+  // v5.38: Bills | Spending segment control
+  segRow: { flexDirection: 'row', gap: 8 },
+  segChip: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    paddingVertical: 11, borderRadius: 14,
+    backgroundColor: t.inputFill, borderWidth: 1, borderColor: t.borderSoft,
+  },
+  segChipSel: { backgroundColor: t.emerald, borderColor: t.emerald },
+  segText: { color: t.emerald, fontSize: 13.5, fontWeight: '800' },
+  segCount: { color: t.textMuted, fontSize: 11.5, fontWeight: '800' },
+
+  // Budgets totals header (whole list vs paid)
+  totalsHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 },
+  totalsTitle: { color: t.textFaint, fontSize: 11, fontWeight: '800', letterSpacing: 1 },
+  totalsPct: { color: t.emerald, fontSize: 12.5, fontWeight: '800' },
+  totalsLine: { marginBottom: 10 },
+  totalsPaid: { color: t.textPrimary, fontSize: 22, fontWeight: '800' },
+  totalsBudgeted: { color: t.textPrimary, fontSize: 15.5, fontWeight: '700' },
+  totalsOf: { color: t.textMuted, fontSize: 13 },
+  totalsSub: { color: t.textMuted, fontSize: 12.5, marginTop: 8 },
+
   budgetRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 12 },
   budgetIcon: {
     width: 40, height: 40, borderRadius: 13, alignItems: 'center', justifyContent: 'center',
@@ -2143,6 +2459,13 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   splitPersonInputs: { flexDirection: 'row', gap: 8 },
   splitNameInput: { flex: 0.42 },
   splitMailInput: { flex: 0.58 },
+  // Planner v5 custom shares: name+amount share the first line, email gets
+  // its own full-width line, the block keeps rows visually grouped.
+  splitPersonBlock: { marginBottom: 4 },
+  splitAmtInput: { flex: 0.58, textAlign: 'right' },
+  splitMailFull: { alignSelf: 'stretch' },
+  splitFakeField: { justifyContent: 'center' },
+  splitFakeFieldText: { color: t.textPrimary, fontSize: 14, fontWeight: '700' },
   sheetError: { color: t.red, fontSize: 12, lineHeight: 17, marginTop: -6, marginBottom: 12, paddingHorizontal: 2 },
   dueModeRow: { flexDirection: 'row', gap: 8, marginBottom: 12 },
   dueModeChip: {

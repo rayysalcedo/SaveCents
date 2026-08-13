@@ -38,9 +38,9 @@ export interface FinanceState {
   setCountry: (code: string) => void;
   addAccount: (
     name: string, color?: string, initial?: string,
-    opts?: { kind?: 'debit' | 'credit'; creditLimit?: number; billingDay?: number; balance?: number; network?: 'visa' | 'mastercard' | 'none'; currency?: string; nickname?: string },
+    opts?: { kind?: 'debit' | 'credit'; creditLimit?: number; billingDay?: number; dueDay?: number; balance?: number; network?: 'visa' | 'mastercard' | 'none'; currency?: string; nickname?: string },
   ) => void;
-  updateAccount: (id: string, patch: Partial<Pick<Account, 'name' | 'color' | 'initial' | 'kind' | 'creditLimit' | 'billingDay' | 'network' | 'currency' | 'nickname'>>) => void;
+  updateAccount: (id: string, patch: Partial<Pick<Account, 'name' | 'color' | 'initial' | 'kind' | 'creditLimit' | 'billingDay' | 'dueDay' | 'network' | 'currency' | 'nickname'>>) => void;
   reorderAccounts: (fromIndex: number, toIndex: number) => void;
   updateProfile: (name: string, email: string) => void;
   updatePersona: (nickname: string, avatarId: string | null) => void;
@@ -65,6 +65,11 @@ export interface FinanceState {
   // Planner v2.3: settle due monthly auto-pay budgets. Idempotent per month,
   // safe to call on every app open and after income lands.
   runAutoPayIfDue: () => void;
+  runCreditStatementsIfDue: () => void;
+  // v5.43: Cents arms the Transactions tab's filters; the tab consumes and
+  // clears this on focus. Read-only, transient.
+  ledgerFilter: { query?: string; categoryName?: string } | null;
+  setLedgerFilter: (f: { query?: string; categoryName?: string } | null) => void;
   removeBudget: (id: string) => void;
   removeGoal: (id: string) => void;
   login: (name: string, email: string) => void;
@@ -155,7 +160,11 @@ export interface SplitInput {
   payerEmail?: string;
   payerAccountId?: string;
   includeMe?: boolean;
-  people: { id: string; name: string; email?: string }[];
+  // Planner v5: 'custom' = each person owes their typed amount (share below);
+  // absent/'even' divides the total equally, exactly the pre-v5 behavior.
+  splitKind?: 'even' | 'custom';
+  myShareAmount?: number; // other mode custom: the user's own typed share
+  people: { id: string; name: string; email?: string; share?: number }[];
 }
 
 export interface LendInput {
@@ -182,13 +191,14 @@ function reverseSplitTx(s: { accounts: Account[]; transactions: Transaction[] },
 }
 
 function applyTxEffect(s: { accounts: Account[]; categories: Category[] }, tx: Transaction, sign: 1 | -1) {
-  const accounts = tx.accountId
+  let accounts = tx.accountId
     ? s.accounts.map((a) =>
         a.id === tx.accountId
           ? { ...a, balance: flowBalance(a, tx.isIncome, tx.amount, sign) }
           : a,
       )
     : s.accounts;
+  accounts = applyCreditBillPayment({ accounts, categories: s.categories }, tx, sign);
   const categories = tx.isIncome || tx.goalId
     ? s.categories
     : s.categories.map((c) =>
@@ -197,6 +207,26 @@ function applyTxEffect(s: { accounts: Account[]; categories: Category[] }, tx: T
           : c,
       );
   return { accounts, categories };
+}
+
+// Wallet v5 (owner decision): paying a credit card's bill budget is a REAL
+// payment. An expense filed under a budget carrying creditAccountId (from a
+// different source, or no source at all - cash outside the app still pays
+// the bank) reduces that card's owed balance by the same amount, so the
+// budget and the card never tell different stories. sign -1 (edit/delete
+// reversal) puts the owed amount back. Spending ON the card itself
+// (accountId = the card) is normal card spending, never a payment.
+function applyCreditBillPayment(
+  s: { accounts: Account[]; categories: Category[] },
+  tx: { isIncome: boolean; goalId?: string; categoryId: string; accountId?: string; amount: number },
+  sign: 1 | -1,
+): Account[] {
+  if (tx.isIncome || tx.goalId) return s.accounts;
+  const cat = s.categories.find((c) => c.name.toLowerCase() === tx.categoryId.toLowerCase());
+  if (!cat?.creditAccountId || cat.creditAccountId === tx.accountId) return s.accounts;
+  return s.accounts.map((a) =>
+    a.id === cat.creditAccountId ? { ...a, balance: Math.max(a.balance - tx.amount * sign, 0) } : a,
+  );
 }
 
 // M5.30: echo filter. If a voice transcript is essentially what Cents JUST
@@ -256,6 +286,45 @@ const soundsFilipino = (t: string) => /\b(oo|opo|sige|tama|tara|gora|wag|huwag|h
 // M5.22: fuzzy account matching ("gcash" hits "GCash Wallet", "the bpi one"
 // hits "BPI Savings"). Used by executeAction (user named a source up front)
 // and by the which-source follow-up answer.
+// M5.34: resolve "the jacket expense" / "yesterday's 250 coffee" to the
+// NEWEST matching ledger row. Matched by name (description or category,
+// containment both ways) and, when the user stated one, the exact amount.
+// Savings moves are excluded - those are edited through the goal intents so
+// the goal side always reverses with them.
+function findTxForEdit(st2: { transactions: Transaction[] }, item: string, amount: number): Transaction | undefined {
+  const q = item.trim().toLowerCase();
+  return st2.transactions.find((tx) => {
+    if (tx.goalId) return false;
+    const desc = tx.description.toLowerCase();
+    const cat = tx.categoryId.toLowerCase();
+    const nameHit = !q || desc.includes(q) || q.includes(desc) || cat === q || cat.includes(q);
+    const amtHit = !(amount > 0) || Math.abs(tx.amount - amount) < 0.005;
+    return nameHit && amtHit;
+  });
+}
+
+// Next occurrence of a monthly due day: this month if it hasn't passed
+// (12h grace), else next month, clamped to short months like rollover.
+function nextMonthlyDueTs(day: number): number {
+  const build = (y: number, m: number) => {
+    const last = new Date(y, m + 1, 0).getDate();
+    const d = new Date(y, m, Math.min(day, last));
+    d.setHours(12, 0, 0, 0);
+    return d;
+  };
+  const base = new Date();
+  let d = build(base.getFullYear(), base.getMonth());
+  if (d.getTime() < Date.now() - 12 * 3600 * 1000) d = build(base.getFullYear(), base.getMonth() + 1);
+  return d.getTime();
+}
+
+function ordinalDay(n: number): string {
+  const rem100 = n % 100;
+  if (rem100 >= 11 && rem100 <= 13) return `${n}th`;
+  const rem10 = n % 10;
+  return `${n}${rem10 === 1 ? 'st' : rem10 === 2 ? 'nd' : rem10 === 3 ? 'rd' : 'th'}`;
+}
+
 function matchAccount(input: string | undefined, accounts: Account[]): Account | undefined {
   const t = (input ?? '').trim().toLowerCase();
   if (!t) return undefined;
@@ -516,14 +585,18 @@ function deliverResult(
   const denied = result.confirmDenied === true && result.confirmGranted !== true;
   if ((granted || denied) && resolveLatestBatch(granted, opts, getS, set, result.lang)) return;
 
-  // Multi-step requests produce one card per action, in order. Categories
-  // added earlier in the same batch count as "existing" for later cards
-  // (e.g. "add a Groceries budget 9000 and log that receipt there").
+  // Multi-step requests: one SUMMARY card for the whole plan (owner request,
+  // M5.34) - Cents lists everything it's about to do and ONE yes does it all.
+  // Each action still goes through buildReplyFromResult first, because that's
+  // where category fitting, goal validation and tx resolution happen; its
+  // confirmable cards are folded into the summary, while its plain-text
+  // replies (a goal that doesn't exist, an empty withdrawal) surface as-is.
   const st = getS();
   if (result.intent !== 'Unknown' && result.actions.length > 1) {
     const replies: ChatMessage[] = [];
     if (result.reply) replies.push({ id: uid(), sender: 'CENTS', type: 'text', text: result.reply });
     const assumed: string[] = [];
+    const built: ChatMessage[] = [];
     for (const a of result.actions) {
       const sub: CentsResult = {
         ...result,
@@ -531,10 +604,36 @@ function deliverResult(
         amount: a.amount,
         categoryName: a.categoryName,
         item: a.item || a.categoryName,
+        // M5.34 fix: per-action fields used to be DROPPED in favor of the
+        // top-level ones, so "log the speaker from GoTyme and the fare from
+        // GCash" collapsed both onto one source. Per-action wins now.
+        accountName: a.accountName || result.accountName,
+        targetDate: a.targetDate || result.targetDate,
+        dueDay: a.dueDay || result.dueDay,
         reply: '',
       };
-      replies.push(buildReplyFromResult(sub, st, assumed));
+      built.push(buildReplyFromResult(sub, st, assumed));
       if (a.intent === 'AddCategory' && a.categoryName) assumed.push(a.categoryName);
+    }
+    const confirmable = built.filter((m) => m.type === 'confirmation' || m.type === 'negotiation');
+    const others = built.filter((m) => !(m.type === 'confirmation' || m.type === 'negotiation'));
+    replies.push(...others);
+    if (confirmable.length >= 2) {
+      const fil = result.lang === 'fil';
+      const steps = confirmable.map((m) => ('prompt' in m ? m.prompt.trim().replace(/\?+\s*$/, '') : '')).filter(Boolean);
+      const notes = Array.from(new Set(
+        confirmable.map((m) => ('coachNote' in m ? (m.coachNote ?? '').trim() : '')).filter(Boolean),
+      ));
+      replies.push({
+        id: uid(), sender: 'CENTS', type: 'batchConfirmation',
+        prompt: fil ? 'Ito ang plano. Gawin ko na lahat?' : "Here's the plan. Do all of it?",
+        steps,
+        actions: confirmable.map((m) => ('action' in m ? m.action : null)).filter(Boolean) as ActionType[],
+        confirmed: false, handled: false, lang: result.lang,
+        coachNote: notes.length ? notes.join(' ') : undefined,
+      });
+    } else {
+      replies.push(...confirmable);
     }
     set((s2) => ({ chat: [...s2.chat, ...replies], isThinking: false }));
     maybeSpeakReplies(getS(), opts, replies, result.lang, result.speechReply);
@@ -699,14 +798,22 @@ export const useFinance = create<FinanceState>()(
         billingDay: opts?.kind === 'credit' && opts?.billingDay
           ? Math.min(Math.max(Math.round(opts.billingDay), 1), 31)
           : undefined,
+        dueDay: opts?.kind === 'credit' && opts?.dueDay
+          ? Math.min(Math.max(Math.round(opts.dueDay), 1), 31)
+          : undefined,
         network: opts?.network,
         currency: opts?.currency,
         nickname: opts?.nickname?.trim() || undefined,
       }],
     });
+    get().runCreditStatementsIfDue(); // a new card's billing day may already be past
   },
-  updateAccount: (id, patch) =>
-    set((s) => ({ accounts: s.accounts.map((a) => (a.id === id ? { ...a, ...patch } : a)) })),
+  updateAccount: (id, patch) => {
+    set((s) => ({ accounts: s.accounts.map((a) => (a.id === id ? { ...a, ...patch } : a)) }));
+    // v5.35: billing/due day edits take effect NOW (statement cut or due-date
+    // repair), instead of waiting for the next Home visit.
+    get().runCreditStatementsIfDue();
+  },
   reorderAccounts: (fromIndex, toIndex) =>
     set((s) => {
       if (fromIndex === toIndex || fromIndex < 0 || fromIndex >= s.accounts.length) return s;
@@ -772,7 +879,8 @@ export const useFinance = create<FinanceState>()(
   // name on purpose WITHOUT creating a budget, so the budget list stays clean.
   addSplit: (input) =>
     set((s) => {
-      const share = Math.round((input.total / input.headcount) * 100) / 100;
+      const evenShare = Math.round((input.total / input.headcount) * 100) / 100;
+      const custom = input.splitKind === 'custom';
       let accounts = s.accounts;
       let transactions = s.transactions;
       let expenseTxId: string | undefined;
@@ -797,8 +905,13 @@ export const useFinance = create<FinanceState>()(
         payerEmail: input.mode === 'other' ? input.payerEmail?.trim() || undefined : undefined,
         payerAccountId: input.mode === 'me' ? input.payerAccountId : undefined,
         expenseTxId,
+        splitKind: input.splitKind,
+        myShareAmount: input.mode === 'other' && input.includeMe && custom ? input.myShareAmount : undefined,
         myShare: input.mode === 'other' && input.includeMe ? { included: true, paid: false } : undefined,
-        people: input.people.map((p) => ({ id: p.id, name: p.name, email: p.email?.trim() || undefined, share, paid: false })),
+        people: input.people.map((p) => ({
+          id: p.id, name: p.name, email: p.email?.trim() || undefined,
+          share: custom ? (p.share ?? evenShare) : evenShare, paid: false,
+        })),
       };
       return { splits: [bill, ...s.splits], accounts, transactions };
     }),
@@ -823,7 +936,8 @@ export const useFinance = create<FinanceState>()(
       if (dropMyShare && old.myShare?.txId) {
         ({ accounts, transactions } = reverseSplitTx({ accounts, transactions }, old.myShare.txId));
       }
-      const share = Math.round((input.total / input.headcount) * 100) / 100;
+      const evenShare = Math.round((input.total / input.headcount) * 100) / 100;
+      const custom = input.splitKind === 'custom';
       let expenseTxId: string | undefined;
       if (input.mode === 'me' && input.payerAccountId) {
         expenseTxId = uid();
@@ -846,6 +960,8 @@ export const useFinance = create<FinanceState>()(
         payerEmail: input.mode === 'other' ? input.payerEmail?.trim() || undefined : undefined,
         payerAccountId: input.mode === 'me' ? input.payerAccountId : undefined,
         expenseTxId,
+        splitKind: input.splitKind,
+        myShareAmount: input.mode === 'other' && input.includeMe && custom ? input.myShareAmount : undefined,
         myShare: input.mode === 'other' && input.includeMe
           ? { included: true, paid: old.myShare?.paid ?? false, txId: old.myShare?.txId }
           : undefined,
@@ -856,7 +972,7 @@ export const useFinance = create<FinanceState>()(
             id: p.id,
             name: p.name,
             email: p.email?.trim() || undefined,
-            share,
+            share: custom ? (p.share ?? evenShare) : evenShare,
             paid: prev?.paid ?? false,
             txId: prev?.txId,
             emailedAt: prev?.emailedAt,
@@ -913,7 +1029,9 @@ export const useFinance = create<FinanceState>()(
     set((s) => {
       const bill = s.splits.find((b) => b.id === splitId);
       if (!bill?.myShare || bill.myShare.paid) return s;
-      const share = bill.people[0]?.share ?? Math.round((bill.total / bill.headcount) * 100) / 100;
+      // Planner v5: the user's own share is stored explicitly on custom
+      // splits; even splits keep the old derivations.
+      const share = bill.myShareAmount ?? bill.people[0]?.share ?? Math.round((bill.total / bill.headcount) * 100) / 100;
       const txId = uid();
       const accounts = s.accounts.map((a) => (a.id === accountId ? { ...a, balance: flowBalance(a, false, share, 1) } : a));
       const transactions: Transaction[] = [
@@ -1135,15 +1253,16 @@ export const useFinance = create<FinanceState>()(
             ...s.categories,
             { id: uid(), name: categoryName, icon: 'pricetag', spent: amount, limit: Math.ceil((amount * 1.5) / 100) * 100 },
           ];
+      const tx = { id: uid(), amount, description: note?.trim() || categoryName, categoryId: categoryName, timestamp: Date.now(), isIncome: false, accountId };
+      let accounts = accountId
+        ? s.accounts.map((a) => (a.id === accountId ? { ...a, balance: flowBalance(a, false, amount, 1) } : a))
+        : s.accounts;
+      // Wallet v5: an expense on a credit-bill budget pays the card down.
+      accounts = applyCreditBillPayment({ accounts, categories: s.categories }, tx, 1);
       return {
         categories,
-        accounts: accountId
-          ? s.accounts.map((a) => (a.id === accountId ? { ...a, balance: flowBalance(a, false, amount, 1) } : a))
-          : s.accounts,
-        transactions: [
-          { id: uid(), amount, description: note?.trim() || categoryName, categoryId: categoryName, timestamp: Date.now(), isIncome: false, accountId },
-          ...s.transactions,
-        ],
+        accounts,
+        transactions: [tx, ...s.transactions],
       };
     });
     notifyBudgetCrossings(prevCategories, get().categories, get().notificationsEnabled);
@@ -1235,6 +1354,12 @@ export const useFinance = create<FinanceState>()(
     set({
       lastRollover: key,
       categories: s.categories.map((c) => {
+        // v5.36: credit-card bill budgets live on the CARD's cycle, not the
+        // calendar's. Their spent resets and due date re-arm happen in
+        // runCreditStatementsIfDue on the billing day; the generic monthly
+        // rollover recomputing spent (wiping a payment made late in the
+        // cycle) or clearing their once-type due date would corrupt that.
+        if (c.creditAccountId) return c;
         const spent = s.transactions
           .filter((tx) => !tx.isIncome && tx.timestamp >= monthStart && tx.categoryId.toLowerCase() === c.name.toLowerCase())
           .reduce((a, tx) => a + tx.amount, 0);
@@ -1275,6 +1400,10 @@ export const useFinance = create<FinanceState>()(
     const now = Date.now();
     const enabled = get().notificationsEnabled;
     for (const c of get().categories) {
+      // v5.37 (owner decision): credit bill budgets are REMINDER-ONLY,
+      // never auto-paid - paying the card is always a deliberate act. The
+      // 'once' gate excludes them here, and the statement sweep strips any
+      // auto-pay state off a bill budget so the rule can't be worked around.
       if (!c.autoPay || !c.autoPayAccountId || !c.dueDate || c.dueType === 'once') continue;
       if (c.autoPayLast === key) continue;
       if (c.dueDate > now) continue; // due day not here yet
@@ -1316,6 +1445,143 @@ export const useFinance = create<FinanceState>()(
       get().addExpense(amount, c.name, acct.id, `Auto-pay: ${c.name}`);
       stamp({ autoPayLast: key });
       notifyAutoPay(`${c.name} auto-paid`, `${peso(amount)} from ${acct.name}, logged for you.`, enabled);
+    }
+  },
+
+  // Wallet v5 (owner request): when a credit card's billing day arrives,
+  // whatever the card owes becomes a "<Card> Bill" budget in the Budgets
+  // list, due on the card's dueDay, reminders on. Runs once per card per
+  // month (lastStatement stamp), matched by creditAccountId so a renamed
+  // bill budget still refreshes instead of duplicating. Owing nothing on
+  // the billing day = no bill that cycle. Paying the budget pays the card
+  // (applyCreditBillPayment), so the two never disagree.
+  ledgerFilter: null,
+  setLedgerFilter: (f) => set({ ledgerFilter: f }),
+
+  runCreditStatementsIfDue: () => {
+    const key = monthKey();
+    const now = new Date();
+    const enabled = get().notificationsEnabled;
+    // Due date = the next occurrence of dueDay AFTER the statement day
+    // (same month when it falls later, next month otherwise), clamped to
+    // short months like rollover does.
+    const dueAfterStatement = (dueDay: number, stmtDay: number): number => {
+      const d = new Date(now.getFullYear(), now.getMonth(), 1);
+      if (dueDay <= stmtDay) d.setMonth(d.getMonth() + 1);
+      const lastDay = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+      d.setDate(Math.min(dueDay, lastDay));
+      d.setHours(12, 0, 0, 0);
+      return d.getTime();
+    };
+    for (const a of get().accounts) {
+      if (a.kind !== 'credit' || !a.billingDay) continue;
+      const lastDayThisMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+      const stmtDay = Math.min(a.billingDay, lastDayThisMonth);
+      // v5.35 REPAIR PASS, v5.36 drift-proofed: an existing linked bill
+      // budget re-syncs its due date ONLY when the card's dueDay was set or
+      // corrected after the cut - i.e. the budget has no date, or its date's
+      // day-of-month no longer matches the card's dueDay (clamp-aware for
+      // short months). A date whose day already matches belongs to its own
+      // statement and is left alone, so an UNPAID old bill can never have
+      // its deadline quietly dragged into the next month.
+      const linked0 = get().categories.find((c) => c.creditAccountId === a.id);
+      if (linked0 && a.dueDay) {
+        const existing = linked0.dueDate ? new Date(linked0.dueDate) : null;
+        const clampDay = existing
+          ? Math.min(a.dueDay, new Date(existing.getFullYear(), existing.getMonth() + 1, 0).getDate())
+          : 0;
+        if (!existing || existing.getDate() !== clampDay) {
+          const wantDue = dueAfterStatement(a.dueDay, stmtDay);
+          set((s) => ({
+            categories: s.categories.map((c) =>
+              c.id === linked0.id ? { ...c, dueDate: wantDue, dueType: 'once' as const, remind: true } : c,
+            ),
+          }));
+        }
+      } else if (linked0 && !a.dueDay && linked0.dueDate) {
+        // Card's due day was cleared in Wallet: the bill loses its date too.
+        set((s) => ({
+          categories: s.categories.map((c) =>
+            c.id === linked0.id ? { ...c, dueDate: undefined } : c,
+          ),
+        }));
+      }
+      if (a.lastStatement === key) {
+        // v5.46 RESURRECTION (owner question exposed the hole): the bill
+        // budget can be deleted mid-cycle - by the trash button or by Cents'
+        // RemoveCategory - and the once-per-month stamp would have kept it
+        // dead until NEXT billing day, with no way to hand-make one that
+        // carries the payment link. If this month's statement already cut
+        // and the card still owes, the sweep recreates the linked bill on
+        // its next run (limit = what's STILL owed, fresh due date).
+        if (!linked0 && a.balance > 0) {
+          const rezDue = a.dueDay ? dueAfterStatement(a.dueDay, stmtDay) : undefined;
+          const rezName = `${a.name}${a.nickname ? ` ${a.nickname}` : ''} Bill`;
+          let revived = false;
+          set((s) => {
+            if (s.categories.some((c) => c.name.toLowerCase() === rezName.toLowerCase())) return s;
+            revived = true;
+            return {
+              categories: [...s.categories, {
+                id: uid(), name: rezName, limit: a.balance, spent: 0, icon: 'card', category: 'Bills',
+                dueDate: rezDue, dueType: 'once' as const, remind: true, creditAccountId: a.id,
+              }],
+            };
+          });
+          if (revived) {
+            pushCents(set, `${a.name}'s bill went missing from your Budgets, so I brought it back: ${peso(a.balance)} still owed this cycle.`);
+          }
+        }
+        continue;
+      }
+      if (now.getDate() < stmtDay) continue; // billing day not here yet
+      const stampDone = () =>
+        set((s) => ({ accounts: s.accounts.map((x) => (x.id === a.id ? { ...x, lastStatement: key } : x)) }));
+      const owed = a.balance;
+      if (!(owed > 0)) {
+        // v5.36: nothing owed this cycle = no bill. A leftover budget from a
+        // previous statement is CLEARED from the list instead of lingering
+        // as a paid zombie; its payment transactions stay in the ledger,
+        // which is the real record.
+        const stale = get().categories.find((c) => c.creditAccountId === a.id);
+        if (stale) {
+          set((s) => ({ categories: s.categories.filter((c) => c.id !== stale.id) }));
+          pushCents(set, `${a.name}'s statement cut at zero owed. Cleared last cycle's bill from your Budgets.`);
+        }
+        stampDone();
+        continue;
+      }
+      // No dueDay set = a bill without a date; it still lands in the list,
+      // just without reminders to anchor (and the repair pass above dates it
+      // the moment the owner fills the field in Wallet).
+      const dueDate = a.dueDay ? dueAfterStatement(a.dueDay, stmtDay) : undefined;
+      const billName = `${a.name}${a.nickname ? ` ${a.nickname}` : ''} Bill`;
+      set((s) => {
+        const existing = s.categories.find((c) => c.creditAccountId === a.id);
+        if (existing) {
+          return {
+            categories: s.categories.map((c) =>
+              c.id === existing.id
+                ? { ...c, name: billName, limit: owed, spent: 0, dueDate, dueType: 'once' as const, remind: true, autoPay: undefined, autoPayAccountId: undefined }
+                : c,
+            ),
+          };
+        }
+        // Name collision with an unrelated budget: refuse to hijack it.
+        if (s.categories.some((c) => c.name.toLowerCase() === billName.toLowerCase())) return s;
+        return {
+          categories: [...s.categories, {
+            id: uid(), name: billName, limit: owed, spent: 0, icon: 'card', category: 'Bills',
+            dueDate, dueType: 'once' as const, remind: true, creditAccountId: a.id,
+          }],
+        };
+      });
+      stampDone();
+      const dueBit = dueDate
+        ? `, due ${new Date(dueDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`
+        : '';
+      notifyAutoPay(`${a.name} statement is in`, `${peso(owed)} owed${dueBit}. It's in your Budgets now.`, enabled);
+      pushCents(set, `${a.name}'s statement just cut: ${peso(owed)} owed${dueBit}. I added it to your Budgets${dueDate ? ' with reminders on' : ''}.`);
     }
   },
 
@@ -1455,6 +1721,16 @@ export const useFinance = create<FinanceState>()(
       const prevCategories = s.categories;
       if (msg.type === 'confirmation' || msg.type === 'negotiation') {
         executeAction(msg.action, set);
+      } else if (msg.type === 'batchConfirmation') {
+        // M5.34: ONE yes lands the whole plan. Every action runs through the
+        // same chokepoint in order; batchDepth holds flushPendingAsk until
+        // the end so a plan asks at most one follow-up question.
+        batchDepth += 1;
+        try {
+          for (const a of msg.actions) executeAction(a, set);
+        } finally {
+          batchDepth -= 1;
+        }
       } else if (msg.type === 'receiptScan') {
         executeAction({ kind: 'LogTransaction', amount: msg.amount, categoryName: 'Others' }, set);
       } else if (msg.type === 'consultItem') {
@@ -1589,6 +1865,7 @@ export const useFinance = create<FinanceState>()(
           setNumberLocale(COUNTRIES[state.country]?.locale ?? 'en-PH');
           state.setHasHydrated(true);
           state.rolloverBudgetsIfNeeded(); // month may have changed since last open
+          state.runCreditStatementsIfDue(); // cut card statements whose billing day arrived
           state.runAutoPayIfDue(); // settle any monthly bills whose day arrived
         }
       },
@@ -1723,14 +2000,22 @@ function buildReplyFromResult(result: CentsResult, st2: FinanceState, assumedCat
       case 'CategoryMismatch':
         reply = { id: uid(), sender: 'CENTS', type: 'mismatch', item, amount, confirmed: false, handled: false };
         break;
-      case 'AddCategory':
+      case 'AddCategory': {
+        // v5.38: a stated due day makes this a BILL, not a spending
+        // envelope - the ask says so, and the action carries the day.
+        const billDay = Math.min(Math.max(Math.round(result.dueDay ?? 0), 0), 31);
         reply = {
           id: uid(), sender: 'CENTS', type: 'confirmation',
-          prompt: `Add a ${categoryName} budget of ${peso(amount)}/month?`,
-          action: { kind: 'AddCategory', name: categoryName, limit: amount },
-          confirmed: false, handled: false,
+          prompt: billDay > 0
+            ? (fil
+                ? `Idagdag ang ${categoryName} bilang bill: ${peso(amount)} kada buwan, due tuwing ika-${billDay}, may mga paalala?`
+                : `Add ${categoryName} as a bill: ${peso(amount)}/month, due every ${ordinalDay(billDay)}, reminders on?`)
+            : `Add a ${categoryName} spending budget of ${peso(amount)}/month?`,
+          action: { kind: 'AddCategory', name: categoryName, limit: amount, dueDay: billDay > 0 ? billDay : undefined },
+          confirmed: false, handled: false, lang,
         };
         break;
+      }
       case 'RemoveCategory':
         reply = {
           id: uid(), sender: 'CENTS', type: 'confirmation',
@@ -1874,6 +2159,108 @@ function buildReplyFromResult(result: CentsResult, st2: FinanceState, assumedCat
           confirmed: false, handled: false,
         };
         break;
+      case 'ShowTransactions': {
+        const catHit = result.categoryName
+          ? st2.categories.find((c) => c.name.toLowerCase() === result.categoryName!.toLowerCase())
+          : undefined;
+        const q = (item || '').trim();
+        const what = catHit ? catHit.name : q || 'everything';
+        reply = {
+          id: uid(), sender: 'CENTS', type: 'confirmation',
+          prompt: fil
+            ? `Ipakita ang ${what} sa Transactions tab?`
+            : `Pull up ${what} in your Transactions tab?`,
+          action: { kind: 'ShowTransactions', query: catHit ? undefined : q || undefined, categoryName: catHit?.name },
+          confirmed: false, handled: false, lang,
+        };
+        break;
+      }
+      // M5.34 (Cents parity phase 1): the exact transaction is resolved NOW,
+      // at ask time, and its id rides on the action - the confirm can never
+      // hit a different row than the one the card described.
+      case 'RemoveTransaction': {
+        const tx = findTxForEdit(st2, item, amount);
+        if (!tx) {
+          reply = {
+            id: uid(), sender: 'CENTS', type: 'text',
+            text: fil
+              ? `Wala akong makitang na-log na "${item}"${amount > 0 ? ` na ${peso(amount)}` : ''}. Tingnan mo sa Analytics ang listahan.`
+              : `I couldn't find a logged transaction matching "${item}"${amount > 0 ? ` for ${peso(amount)}` : ''}. The full ledger is in Analytics.`,
+          };
+          break;
+        }
+        const when = new Date(tx.timestamp).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        reply = {
+          id: uid(), sender: 'CENTS', type: 'confirmation',
+          prompt: fil
+            ? `Burahin ang ${peso(tx.amount)} na "${tx.description}" mula ${when}? Babalik ang balanse at budget nito.`
+            : `Delete the ${peso(tx.amount)} "${tx.description}" from ${when}? Its balance and budget effects reverse.`,
+          action: { kind: 'RemoveTransaction', txId: tx.id, label: tx.description },
+          confirmed: false, handled: false, lang,
+        };
+        break;
+      }
+      case 'UpdateTransaction': {
+        // 'amount' here is the NEW amount, so the match is by name only.
+        const tx = findTxForEdit(st2, item, 0);
+        if (!tx) {
+          reply = {
+            id: uid(), sender: 'CENTS', type: 'text',
+            text: fil
+              ? `Wala akong makitang na-log na "${item}". Tingnan mo sa Analytics ang listahan.`
+              : `I couldn't find a logged transaction matching "${item}". The full ledger is in Analytics.`,
+          };
+          break;
+        }
+        if (!(amount > 0)) {
+          reply = {
+            id: uid(), sender: 'CENTS', type: 'text',
+            text: fil ? `Magkano dapat ang "${tx.description}"?` : `What should "${tx.description}" be instead?`,
+          };
+          break;
+        }
+        reply = {
+          id: uid(), sender: 'CENTS', type: 'confirmation',
+          prompt: fil
+            ? `Palitan ang "${tx.description}" mula ${peso(tx.amount)} papuntang ${peso(amount)}?`
+            : `Change "${tx.description}" from ${peso(tx.amount)} to ${peso(amount)}?`,
+          action: { kind: 'UpdateTransaction', txId: tx.id, newAmount: amount, label: tx.description },
+          confirmed: false, handled: false, lang,
+        };
+        break;
+      }
+      case 'SetBudgetDue': {
+        if (!category) {
+          reply = {
+            id: uid(), sender: 'CENTS', type: 'text',
+            text: st2.categories.length
+              ? `I couldn't find a budget named ${categoryName}. Your budgets: ${st2.categories.map((c) => c.name).join(', ')}.`
+              : `You don't have any budgets yet. Say something like "add a rent budget of 8,000" first.`,
+          };
+          break;
+        }
+        const day = Math.min(Math.max(Math.round(result.dueDay ?? 0), 0), 31);
+        if (day === 0) {
+          reply = {
+            id: uid(), sender: 'CENTS', type: 'confirmation',
+            prompt: fil
+              ? `Itigil ang mga paalala para sa ${category.name}?`
+              : `Turn off reminders for ${category.name}?`,
+            action: { kind: 'SetBudgetDue', categoryName: category.name, dueDay: 0 },
+            confirmed: false, handled: false, lang,
+          };
+          break;
+        }
+        reply = {
+          id: uid(), sender: 'CENTS', type: 'confirmation',
+          prompt: fil
+            ? `Gawing due ang ${category.name} tuwing ika-${day} ng buwan, may mga paalala?`
+            : `Make ${category.name} due every ${ordinalDay(day)} of the month, reminders on?`,
+          action: { kind: 'SetBudgetDue', categoryName: category.name, dueDay: day },
+          confirmed: false, handled: false, lang,
+        };
+        break;
+      }
       default:
         reply = {
           id: uid(), sender: 'CENTS', type: 'text',
@@ -1966,18 +2353,16 @@ function executeAction(action: ActionType, set: Setter) {
         const exists = s.categories.some((c) => c.name.toLowerCase() === action.categoryName.toLowerCase());
         const src = debitSource(s, action.accountName, action.amount);
         srcName1 = src.acct?.name;
+        const tx = { id: uid(), amount: action.amount, description: action.item?.trim() || action.categoryName, categoryId: action.categoryName, timestamp: Date.now(), isIncome: false, accountId: src.acct?.id };
         return {
-          accounts: src.accounts,
+          accounts: applyCreditBillPayment({ accounts: src.accounts, categories: s.categories }, tx, 1),
           categories: exists
             ? s.categories.map((c) =>
                 c.name.toLowerCase() === action.categoryName.toLowerCase()
                   ? { ...c, spent: c.spent + action.amount } : c,
               )
             : [...s.categories, { id: uid(), name: action.categoryName, limit: action.amount, spent: action.amount, icon: 'pricetag' }],
-          transactions: [
-            { id: uid(), amount: action.amount, description: action.item?.trim() || action.categoryName, categoryId: action.categoryName, timestamp: Date.now(), isIncome: false, accountId: src.acct?.id },
-            ...s.transactions,
-          ],
+          transactions: [tx, ...s.transactions],
         };
       });
       pushCents(set, `Logged ${peso(action.amount)}${action.item ? ` for ${action.item}` : ''} under ${action.categoryName}${srcName1 ? ` from ${srcName1}` : ''}.`);
@@ -1986,26 +2371,38 @@ function executeAction(action: ActionType, set: Setter) {
     case 'NegotiatePurchase':
       set((s) => {
         const src = debitSource(s, action.accountName, action.amount);
+        const tx = { id: uid(), amount: action.amount, description: action.item, categoryId: action.categoryName, timestamp: Date.now(), isIncome: false, accountId: src.acct?.id };
         return {
-          accounts: src.accounts,
+          accounts: applyCreditBillPayment({ accounts: src.accounts, categories: s.categories }, tx, 1),
           categories: s.categories.map((c) =>
             c.name.toLowerCase() === action.categoryName.toLowerCase()
               ? { ...c, spent: c.spent + action.amount } : c,
           ),
-          transactions: [
-            { id: uid(), amount: action.amount, description: action.item, categoryId: action.categoryName, timestamp: Date.now(), isIncome: false, accountId: src.acct?.id },
-            ...s.transactions,
-          ],
+          transactions: [tx, ...s.transactions],
         };
       });
       pushCents(set, `Done. ${peso(action.amount)} logged to ${action.categoryName}. Keep an eye on that goal!`);
       break;
-    case 'AddCategory':
+    case 'AddCategory': {
+      // v5.38: dueDay = a BILL (dated, monthly due, reminders on) that lands
+      // in the Bills tab; without it, a spending envelope as before.
+      const bill = action.dueDay && action.dueDay > 0;
       set((s) => ({
-        categories: [...s.categories, { id: uid(), name: action.name, limit: action.limit, spent: 0, icon: 'pricetag' }],
+        categories: [...s.categories, {
+          id: uid(), name: action.name, limit: action.limit, spent: 0, icon: 'pricetag',
+          ...(bill ? {
+            dueDate: nextMonthlyDueTs(action.dueDay!),
+            dueDay: action.dueDay,
+            dueType: 'monthly' as const,
+            remind: true,
+          } : {}),
+        }],
       }));
-      pushCents(set, `Added ${action.name} with a ${peso(action.limit)} budget.`);
+      pushCents(set, bill
+        ? `Added ${action.name} to your Bills: ${peso(action.limit)} due every ${ordinalDay(action.dueDay!)}, reminders on.`
+        : `Added ${action.name} with a ${peso(action.limit)} spending budget.`);
       break;
+    }
     case 'RemoveCategory':
       set((s) => ({ categories: s.categories.filter((c) => c.name.toLowerCase() !== action.name.toLowerCase()) }));
       pushCents(set, `Removed the ${action.name} budget.`);
@@ -2178,5 +2575,49 @@ function executeAction(action: ActionType, set: Setter) {
       });
       pushCents(set, `Logged ${peso(action.amount)} for ${action.item} as unassigned.`);
       break;
+    // M5.34: ledger edits by chat/voice. The txId was resolved at ASK time,
+    // so these ride the same removeTransaction/updateTransaction machinery
+    // Analytics uses - balances, budgets and goals all reverse correctly.
+    case 'ShowTransactions': {
+      set(() => ({ ledgerFilter: { query: action.query, categoryName: action.categoryName } }));
+      const what = action.categoryName ?? action.query ?? 'your latest';
+      pushCents(set, `Done - the Transactions tab is filtered to ${what}. Tap "All budgets" or clear the search there to reset it.`);
+      break;
+    }
+    case 'RemoveTransaction': {
+      const st = useFinance.getState();
+      const tx = st.transactions.find((x) => x.id === action.txId);
+      if (!tx) { pushCents(set, `That entry is already gone from the ledger.`); break; }
+      st.removeTransaction(action.txId);
+      pushCents(set, `Deleted the ${peso(tx.amount)} ${action.label} entry. Balances and budgets adjusted back.`);
+      break;
+    }
+    case 'UpdateTransaction': {
+      const st = useFinance.getState();
+      const tx = st.transactions.find((x) => x.id === action.txId);
+      if (!tx) { pushCents(set, `I couldn't find that entry in the ledger anymore.`); break; }
+      st.updateTransaction(action.txId, { amount: action.newAmount });
+      pushCents(set, `Updated ${action.label} from ${peso(tx.amount)} to ${peso(action.newAmount)}.`);
+      break;
+    }
+    case 'SetBudgetDue': {
+      const st = useFinance.getState();
+      const cat = st.categories.find((c) => c.name.toLowerCase() === action.categoryName.toLowerCase());
+      if (!cat) { pushCents(set, `I couldn't find a budget named ${action.categoryName}.`); break; }
+      if (!(action.dueDay > 0)) {
+        set((s) => ({ categories: s.categories.map((c) => (c.id === cat.id ? { ...c, remind: false } : c)) }));
+        pushCents(set, `Okay, no more reminders for ${cat.name}.`);
+        break;
+      }
+      set((s) => ({
+        categories: s.categories.map((c) =>
+          c.id === cat.id
+            ? { ...c, dueDate: nextMonthlyDueTs(action.dueDay), dueDay: action.dueDay, dueType: 'monthly' as const, remind: true }
+            : c,
+        ),
+      }));
+      pushCents(set, `${cat.name} is due every ${ordinalDay(action.dueDay)} now, reminders on.`);
+      break;
+    }
   }
 }
