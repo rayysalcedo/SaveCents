@@ -592,7 +592,7 @@ export default function AuthScreen() {
             {step === 'FORM' && (
               <>
                 <View style={styles.brand}>
-                  <Image source={require('../assets/logo-wordmark.png')} style={styles.wordmark} resizeMode="contain" />
+                  <Image source={t.mode === 'dark' ? require('../assets/logo-wordmark-dark.png') : require('../assets/logo-wordmark.png')} style={styles.wordmark} resizeMode="contain" />
                   <Text style={styles.title}>
                     {mode === 'LOGIN' ? 'Welcome back' : 'Create an account'}
                   </Text>
@@ -699,7 +699,7 @@ export default function AuthScreen() {
             {step === 'OTP' && pendingUser && (
               <>
                 <View style={styles.brand}>
-                  <Image source={require('../assets/logo-wordmark.png')} style={styles.wordmark} resizeMode="contain" />
+                  <Image source={t.mode === 'dark' ? require('../assets/logo-wordmark-dark.png') : require('../assets/logo-wordmark.png')} style={styles.wordmark} resizeMode="contain" />
                   <Text style={styles.title}>Verify your email</Text>
                   <Text style={styles.subtitle}>
                     {verifyChannel === 'code'
